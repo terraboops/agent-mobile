@@ -185,6 +185,15 @@ import { createSurface } from './surface-core.js';
     catch (_) { /* channel may not be connected yet — caller may retry */ }
   }
 
+  // Report the CURRENT surface (registered types + live widget keys) back to the
+  // agent so it pushes to existing keys instead of re-registering/re-adding. This
+  // is device->agent context (routed by the adapter), not a user turn.
+  function reportState() {
+    const st = surface.state;
+    sendUp({ type: 'surface_state', state: { assets: st.assets, types: st.types, widgets: st.widgets } });
+  }
+  window.__reportSurfaceState = reportState;
+
   // Render feedback FROM the sandboxes. Each view's frame echoes vmroot (success)
   // or vimer (failure) with the rendered text; attribute by event.source so a
   // failing/crashing widget reports back without breaking its peers.
@@ -299,6 +308,8 @@ import { createSurface } from './surface-core.js';
       catch (e) { report(op.key || op.name || '', false, String(e && e.message || e)); return; }
       (events || []).forEach(handleEvent);
     });
+    // Keep the agent's view of the surface current after every applied batch.
+    reportState();
   }
 
   // ---- bridge ---------------------------------------------------------------
@@ -314,4 +325,8 @@ import { createSurface } from './surface-core.js';
   window.__surfaceState = function () { return surface.state; };
   window.__surfaceWidget = function (k) { return surface.getWidget(k); };
   window.__surfaceRender = function (k) { return views[k] ? views[k].rendered || '' : ''; };
+
+  // Baseline surface-state report on load (best-effort — the channel may not be
+  // up yet; per-batch reportState() above keeps the agent's view current anyway).
+  setTimeout(reportState, 900);
 })();
