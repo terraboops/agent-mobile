@@ -1,0 +1,8 @@
+{
+  "appId": "com.agentmobile.agent",
+  "appName": "Agent Mobile",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}

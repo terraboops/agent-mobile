@@ -1,0 +1,22 @@
+{
+  "name": "agent-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Thin-slice prototype: agent gateway <-> locked webview app over a mutually-authenticated AEAD channel. Cross-platform (Capacitor-ready) web layer.",
+  "scripts": {
+    "handshake": "node test/handshake.test.mjs",
+    "gateway": "node gateway.js",
+    "containment": "node test/containment.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "werift": "^0.24.4",
+    "ws": "^8.21.3"
+  }
+}
