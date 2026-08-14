@@ -171,12 +171,21 @@ public class AgentChannelPlugin extends Plugin {
     public void send(PluginCall call) {
         String payload = call.getString("payload");
         if (payload == null) { call.reject("payload required"); return; }
+        // Guard: until the handshake completes there is NO transmit key. A
+        // premature webview send (render_result, surface_state, hello, etc.) must
+        // fail cleanly — NEVER let KoCrypto.sealMessage throw and crash the app.
+        if (tx == null) { call.reject("not connected"); return; }
         int mid = msgId.incrementAndGet();
         byte[] plain = ("{\"i\":" + mid + ",\"d\":\"" + payload.replace("\"", "\\\"") + "\"}")
                 .getBytes(StandardCharsets.UTF_8);
-        byte[] frame = KoCrypto.sealMessage(tx, KoCrypto.TYPE_CMD, plain);
-        pending.put(mid, call);
-        outbound(frame);
+        try {
+            byte[] frame = KoCrypto.sealMessage(tx, KoCrypto.TYPE_CMD, plain);
+            pending.put(mid, call);
+            outbound(frame);
+        } catch (Exception e) {
+            Log.w("AgentChannel", "send sealed-frame fail: " + e);
+            call.reject("send failed: " + e);
+        }
     }
 
     @PluginMethod

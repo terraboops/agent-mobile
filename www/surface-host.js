@@ -325,8 +325,4 @@ import { createSurface } from './surface-core.js';
   window.__surfaceState = function () { return surface.state; };
   window.__surfaceWidget = function (k) { return surface.getWidget(k); };
   window.__surfaceRender = function (k) { return views[k] ? views[k].rendered || '' : ''; };
-
-  // Baseline surface-state report on load (best-effort — the channel may not be
-  // up yet; per-batch reportState() above keeps the agent's view current anyway).
-  setTimeout(reportState, 900);
 })();
