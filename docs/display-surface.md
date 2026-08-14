@@ -119,12 +119,16 @@ tile code by name; the host loads them lazily on first use.
 
 ## Phase plan
 
-1. **Wire protocol + host runtime** — `surface` op parser in the renderer; widget registry
-   (add/update/remove/publish keyed by widget id); asset store (register/cap/load-by-name);
-   tile runtime contract; render-feedback reporting.
-2. **Native chrome** — round animated mic + stop + reply indicator as native overlays outside
-   the webview; wire them to the existing audio + interrupt paths.
-3. **Adapter surface tool** — a single agent-side tool that emits `surface` ops + render
-   feedback, replacing the current per-component render paths.
-4. **Skill** — teach the agent: register → test (render feedback) → build widgets → publish
-   data; enforce the storage cap and the native-chrome split.
+1. **Wire protocol + host runtime** — ✓ `surface-core.js` + `surface-host.js` handle every
+   op (register/add/update/remove/publish/test), the sandboxed tile runtime, the storage cap,
+   and `render_result` render feedback. Tested 15/15.
+2. **Native chrome** — round animated mic + stop + reply indicator as native overlays OUTSIDE
+   the webview. **Deferred by decision**: the established preference is mic+stop as components
+   over the wire (they ride the channel like any component, backed by the native mic-consent gate).
+   The native reply/speaking indicator is instead delivered via the status strip (Phase 3/4,
+   `{type:'status'}`: heartbeat, mic level, heard, working).
+3. **Adapter surface tool** — ✓ `adapter.py`: the agent emits `surface` ops via a
+   `{"__surface__": ops}` reply; `render_result` feedback routes back to the agent on its next
+   turn (`[render key=ok|FAILED: err]`). `_publish_surface` guards malformed/oversized batches.
+4. **Skill** — ✓ `agentmob-render-components`: register → test → build → publish loop, storage
+   cap, status-strip chrome documented.

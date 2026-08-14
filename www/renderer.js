@@ -128,6 +128,40 @@
     }
   }
 
+  // Live status strip (README "Feels alive"): heartbeat / mic pickup level /
+  // "heard you" / agent working arrive as {type:'status', ...} pushes (adapter
+  // drives heard/working; the sidecar drives hb/level). The chrome elements live
+  // in index.html (#hb dot, #micfill meter, #heard, #work prog).
+  function showTemp(id, ms) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.add('show');
+    if (ms) setTimeout(function () { el.classList.remove('show'); }, ms);
+  }
+  function applyStatus(st) {
+    if (!st) return;
+    if (st.hb) {
+      const hb = document.getElementById('hb');
+      if (!hb) return;
+      hb.classList.remove('off'); hb.classList.add('pulse');
+      setTimeout(function () { hb.classList.remove('pulse'); }, 3400);
+    }
+    if (typeof st.level === 'number') {
+      const f = document.getElementById('micfill');
+      if (!f) return;
+      f.style.width = Math.max(2, Math.min(100, Math.round(st.level * 100))) + '%';
+    }
+    if (st.heard) showTemp('heard', 4000);
+    if (st.working !== undefined) {
+      const w = document.getElementById('work');
+      if (!w) return;
+      const p = document.getElementById('workprog');
+      if (st.working) { w.classList.add('show'); if (p) p.textContent = '…'; }
+      else { w.classList.remove('show'); }
+    }
+  }
+  window.__applyStatus = applyStatus;
+
   window.__agent.onMessage.push(function (data) {
     let m = data;
     if (typeof data === 'string') { try { m = JSON.parse(data); } catch (_) { return; } }
@@ -149,6 +183,7 @@
     // (components). Leaving #ui untouched also keeps widgets from being wiped by
     // a mid-session spoken reply.
     else if (m && m.type === 'text') { /* spoken only — no on-screen text */ }
+    else if (m && m.type === 'status') { if (window.__applyStatus) window.__applyStatus(m); }
     else if (m && m.echo !== undefined) draw({ text: 'agent › ' + m.echo });
   });
 })();
