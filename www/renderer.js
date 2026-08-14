@@ -40,6 +40,12 @@
     const charts = [];
     const vizzes = [];
     if (u.title) h += '<h1>' + esc(u.title) + '</h1>';
+    // Image renders BEFORE the top-level text, so a caption/description lands BELOW
+    // the image (the natural "picture with a caption under it" layout).
+    if (u.image && u.image.src) {
+      h += '<figure class="img"><img src="' + esc(u.image.src) + '" alt="' + esc(u.image.alt || '') + '">'
+        + (u.image.alt ? '<figcaption>' + esc(u.image.alt) + '</figcaption>' : '') + '</figure>';
+    }
     if (u.text) h += '<p>' + esc(u.text) + '</p>';
     if (Array.isArray(u.list)) {
       h += '<ul>' + u.list.map(i => '<li>' + esc(i.title) + (i.subtitle ? '<em>' + esc(i.subtitle) + '</em>' : '') + '</li>').join('') + '</ul>';
@@ -74,11 +80,8 @@
       });
     }
     // Image is ONE declarative component (src is a data: URI over the channel;
-    // the webview can't fetch remote URLs). Supports data: URIs by design.
-    if (u.image && u.image.src) {
-      h += '<figure class="img"><img src="' + esc(u.image.src) + '" alt="' + esc(u.image.alt || '') + '">'
-        + (u.image.alt ? '<figcaption>' + esc(u.image.alt) + '</figcaption>' : '') + '</figure>';
-    }
+    // the webview can't fetch remote URLs). (Rendered above the text near the top
+    // of draw() so a caption sits below it.)
     if (u.button) h += '<button id="act">' + esc(u.button.label) + '</button>';
     // Controls (mic + stop) come over the wire as components; draw them last so the
     // control bar sits at the bottom of the current message, sticky to stay visible.
