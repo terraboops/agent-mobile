@@ -102,5 +102,35 @@ const clockCode = load('widgets/clock-widget.js');
   ok(spent.some(e => e.event === 'data' && e.key === 'c1'), 'clock publish -> data');
 }
 
+// --- E: the core contract the user asked about — register ONCE, then only
+// config changes (update_widget) + periodic DATA updates (publish) in place,
+// with NO re-registration and NO re-render of the tile on each update. ------
+{
+  const s = createSurface({ capacity: 1_000_000 });
+  const log = [];
+  const A = (op) => { const es = s.apply(op); es.forEach(e => log.push(e)); };
+  // multi-chunk asset registration (append})
+  A({ op: 'register_asset', name: 'lib/app.js', mime: 'text/javascript', b64: Buffer.from('window.APP=').toString('base64'), append: true });
+  A({ op: 'register_asset', name: 'lib/app.js', mime: 'text/javascript', b64: Buffer.from('{lib:true};').toString('base64') });
+  ok(s.getAsset('lib/app.js') && s.getAsset('lib/app.js').source === 'window.APP={lib:true};', 'multi-chunk asset reassembled exactly');
+  A({ op: 'register_widget_type', name: 'rec', code: 'x', assets: ['lib/app.js'] });
+  ok(log.some(e => e.event === 'type_ready' && e.name === 'rec'), 'type registered once');
+  // add ONCE
+  A({ op: 'add_widget', key: 'k1', type: 'rec', props: { cfg: 'v1' } });
+  const oneRender = log.filter(e => e.event === 'render' && e.key === 'k1').length;
+  ok(oneRender === 1, 'add_widget produces exactly one render');
+  // periodic DATA publishes — 5 updates, still exactly one tile/render
+  for (let t = 0; t < 5; t++) A({ op: 'publish', key: 'k1', data: { reading: t } });
+  const after = log.filter(e => e.event === 'render' && e.key === 'k1').length;
+  const dataEvs = log.filter(e => e.event === 'data' && e.key === 'k1');
+  ok(after === oneRender, 'repeated publish does NOT re-add/re-render the tile (register-once holds)');
+  ok(dataEvs.length === 5, '5 periodic publishes deliver 5 in-place data events to the SAME tile');
+  // config change via update_widget — same tile, in place, no re-render
+  A({ op: 'update_widget', key: 'k1', props: { cfg: 'v2' } });
+  ok(log.some(e => e.event === 'update' && e.key === 'k1' && e.props.cfg === 'v2'), 'update_widget carries config to the existing tile');
+  ok(log.filter(e => e.event === 'render' && e.key === 'k1').length === oneRender, 'config update keeps tile identity (no re-render)');
+  ok(s.getWidget('k1').props.cfg === 'v2', 'state: config merged onto the same tile');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
