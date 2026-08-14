@@ -61,21 +61,33 @@ import { createSurface } from './surface-core.js';
     return v;
   }
 
-  function mountSandbox(v, code, data, label) {
+  // Build the srcdoc skeleton for a widget's sandboxed frame. `body` is raw HTML
+  // (already-escaped <script>/<style> blocks) inlined after #root; the shared
+  // message-listener runs last so it can route vmrender/vmdata to the widget api.
+  // Every frame is a fresh opaque-origin sandbox (allow-scripts, no same-origin):
+  // it can never reach the bridge, mic, stop, identity, or the network.
+  function sandboxDoc(body, label) {
+    return '<!doctype html><meta charset="utf-8">'
+      + '<style>html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;overflow:hidden;font:13px/1.4 system-ui,sans-serif}</style>'
+      + '<div id="root" style="width:100%;height:100%"></div>'
+      + body
+      + '<script>(function(){window.addEventListener("message",function(e){var m=e.data;if(!m)return;var r=document.getElementById("root");var ok=true;var t="";'
+      + 'try{if(m.type==="vmrender"){if(window.render)window.render(m.props||{});}'
+      + 'else if(m.type==="vmdata"){if(window.onData)window.onData(m.data||{});else if(window.render)window.render(m.data||{});}'
+      + 't=r?r.innerText:"";}catch(err){ok=false;t=String(err&&err.message||err);}'
+      + 'try{window.parent.postMessage({type:ok?"vmroot":"vimer",text:t},"*");}catch(_){}});})();<' + '/script>'
+      + (label ? '<div style="position:absolute;top:6px;right:10px;color:#8b949e;font-size:11px">' + esc(label) + '</div>' : '');
+  }
+
+  function mountSandbox(v, body, data, label, autoPost) {
     v.node.innerHTML = '';
     const fr = document.createElement('iframe');
     fr.className = 'vizframe';
     fr.setAttribute('sandbox', 'allow-scripts');
-    fr.setAttribute('srcdoc',
-      '<!doctype html><meta charset="utf-8">'
-      + '<style>html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;overflow:hidden;font:13px/1.4 system-ui,sans-serif}</style>'
-      + '<div id="root" style="width:100%;height:100%"></div>'
-      + jsEscape(code)
-      + '<script>window.addEventListener("message",function(e){var m=e.data;if(m&&m.type==="vmdata"){try{(window.render||function(){})(m.payload);}catch(err){try{parent.postMessage({type:"vimer",s:String(err)},"*")}catch(_){}}}});<' + '/script>'
-      + (label ? '<div style="position:absolute;top:6px;right:10px;color:#8b949e;font-size:11px">' + esc(label) + '</div>' : ''));
+    fr.setAttribute('srcdoc', sandboxDoc(body, label));
     v.iframe = fr;
     v.node.appendChild(fr);
-    fr.onload = function () { try { fr.contentWindow.postMessage({ type: 'vmdata', payload: data || {} }, '*'); } catch (_) {} };
+    fr.onload = autoPost ? function () { try { fr.contentWindow.postMessage({ type: 'vmdata', data: data || {} }, '*'); } catch (_) {} } : null;
     return v;
   }
 
@@ -83,8 +95,7 @@ import { createSurface } from './surface-core.js';
   // === render/update props. Both funnel through the same draw with their role.
   function feed(v, props, data) {
     // Registered agent-shipped type -> sandboxed module, postMessage only.
-    if (surface.getType(v.type)) {
-      if (!v.iframe) { mountRegistered(v, props, data); return; }
+    if (surface.getType(v.type) && v.iframe) {
       try {
         if (props !== undefined) v.iframe.contentWindow.postMessage({ type: 'vmrender', props: props || {} }, '*');
         if (data !== undefined) v.iframe.contentWindow.postMessage({ type: 'vmdata', data: data || {} }, '*');
@@ -119,9 +130,8 @@ import { createSurface } from './surface-core.js';
     } else if (type === 'svg') {
       const svg = String((props && props.svg) || (data && data.svg) || '').trim();
       if (!/^<svg[\s>]/i.test(svg)) { v.node.innerHTML = '<div class="vizerr">[svg] missing or invalid SVG markup</div>'; return; }
-      const runner = '<div id="root" style="width:100%;height:100%"></div>'
-        + '<script>window.render=function(d){var r=document.getElementById("root");if(r&&d&&d.svg)r.innerHTML=d.svg;}<' + '/script>';
-      mountSandbox(v, runner, { svg: svg }, v.label);
+      const runner = '<script>window.render=function(d){var r=document.getElementById("root");if(r&&d&&d.svg)r.innerHTML=d.svg;}<' + '/script>';
+      mountSandbox(v, runner, { svg: svg }, v.label, true);
     } else if (type === 'viz') {
       const code = (props && props.code) || '';
       if (hasExternal(code)) {
@@ -129,7 +139,8 @@ import { createSurface } from './surface-core.js';
         return;
       }
       const dd = (props && props.data) || (data && data.data) || {};
-      mountSandbox(v, code || '', dd, (props && props.label) || v.label);
+      const body = code ? '<script>' + jsEscape(code) + '<' + '/script>' : '';
+      mountSandbox(v, body, dd, (props && props.label) || v.label, true);
     } else {
       v.node.innerHTML = '<div class="vizerr">[surface] unknown widget type "' + esc(type) + '"</div>';
     }
@@ -146,17 +157,19 @@ import { createSurface } from './surface-core.js';
         ? '<style>' + jsEscape(asset.source) + '</style>'
         : '<script>' + jsEscape(asset.source) + '<' + '/script>';
     }).join('');
-    const code = assetTags
-      + '<script>window.addEventListener("message",function(e){var m=e.data;if(!m)return;try{'
-      + 'if(m.type==="vmrender"){if(window.render)window.render(m.props||{});}'
-      + 'else if(m.type==="vmdata"){if(window.onData)window.onData(m.data||{});}'
-      + '}catch(err){try{parent.postMessage({type:"vimer",s:String(err)},"*")}catch(_){}}});<' + '/script>'
+    const body = assetTags
       + '<script>' + jsEscape(def.code || '') + '<' + '/script>';
-    if (hasExternal(code)) { v.node.innerHTML = '<div style="padding:6px;font-size:12px;color:#f0883e">[widget] external script blocked (egress-free).</div>'; return; }
-    mountSandbox(v, code, data || {}, (props && props.label) || v.label);
+    if (hasExternal(body)) { v.node.innerHTML = '<div style="padding:6px;font-size:12px;color:#f0883e">[widget] external script blocked (egress-free).</div>'; return; }
+    mountSandbox(v, body, data || {}, (props && props.label) || v.label, false);
+    // Deliver initial props once the frame is up (calls window.render(props)).
     if (props !== undefined) {
       const fr = v.iframe;
-      try { if (props) setTimeout(function () { try { fr.contentWindow.postMessage({ type: 'vmrender', props: props }, '*'); } catch (_) {} }, 0); } catch (_) {}
+      (function (p, d) {
+        fr.onload = function () {
+          try { fr.contentWindow.postMessage({ type: 'vmrender', props: p || {} }, '*'); } catch (_) {}
+          try { if (d !== undefined) fr.contentWindow.postMessage({ type: 'vmdata', data: d || {} }, '*'); } catch (_) {}
+        };
+      })(props, data);
     }
   }
 
@@ -172,6 +185,30 @@ import { createSurface } from './surface-core.js';
     catch (_) { /* channel may not be connected yet — caller may retry */ }
   }
 
+  // Render feedback FROM the sandboxes. Each view's frame echoes vmroot (success)
+  // or vimer (failure) with the rendered text; attribute by event.source so a
+  // failing/crashing widget reports back without breaking its peers.
+  function keyOfSource(source) {
+    for (const k in views) {
+      const fr = views[k] && views[k].iframe;
+      if (fr && fr.contentWindow && fr.contentWindow === source) return k;
+    }
+    return null;
+  }
+  window.addEventListener('message', function (e) {
+    const k = keyOfSource(e.source);
+    if (!k) return; // not ours (could be renderer.js's viz frame — ignore)
+    const d = e.data || {};
+    if (d.type === 'vimer') report(k, false, String(d.text));
+    else if (d.type === 'vmroot') {
+      if (views[k]) views[k].rendered = String(d.text || '');
+      if (views[k] && views[k].pendingFeedback) {
+        views[k].pendingFeedback = false;
+        report(k, true, undefined); // render feedback for an async test_widget mount
+      }
+    }
+  });
+
   // ---- event handling ------------------------------------------------------
   function handleRenderEvent(ev) {
     let v = views[ev.key];
@@ -179,19 +216,26 @@ import { createSurface } from './surface-core.js';
     v.type = ev.type;
     v.label = (ev.props && ev.props.label) || '';
     try {
-      if (surface.getType(ev.type)) mountRegistered(v, ev.props || {}, undefined);
-      else {
-        if (ev.test) { // test_widget for a built-in primitive: draw + report
-          feed(v, ev.props || {}, undefined);
-        } else {
-          feed(v, ev.props || {}, undefined);
-        }
+      if (surface.getType(ev.type)) {
+        // async mount -> render feedback arrives via the sandbox vmroot echo
+        v.pendingFeedback = !!ev.test;
+        mountRegistered(v, ev.props || {}, undefined);
+      } else {
+        feed(v, ev.props || {}, undefined);
+        if (ev.test) report(ev.key, true, undefined); // sync builtin feedback
       }
-      if (ev.test) report(ev.key, true, undefined); // render feedback for test_widget
     } catch (e) {
       console.error('[surface:render]', ev.key, e);
+      v.pendingFeedback = false;
       report(ev.key, false, String(e && e.message || e));
     }
+  }
+
+  function teardownView(key) {
+    const v = views[key];
+    if (!v) return;
+    try { if (v.node && v.node.parentNode) v.node.parentNode.removeChild(v.node); } catch (_) {}
+    delete views[key];
   }
 
   function handleEvent(ev) {
@@ -222,11 +266,9 @@ import { createSurface } from './surface-core.js';
         }
         break;
       }
-      case 'destroy': { // remove_widget
-        const v = views[ev.key];
-        if (v) { try { if (v.node && v.node.parentNode) v.node.parentNode.removeChild(v.node); } catch (_) {} delete views[ev.key]; }
+      case 'destroy': // remove_widget
+        teardownView(ev.key);
         break;
-      }
       case 'render_result':
         if (ev.ok === false) sendUp({ type: 'render_result', key: ev.key, ok: false, error: ev.error });
         break;
@@ -240,6 +282,18 @@ import { createSurface } from './surface-core.js';
 
   function applyOps(ops) {
     (ops || []).forEach(function (op) {
+      // A test_widget probe is NOT added to the core registry, so a later
+      // remove_widget on it produces no 'destroy' event. The host still owns the
+      // DOM viewport, so it tears it down on any remove_widget regardless of the
+      // registry verdict (surface-core stays authoritative for the registry; the
+      // host only mirrors live tiles).
+      if (op.op === 'remove_widget') {
+        let events = [];
+        try { events = surface.apply(op); } catch (e) { report(op.key, false, String(e && e.message || e)); return; }
+        (events || []).forEach(handleEvent);
+        teardownView(op.key);
+        return;
+      }
       let events = [];
       try { events = surface.apply(op); }
       catch (e) { report(op.key || op.name || '', false, String(e && e.message || e)); return; }
@@ -259,4 +313,5 @@ import { createSurface } from './surface-core.js';
   // Agent-facing introspection (for render feedback tooling / debugging).
   window.__surfaceState = function () { return surface.state; };
   window.__surfaceWidget = function (k) { return surface.getWidget(k); };
+  window.__surfaceRender = function (k) { return views[k] ? views[k].rendered || '' : ''; };
 })();
