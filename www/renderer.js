@@ -128,8 +128,12 @@
     }
     if (typeof st.level === 'number') {
       const f = document.getElementById('micfill');
-      if (!f) return;
-      f.style.width = Math.max(2, Math.min(100, Math.round(st.level * 100))) + '%';
+      if (f) f.style.width = Math.max(2, Math.min(100, Math.round(st.level * 100))) + '%';
+      // ring pulse from mic input (only pulse while mic is live — handled in bridge)
+      if (window.__setMicLevel) window.__setMicLevel(st.level);
+    }
+    if (typeof st.speaking === 'boolean' && window.__setAgentSpeaking) {
+      window.__setAgentSpeaking(st.speaking);   // floating agent-voice widget
     }
     if (st.heard) showTemp('heard', 4000);
     if (st.working !== undefined) {

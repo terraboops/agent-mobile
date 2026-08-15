@@ -9,24 +9,68 @@
 
   // Sync every on-screen mic control (however the renderer drew it) with live state.
   window.__syncAudioCtl = function (running) {
+    // The ring: FILLED when the mic is live (unmuted), EMPTY/hollow when muted.
+    var ring = document.getElementById('mic-ring');
+    if (ring) {
+      ring.classList.toggle('unmuted', !!running);
+      ring.classList.toggle('muted', !running);
+      if (!running) ring.classList.remove('pulse');
+    }
     var mics = document.querySelectorAll('#ui [data-ctl="mic"]');
     mics.forEach(function (b) {
       var off = b.getAttribute('data-off') || '🎤 Start audio';
       b.textContent = running ? (b.getAttribute('data-on') || '⏹ Mic on') : off;
     });
-    // Always-on bar (index.html #ctrlbar) — keep its label honest too.
-    var pctl = document.getElementById('ctl-mic');
-    if (pctl) pctl.textContent = running ? '⏹ Mic on' : '🎤 Start audio';
     return running;
   };
 
-  // The always-on control bar is bound ONCE at load; it is separate from any
-  // component the agent draws, so mute/stop are always available.
+  // The always-on ring + stop are bound ONCE at load; the agent cannot hide them.
   function bindCtrlBar() {
-    var mic = document.getElementById('ctl-mic');
+    var ring = document.getElementById('mic-ring');
     var stop = document.getElementById('ctl-stop');
-    if (mic) mic.onclick = function () { window.toggleAudio(); };
+    if (ring) ring.onclick = function () { window.__agent.audioToggle(); };
     if (stop) stop.onclick = function () { window.__agent.stop(); };
+
+    // ---- Agent voice indicator: a "default example widget" with a few creative
+    // visual variants. Shown floating above while the agent is speaking; tapping
+    // it cycles the style (bars / glowing orb / dots). This is separate from the
+    // mic ring entirely.
+    var sp = document.getElementById('speechWidget');
+    window.__spVariants = ['bars', 'orb', 'dots'];
+    window.__spIdx = 0;
+    function renderSpeech() {
+      if (!sp) return;
+      var v = window.__spVariants[((window.__spIdx % window.__spVariants.length) + window.__spVariants.length) % window.__spVariants.length];
+      var html;
+      if (v === 'bars') {
+        html = '<span class="sp-speech bars"><span class="spbar"></span><span class="spbar"></span>'
+             + '<span class="spbar"></span><span class="spbar"></span></span>';
+      } else if (v === 'orb') {
+        html = '<span class="sp-speech orb"></span>';
+      } else {
+        html = '<span class="sp-speech dots"></span>';
+      }
+      sp.innerHTML = html;
+    }
+    window.__renderSpeechWidget = renderSpeech;
+    if (sp) sp.onclick = function () { window.__spIdx++; renderSpeech(); };
+    renderSpeech();
+
+    // Mic input level (0..1, from the sidecar's uplink RMS) -> pulse the ring
+    // ONLY while the mic is live (unmuted). No pulse when muted/silent.
+    window.__setMicLevel = function (lvl) {
+      var r = document.getElementById('mic-ring');
+      if (!r || r.classList.contains('muted')) return;
+      if (typeof lvl === 'number' && lvl > 0.03) r.classList.add('pulse');
+      else r.classList.remove('pulse');
+    };
+
+    // Agent speaking -> show/hide the floating voice widget.
+    window.__setAgentSpeaking = function (on) {
+      var box = document.getElementById('agentSpeech');
+      if (box) box.classList.toggle('show', !!on);
+    };
+    window.__syncLiveCtl();
   }
 
   // Ask the native plugin for the real audio state and reflect it on the buttons.
