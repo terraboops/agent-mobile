@@ -11,28 +11,9 @@
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
-  function controlsHTML(u) {
-    let items = u && u.controls;
-    if (!items) return '';
-    if (!Array.isArray(items)) items = items.items;
-    if (!Array.isArray(items)) return '';
-    return '<div class="controls">' + items.map(function (c) {
-      const label = esc(c.label || (c.t === 'mic' ? '🎤 Start audio' : '✕ Stop'));
-      const accent = c.accent || (c.t === 'mic' ? '#8957e5' : '#da3633');
-      return '<button data-ctl="' + esc(c.t) + '" data-off="' + esc(label) + '"'
-        + (c.t === 'mic' ? ' data-on="⏹ Mic on"' : '')
-        + ' style="background:' + esc(accent) + '">' + label + '</button>';
-    }).join('') + '</div>';
-  }
-
-  function bindControls() {
-    ui.querySelectorAll('[data-ctl]').forEach(function (b) {
-      b.onclick = function () {
-        if (b.getAttribute('data-ctl') === 'mic') window.toggleAudio();
-        else if (b.getAttribute('data-ctl') === 'stop') window.__agent.stop();
-      };
-    });
-  }
+  // Mic/Stop controls are the ALWAYS-ON pinned bar in index.html (#ctrlbar),
+  // bound once in bridge.js — no longer drawn per-render by the agent, so they
+  // can never be hidden or omitted.
 
   function draw(u) {
     if (!u) return;
@@ -83,12 +64,8 @@
     // the webview can't fetch remote URLs). (Rendered above the text near the top
     // of draw() so a caption sits below it.)
     if (u.button) h += '<button id="act">' + esc(u.button.label) + '</button>';
-    // Controls (mic + stop) come over the wire as components; draw them last so the
-    // control bar sits at the bottom of the current message, sticky to stay visible.
-    h += controlsHTML(u);
     ui.innerHTML = h;
-    bindControls();
-    // Keep the mic/stop labels honest — reflect real native audio state after each render.
+    // Keep the always-on mic/stop labels honest — reflect real native audio state.
     if (window.__syncLiveCtl) window.__syncLiveCtl();
     // Mount any charts. ApexCharts is a trusted local bundle; `options` is JSON
     // from the channel (declarative only — no functions can survive JSON.parse).

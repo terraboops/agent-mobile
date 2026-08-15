@@ -57,6 +57,16 @@
   /* Display-surface widget tiles (docs/display-surface.md). Persistent, additive,
      keyed viewport: an update re-renders ONLY its own tile, never peers or #ui. */
   #surface { max-width: 560px; margin: 0 auto; padding: 0 18px; }
+  /* Always-on control bar (mic + stop) — pinned so the agent can NEVER hide or
+     omit the mute/stop controls. This is the reliable mute for the user, present
+     on every render regardless of what the agent ships. #boot covers it initially. */
+  #ctrlbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+             display: flex; gap: 10px; padding: 10px 18px calc(14px + env(safe-area-inset-bottom));
+             background: linear-gradient(transparent, #0d1117 42%); justify-content: center; }
+  #ctrlbar button { flex: 1 1 0; max-width: 230px; padding: 13px; border: 0;
+                    border-radius: 12px; font-size: 15px; color: #fff; }
+  #ctl-mic { background: #8957e5; }
+  #ctl-stop { background: #da3633; }
   .swidget { margin: 0 0 14px; }
   .swidget .swtext { margin: 0 0 10px; }
   .swidget img { max-width: 100%; border-radius: 10px; display: block; }
@@ -88,6 +98,10 @@
   </header>
   <main id="ui"><p class="muted">Waiting for the agent…</p></main>
   <div id="surface"></div>
+  <div id="ctrlbar">
+    <button id="ctl-mic">🎤 Start audio</button>
+    <button id="ctl-stop">✕ Stop</button>
+  </div>
   <div id="boot">
     <div class="box">
       <h2>Agent Mobile</h2>

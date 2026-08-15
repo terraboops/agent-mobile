@@ -14,8 +14,20 @@
       var off = b.getAttribute('data-off') || '🎤 Start audio';
       b.textContent = running ? (b.getAttribute('data-on') || '⏹ Mic on') : off;
     });
+    // Always-on bar (index.html #ctrlbar) — keep its label honest too.
+    var pctl = document.getElementById('ctl-mic');
+    if (pctl) pctl.textContent = running ? '⏹ Mic on' : '🎤 Start audio';
     return running;
   };
+
+  // The always-on control bar is bound ONCE at load; it is separate from any
+  // component the agent draws, so mute/stop are always available.
+  function bindCtrlBar() {
+    var mic = document.getElementById('ctl-mic');
+    var stop = document.getElementById('ctl-stop');
+    if (mic) mic.onclick = function () { window.toggleAudio(); };
+    if (stop) stop.onclick = function () { window.__agent.stop(); };
+  }
 
   // Ask the native plugin for the real audio state and reflect it on the buttons.
   // Call after every render so labels never drift from actual mic state (this is what
@@ -87,6 +99,7 @@
   };
 
   (function () {
+    bindCtrlBar();
     try {
       window.Capacitor.Plugins.AgentChannel.addListener('session', function (d) {
         if (!d || !d.agentId) return;
