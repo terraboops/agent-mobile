@@ -104,6 +104,7 @@ public class AgentChannelPlugin extends Plugin {
     private volatile boolean keepaliveRunning;
     private PluginCall connectCall;
     private volatile boolean connectConsented; // native per-capability consent gate (connect)
+    private volatile String consentedHost;     // the ONE gateway host the user consented to
 
     // Identity badge states (native overlay in MainActivity — the webview cannot reach it).
     public static final String ID_VERIFIED = "verified";      // MAC ok AND server SPKI == stored pin
@@ -176,12 +177,22 @@ public class AgentChannelPlugin extends Plugin {
         if (call.getInt("maxMs") != null) maxMs = call.getInt("maxMs");
         if (call.getInt("threshold") != null) partitionThreshold = call.getInt("threshold");
         if (call.getInt("probeTimeoutMs") != null) probeTimeoutMs = call.getInt("probeTimeoutMs");
+        // The webview chooses the URL, so the URL is untrusted: only ws:// / wss://, and a
+        // consent dialog is required for EVERY distinct host — a one-time "Allow" for host A
+        // must not let later JS silently redirect the session (mic audio, surface state) to B.
+        String host = hostOf(url);
+        if (host == null || !(url.startsWith("ws://") || url.startsWith("wss://"))) {
+            call.reject("url must be ws:// or wss:// with a host"); return;
+        }
+        if (identityBlocked && host.equals(consentedHost)) {
+            call.reject("refused: pinned agent identity mismatch for " + host + " (resetPairing to re-pair)"); return;
+        }
         connectCall = call;
-        lastUrl = url;                       // keep for auto-reconnect
-        if (connectConsented) {
+        if (connectConsented && host.equals(consentedHost)) {
+            lastUrl = url;                   // same host: keep for auto-reconnect
             worker.execute(() -> connectWs(url));
         } else {
-            requestConnectConsent(call, url); // native per-capability gate
+            requestConnectConsent(call, url); // native per-capability gate (per host)
         }
     }
 
@@ -303,9 +314,8 @@ public class AgentChannelPlugin extends Plugin {
     private void requestConnectConsent(PluginCall call, String url) {
         Activity a = getActivity();
         if (a == null) { connectCall = null; call.reject("no activity for consent"); return; }
+        final String host = hostOf(url) != null ? hostOf(url) : url;
         a.runOnUiThread(() -> {
-            String host = url;
-            try { host = URI.create(url).getHost(); } catch (Exception ignored) {}
             new AlertDialog.Builder(a)
                 .setTitle("Confirm secure session")
                 .setMessage("Allow Agent to open an end-to-end encrypted session to "
@@ -313,7 +323,11 @@ public class AgentChannelPlugin extends Plugin {
                         ? "This host is paired: the agent must present its pinned identity key or the connection is refused."
                         : "First connection to this host: after the key exchange you will be asked to confirm the agent's fingerprint before anything is sent."))
                 .setNegativeButton("Deny", (d, w) -> { d.dismiss(); connectCall = null; call.reject("connection denied by user"); })
-                .setPositiveButton("Allow", (d, w) -> { d.dismiss(); connectConsented = true; worker.execute(() -> connectWs(url)); })
+                .setPositiveButton("Allow", (d, w) -> {
+                    d.dismiss();
+                    connectConsented = true; consentedHost = host; lastUrl = url; identityBlocked = false;
+                    worker.execute(() -> connectWs(url));
+                })
                 .setCancelable(false)
                 .show();
         });
