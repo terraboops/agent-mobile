@@ -51,6 +51,20 @@ export function startGateway(port = 0, attackerOrigin = 'https://attacker.invali
       const im = new Image(); im.onload = () => rec('img', true, 'loaded'); im.onerror = () => rec('img', false, 'blocked'); im.src = '${attackerOrigin}/i.gif';
       try { localStorage.setItem('k','DOM'); rec('storage', true, localStorage.getItem('k')); } catch (e) { rec('storage', false, (e && e.message) || 'blocked'); }
       try { window.open('${attackerOrigin}/p'); rec('open', true, 'opened'); } catch (e) { rec('open', false, (e && e.message) || 'blocked'); }
+      try { const w = new WebSocket('${attackerOrigin}'.replace(/^http/, 'ws') + '/ws'); w.onopen = () => rec('ws', true, 'opened'); w.onerror = () => rec('ws', false, 'blocked'); } catch (e) { rec('ws', false, (e && e.message) || 'blocked'); }
+      // WebRTC: connect-src does NOT govern ICE. With CSP webrtc 'block' the peer connection
+      // must gather ZERO candidates (no STUN to the attacker host, no host-candidate leak).
+      try {
+        const host = new URL('${attackerOrigin}').hostname;
+        const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:' + host + ':3478' }] });
+        const cands = [];
+        pc.onicecandidate = (e) => { if (e.candidate) cands.push(e.candidate.candidate); };
+        pc.createDataChannel('x');
+        const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
+        await new Promise((r) => setTimeout(r, 1500));
+        rec('webrtc', cands.length > 0, cands.length + ' ice candidates');
+        pc.close();
+      } catch (e) { rec('webrtc', false, (e && e.message) || 'blocked'); }
       window.__agent.send(JSON.stringify({ type:'action', rpc:'probe', args:{ k:'channel' } }));
     })();
   `;

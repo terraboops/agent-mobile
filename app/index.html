@@ -9,8 +9,9 @@
 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline';
-               connect-src 'none'; img-src 'none'; frame-src 'none'; object-src 'none';
+               connect-src 'none'; webrtc 'block'; img-src 'none'; frame-src 'none'; object-src 'none';
                base-uri 'none'; form-action 'none'">
+<meta http-equiv="x-dns-prefetch-control" content="off">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agent app</title>
 <style>
@@ -32,6 +33,14 @@
 <body>
   <header id="badge">CONNECTED TO AGENT · <span class="key" id="agentid">···</span></header>
   <main id="ui"><p class="muted">Waiting for the agent…</p></main>
+  <script>(function(){
+  // WebRTC is NOT governed by connect-src, and Chromium (Android WebView) ignores the CSP
+  // `webrtc` directive (Firefox-only). So: remove the constructors from this realm. Every
+  // sandbox document gets the same treatment plus child-src 'none' (no nested realms) —
+  // see window.__sandboxPreamble in bridge.js.
+  var N=['RTCPeerConnection','webkitRTCPeerConnection','mozRTCPeerConnection','RTCDataChannel','RTCIceCandidate','RTCSessionDescription','RTCDtlsTransport','RTCIceTransport','RTCSctpTransport','RTCRtpSender','RTCRtpReceiver','RTCRtpTransceiver'];
+  for (var i=0;i<N.length;i++){ try{ Object.defineProperty(window,N[i],{value:undefined,writable:false,configurable:false,enumerable:false}); }catch(e){} }
+})();</script>
   <script src="/bridge.js"></script>
   <script src="/renderer.js"></script>
 </body>

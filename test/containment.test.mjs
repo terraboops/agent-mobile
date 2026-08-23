@@ -102,17 +102,17 @@ await page.evaluate((src) => {
 // ---- let the async attacks settle, then read the verdicts --------------------
 await page.waitForFunction(() => {
   const a = window.__attacks || {};
-  return ['fetch', 'beacon', 'xhr', 'img', 'storage', 'open'].every((k) => k in a);
-}, { timeout: 8000 }).catch(() => {});
+  return ['fetch', 'beacon', 'xhr', 'img', 'storage', 'open', 'ws', 'webrtc'].every((k) => k in a);
+}, { timeout: 12000 }).catch(() => {});
 
 const attacks = await page.evaluate(() => window.__attacks || {});
 console.log('  API-level attack results:', JSON.stringify(attacks));
 
 console.log('\n=== containment verdicts ===');
 // Layer-1 (CSP / API policy): these must throw or be refused synchronously.
-for (const k of ['fetch', 'img', 'storage', 'open']) {
+for (const k of ['fetch', 'img', 'storage', 'open', 'ws', 'webrtc']) {
   const a = attacks[k];
-  ok(a && a.ok === false, `agent JS cannot ${k} (refused)`);
+  ok(a && a.ok === false, `agent JS cannot ${k} (refused${a ? ': ' + a.val : ''})`);
 }
 
 // Layer-2 (no egress): the load-bearing proof. The bundle fires xhr/sendBeacon/

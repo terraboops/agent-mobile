@@ -2,6 +2,33 @@
 // AgentChannel native plugin. The injected agent JS cannot reach the wire itself.
 (function () {
   'use strict';
+
+  // ---- sandbox preamble ---------------------------------------------------------
+  // Prepended to EVERY agent-code sandbox document (renderer.js viz/svg frames and
+  // surface-host.js widget frames). The frames are sandbox="allow-scripts" (opaque
+  // origin) and inherit the page CSP (connect-src 'none', ...). What CSP cannot do in
+  // Chromium is stop WebRTC, and what the sandbox cannot do is stop code from minting a
+  // fresh realm — so this preamble:
+  //   * meta CSP child-src/frame-src/object-src 'none'  -> no nested browsing contexts
+  //     (a nested no-src iframe in a sandboxed frame is cross-origin anyway; srcdoc/src
+  //     frames are refused; a MutationObserver removes any that slip in)
+  //   * x-dns-prefetch-control off                        -> no <link rel=dns-prefetch> leak
+  //   * strips RTCPeerConnection & friends from the realm (non-configurable undefined)
+  //   * disables attachShadow (no hiding frames from the observer)
+  // Verified in Chromium by test/surface-live.test.mjs and test/containment.test.mjs.
+  window.__sandboxPreamble =
+    '<meta http-equiv="Content-Security-Policy" content="child-src \'none\'; frame-src \'none\'; object-src \'none\'; connect-src \'none\'">'
+    + '<meta http-equiv="x-dns-prefetch-control" content="off">'
+    + '<script>(function(){'
+    + 'var N=["RTCPeerConnection","webkitRTCPeerConnection","mozRTCPeerConnection","RTCDataChannel","RTCIceCandidate","RTCSessionDescription","RTCDtlsTransport","RTCIceTransport","RTCSctpTransport","RTCRtpSender","RTCRtpReceiver","RTCRtpTransceiver"];'
+    + 'function strip(w){for(var i=0;i<N.length;i++){try{Object.defineProperty(w,N[i],{value:undefined,writable:false,configurable:false,enumerable:false});}catch(e){}}}'
+    + 'strip(window);'
+    + 'try{Object.defineProperty(Element.prototype,"attachShadow",{value:function(){throw new Error("shadow roots are disabled in the agent sandbox");},writable:false,configurable:false});}catch(e){}'
+    + 'var KILL="iframe,frame,object,embed,portal,fencedframe";'
+    + 'function purge(n){try{if(n.nodeType!==1)return;if(n.matches&&n.matches(KILL)){try{if(n.contentWindow)strip(n.contentWindow);}catch(e){}n.remove();return;}if(n.querySelectorAll){n.querySelectorAll(KILL).forEach(function(f){try{if(f.contentWindow)strip(f.contentWindow);}catch(e){}f.remove();});}}catch(e){}}'
+    + 'new MutationObserver(function(ms){ms.forEach(function(m){m.addedNodes.forEach(purge);});}).observe(document.documentElement,{childList:true,subtree:true});'
+    + '})();<' + '/script>';
+
   window.__setAgentId = function (id) {
     var b = document.getElementById('agentid');
     if (b) b.textContent = id;

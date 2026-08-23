@@ -68,6 +68,7 @@ import { createSurface } from './surface-core.js';
   // it can never reach the bridge, mic, stop, identity, or the network.
   function sandboxDoc(body, label) {
     return '<!doctype html><meta charset="utf-8">'
+      + (window.__sandboxPreamble || '')   // realm hardening: no WebRTC, no nested frames (bridge.js)
       + '<style>html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;overflow:hidden;font:13px/1.4 system-ui,sans-serif}</style>'
       + '<div id="root" style="width:100%;height:100%"></div>'
       + body

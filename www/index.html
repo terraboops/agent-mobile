@@ -4,15 +4,25 @@
 <meta charset="utf-8">
 <!--
   Strict CSP: this webview may ONLY run its own same-origin + inline agent script.
-  connect-src 'none' -> no fetch/XHR/beacon. img-src data: -> no external pixels.
-  frame-src 'self' data: blob: -> permits ONLY our local viz sandbox iframe (a
-  sandboxed, opaque-origin frame injected by renderer.js). No other frames are allowed.
-  The ONLY way data moves is the native channel.
+  connect-src 'none' -> no fetch/XHR/beacon/WebSocket/EventSource.
+  webrtc 'block'     -> no RTCPeerConnection ICE/STUN/TURN traffic where the engine honours
+                        it (Firefox). Chromium/Android WebView IGNORES this directive, so the
+                        real block is the realm hardening below + the sandbox preamble
+                        (bridge.js __sandboxPreamble): constructors removed from every
+                        realm, no nested frames, no shadow roots. Without that, sandboxed
+                        widget code could exfiltrate via STUN to an attacker host or via
+                        DNS lookups of crafted names (connect-src does NOT cover WebRTC).
+  img-src data:      -> no external pixels.
+  frame-src 'self' data: blob: -> permits ONLY our local viz sandbox iframes (sandboxed,
+  opaque-origin srcdoc frames injected by renderer.js / surface-host.js; they INHERIT this
+  CSP). No other frames are allowed. The ONLY way data moves is the native channel.
+  x-dns-prefetch-control: off -> <link rel=dns-prefetch/preconnect> cannot leak via DNS.
 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline';
-               connect-src 'none'; img-src data:; frame-src 'self' data: blob:; object-src 'none';
-               base-uri 'none'; form-action 'none'">
+               connect-src 'none'; webrtc 'block'; img-src data:; frame-src 'self' data: blob:;
+               object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="x-dns-prefetch-control" content="off">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agent app</title>
 <style>
@@ -149,6 +159,14 @@
       <button data-boot="resume" onclick="if(window.__bootstrap){document.getElementById('boot').style.display='none';window.__bootstrap('resume')}">Resume conversation</button>
     </div>
   </div>
+  <script>(function(){
+  // WebRTC is NOT governed by connect-src, and Chromium (Android WebView) ignores the CSP
+  // `webrtc` directive (Firefox-only). So: remove the constructors from this realm. Every
+  // sandbox document gets the same treatment plus child-src 'none' (no nested realms) —
+  // see window.__sandboxPreamble in bridge.js.
+  var N=['RTCPeerConnection','webkitRTCPeerConnection','mozRTCPeerConnection','RTCDataChannel','RTCIceCandidate','RTCSessionDescription','RTCDtlsTransport','RTCIceTransport','RTCSctpTransport','RTCRtpSender','RTCRtpReceiver','RTCRtpTransceiver'];
+  for (var i=0;i<N.length;i++){ try{ Object.defineProperty(window,N[i],{value:undefined,writable:false,configurable:false,enumerable:false}); }catch(e){} }
+})();</script>
   <script>window.AGENT_URL = 'ws://YOUR-GATEWAY-HOST:8123';</script>
   <script src="/bridge.js"></script>
   <script src="/vendor/apexcharts.min.js"></script>

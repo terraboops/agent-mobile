@@ -142,6 +142,32 @@ const legacy = await page.evaluate(() => document.getElementById('ui').innerHTML
 ok(legacy.includes('legacy still fine'), 'legacy flat render (type:render/ui.components) still draws');
 ok(legacy.includes('<li>a</li>'), 'legacy list component still draws');
 
+// ---- 7b. Sandbox realm hardening: no WebRTC, no nested realm, no shadow root -----------
+// Chromium ignores CSP `webrtc 'block'`, so the host strips the constructors and forbids
+// nested frames in every sandbox doc (bridge.js __sandboxPreamble). A hostile widget type:
+await push({ type: 'surface', ops: [
+  { op: 'register_widget_type', name: 'evil', code:
+      'window.render=function(){var r=document.getElementById("root");var o={};'
+      + 'o.direct=typeof RTCPeerConnection;'
+      + 'try{var f=document.createElement("iframe");document.body.appendChild(f);o.nested=typeof f.contentWindow.RTCPeerConnection;}catch(e){o.nested="blocked";}'
+      + 'try{var g=document.createElement("iframe");g.srcdoc="<b>x</b>";document.body.appendChild(g);o.srcdoc=g.isConnected?"attached":"removed";}catch(e){o.srcdoc="blocked";}'
+      + 'try{document.body.attachShadow({mode:"closed"});o.shadow="allowed";}catch(e){o.shadow="blocked";}'
+      + 'setTimeout(function(){o.srcdocLater=document.querySelectorAll("iframe").length;r.textContent=JSON.stringify(o);},120);};',
+    assets: [] },
+  { op: 'add_widget', key: 'evil1', type: 'evil', props: {} },
+]});
+await page.waitForFunction(() => (window.__surfaceRender('evil1') || '').includes('srcdocLater'), null, { timeout: 5000 }).catch(() => {});
+// The sandbox echoes root text on each vmrender/vmdata; poke it once more so the delayed text is reflected.
+await push({ type: 'surface', ops: [{ op: 'publish', key: 'evil1', data: {} }] });
+await page.waitForFunction(() => (window.__surfaceRender('evil1') || '').includes('srcdocLater'), null, { timeout: 5000 }).catch(() => {});
+const evil = JSON.parse((await page.evaluate(() => window.__surfaceRender('evil1'))) || '{}');
+console.log('  sandbox hardening probe:', JSON.stringify(evil));
+ok(evil.direct === 'undefined', 'sandbox: RTCPeerConnection is not available to widget code');
+ok(evil.nested === 'blocked', 'sandbox: a nested iframe realm cannot be reached (cross-origin / removed)');
+ok(evil.shadow === 'blocked', 'sandbox: attachShadow disabled (frames cannot hide from the observer)');
+ok(evil.srcdocLater === 0, 'sandbox: nested frames are purged (child-src none + observer)');
+await push({ type: 'surface', ops: [{ op: 'remove_widget', key: 'evil1' }] });
+
 // ---- 8. Egress-free proof --------------------------------------------------------------
 await page.waitForTimeout(150);
 ok(canaryHits === 0, 'NO egress: reachable canary received 0 requests from surface');

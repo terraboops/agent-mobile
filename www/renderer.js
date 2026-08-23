@@ -96,6 +96,7 @@
       fr.setAttribute('sandbox', 'allow-scripts');
       fr.setAttribute('srcdoc',
         '<!doctype html><meta charset="utf-8">'
+        + (window.__sandboxPreamble || '')   // realm hardening: no WebRTC, no nested frames (bridge.js)
         + '<style>html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;overflow:hidden;font:13px/1.4 system-ui,sans-serif}</style>'
         + jsEscape(v.code)
         + '<script>window.addEventListener("message",function(e){var m=e.data;if(m&&m.type==="vmdata"){try{(window.render||function(){})(m.payload);}catch(err){try{parent.postMessage({type:"vimer",s:String(err)},"*");}catch(_){}}}});<\/script>'
