@@ -81,7 +81,7 @@ voice, components, or both.
 ```
 agent-mobile/
   android/          # Pure-Java Capacitor app (no NDK), full-duplex AudioService, UDP media
-  www/              # Egress-free webview: bridge.js, renderer.js, ApexCharts bundle
+  www/              # Egress-free webview: bridge.js, renderer.js, surface-host.js, ApexCharts bundle
   transport/        # UDP media + adaptive jitter buffer (+ offline tests)
   docs/             # design notes (udp-media-transport.md, ...)
 ```
