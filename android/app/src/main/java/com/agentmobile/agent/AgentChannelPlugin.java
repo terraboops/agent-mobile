@@ -580,6 +580,15 @@ public class AgentChannelPlugin extends Plugin {
                     Log.i("AgentChannel", "udp media UP (probe/ack confirmed) peer " + host + ":" + mp);
                 }
             });
+            // Acks stopped (NAT rebind / network switch / sidecar restart): the mic uplink
+            // must NOT keep black-holing into UDP — encodeLoop checks udpUp per frame and
+            // goes back to the WS uplink; probing continues and onProbed flips it back.
+            m.onDown(() -> {
+                if (udpUp) {
+                    udpUp = false;
+                    Log.w("AgentChannel", "udp media DOWN (no ack " + "for a while) -> WS uplink fallback");
+                }
+            });
             media = m;
             udpUp = false;
             Log.i("AgentChannel", "udp media socket ready (probe/ack pending, WS audio) peer " + host + ":" + mp);

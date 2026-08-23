@@ -32,7 +32,9 @@ public final class UdpMedia {
     }
     public interface Callback { void run(); }
 
-    private static final int PROBE_INTERVAL_MS = 1000;
+    private static final int PROBE_INTERVAL_MS = 1000;      // while not yet acked
+    private static final int KEEPALIVE_INTERVAL_MS = 5000;  // once up: liveness probes
+    private static final int DOWN_AFTER_MS = 16000;         // no ack for this long -> path DOWN
 
     private final KoCrypto.Channel channel;
     private final Sink sink;
@@ -41,18 +43,26 @@ public final class UdpMedia {
     private volatile DatagramSocket socket;
     private volatile boolean running;
     private volatile boolean probed;
+    private volatile long lastAckMs;
     private Thread rxThread;
     private Thread probeThread;
     private InetAddress gwAddr;
     private int gwPort;
     private volatile Callback probedCb;
+    private volatile Callback downCb;
 
     public UdpMedia(KoCrypto.Channel channel, Sink sink) {
         this.channel = channel; this.sink = sink;
     }
 
-    /** Fired (on the udp-rx thread) once the sidecar's authenticated kind-2 ack arrives. */
+    /** Fired (on the udp-rx thread) each time the path comes UP: the sidecar's authenticated
+     *  kind-2 ack arrives after a probe (first time, or again after a DOWN). */
     public void onProbed(Callback cb) { this.probedCb = cb; }
+    /** Fired (on the probe thread) when acks stop for DOWN_AFTER_MS (NAT rebind, network
+     *  switch, sidecar restart): the host must fall back to the WS uplink. Probing continues
+     *  and onProbed fires again when the path recovers. */
+    public void onDown(Callback cb) { this.downCb = cb; }
+    public boolean isProbed() { return probed; }
 
     /** Bind the local socket. Returns the chosen local port (the gateway learns
      * it from our first uplink datagram and replies to it). */
@@ -70,9 +80,20 @@ public final class UdpMedia {
 
     private void probeLoop() {
         int pseq = 0;
-        while (running && !probed) {
-            sendFrame(2, pseq++, System.currentTimeMillis(), new byte[0]);
-            try { Thread.sleep(PROBE_INTERVAL_MS); } catch (InterruptedException e) { break; }
+        long nextProbe = 0;
+        while (running) {
+            long now = SystemClock.elapsedRealtime();
+            if (probed && now - lastAckMs > DOWN_AFTER_MS) {
+                probed = false;                         // path went dark: WS fallback
+                Callback cb = downCb;
+                if (cb != null) { try { cb.run(); } catch (Exception ignored) {} }
+            }
+            if (now >= nextProbe) {
+                sendFrame(2, pseq++, System.currentTimeMillis(), new byte[0]);
+                nextProbe = now + (probed ? KEEPALIVE_INTERVAL_MS : PROBE_INTERVAL_MS);
+            }
+            jitter.tick();                              // 1 Hz: lets the loss penalty decay
+            try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
         }
     }
 
@@ -100,6 +121,9 @@ public final class UdpMedia {
         }
     }
 
+    /** Any authenticated downlink datagram also proves the path is alive. */
+    private void touchAlive() { lastAckMs = SystemClock.elapsedRealtime(); }
+
     private void receiveLoop() {
         byte[] bufArr = new byte[4096];
         DatagramPacket pkt = new DatagramPacket(bufArr, bufArr.length);
@@ -116,6 +140,7 @@ public final class UdpMedia {
                 long seq = ((pt[1] & 0xffL) << 24) | ((pt[2] & 0xffL) << 16) | ((pt[3] & 0xffL) << 8) | (pt[4] & 0xffL);
                 long tsMs = 0; for (int i = 0; i < 8; i++) tsMs = (tsMs << 8) | (pt[5 + i] & 0xffL);
                 if (kind == 2) {                // sidecar ack to our probe — UDP is friendly now
+                    lastAckMs = SystemClock.elapsedRealtime();
                     if (!probed) {
                         probed = true;
                         Callback cb = probedCb;
@@ -123,6 +148,7 @@ public final class UdpMedia {
                     }
                     continue;
                 }
+                touchAlive();
                 byte[] opus = java.util.Arrays.copyOfRange(pt, 13, pt.length);
                 jitter.push(seq, tsMs, opus);
                 drain(tsMs);
