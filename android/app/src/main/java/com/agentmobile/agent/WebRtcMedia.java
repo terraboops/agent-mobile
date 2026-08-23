@@ -65,7 +65,8 @@ public final class WebRtcMedia {
     public WebRtcMedia(Context context, SignalSink sink) { this(context, sink, null); }
 
     /** @param iceUrls optional STUN/TURN urls advertised by the gateway (e.g. a self-hosted
-     *  stun on the tailnet). null/empty = host candidates only (Tailscale/LAN). */
+     *  stun on the tailnet). null/empty = host candidates only (Tailscale/LAN). Never a
+     *  third-party (public) STUN: that is phone egress + IP disclosure to a stranger. */
     public WebRtcMedia(Context context, SignalSink sink, List<String> iceUrls) {
         this.context = context.getApplicationContext();
         this.sink = sink;

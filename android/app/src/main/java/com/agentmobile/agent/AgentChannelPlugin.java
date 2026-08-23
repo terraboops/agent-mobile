@@ -486,6 +486,7 @@ public class AgentChannelPlugin extends Plugin {
             if (w == null) return;
             w.send(r.confirmJson);                 // proves WE hold the client identity key
             channel = r.channel;
+            lastHelloText = helloText;
             tryStartUdpMedia(r.channel, helloText);
             pendingAgentId = r.agentId;
             derived = true; connected = true;
@@ -540,11 +541,32 @@ public class AgentChannelPlugin extends Plugin {
         if (m != null) { try { m.close(); } catch (Exception ignored) {} }
     }
 
+    private volatile String lastHelloText;
+
+    /** Parse `ice: [...]` (string urls) from the server hello; empty list when absent. */
+    private static java.util.List<String> iceUrlsFromHello(String hello) {
+        java.util.List<String> out = new java.util.ArrayList<String>();
+        if (hello == null) return out;
+        try {
+            org.json.JSONArray arr = new JSONObject(hello).optJSONArray("ice");
+            if (arr == null) return out;
+            for (int i = 0; i < arr.length(); i++) {
+                String u = arr.optString(i, null);
+                if (u != null && (u.startsWith("stun:") || u.startsWith("turn:") || u.startsWith("turns:"))) out.add(u);
+            }
+        } catch (Exception ignored) {}
+        return out;
+    }
+
     /** Start the WebRTC media peer (owner of mic + speaker once connected). */
     private void startWebRtc() {
         try {
             final Context c = getContext().getApplicationContext();
-            webRtc = new WebRtcMedia(c, this::sendSignal, java.util.Arrays.asList("stun:stun.l.google.com:19302"));
+            // ICE servers: ONLY what the gateway advertised in its hello (`ice: ["stun:100.x.y.z:3478"]`),
+            // i.e. something on the tailnet it controls. Default NONE: host candidates over
+            // Tailscale/LAN suffice, and the phone must not talk to third parties (Google STUN
+            // leaked the phone's public IP + session timing to Google on every connect).
+            webRtc = new WebRtcMedia(c, this::sendSignal, iceUrlsFromHello(lastHelloText));
             // libwebrtc's PeerConnectionFactory must be initialized/created on the
             // MAIN thread — its native network/signaling threads attach to that
             // JavaVM. Running it on a worker thread dies with "Fatal error in jvm.cc".
