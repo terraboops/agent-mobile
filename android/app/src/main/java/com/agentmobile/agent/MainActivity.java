@@ -38,6 +38,15 @@ public class MainActivity extends BridgeActivity {
         } catch (Exception e) {
             android.util.Log.e("MainActivity", "egress webview client: " + e);
         }
+        // No popups / new windows: window.open() then loads in THIS webview and hits the
+        // navigation guard above instead of spawning a browser with data in the URL.
+        try {
+            android.webkit.WebSettings ws = bridge.getWebView().getSettings();
+            ws.setSupportMultipleWindows(false);
+            ws.setJavaScriptCanOpenWindowsAutomatically(false);
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "webview window settings: " + e);
+        }
         installIdentityBadge();
         try {
             AgentChannelPlugin p = (AgentChannelPlugin) bridge.getPlugin("AgentChannel").getInstance();
