@@ -3,16 +3,19 @@ package com.agentmobile.agent;
 import android.content.Context;
 import android.util.Log;
 
+import org.webrtc.AudioSource;
 import org.webrtc.AudioTrack;
 import org.webrtc.MediaConstraints;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
+import org.webrtc.RtpSender;
 import org.webrtc.RtpTransceiver;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
 
 import org.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -23,12 +26,19 @@ import java.util.List;
  * spotty link, and libwebrtc's built-in AEC3 echo cancellation + noise
  * suppression (so the phone no longer re-hears the agent's own reply).
  *
- * Signaling (SD P + ICE candidates) travels over the SAME authenticated WS the
+ * Signaling (SDP / ICE candidates) travels over the SAME authenticated WS the
  * app already uses — the DTLS fingerprint is therefore pinned across a link we
- * already trust. No new crypto is written.
+ * already trust (protocol v2: MAC-verified, identity-pinned). No new crypto.
+ *
+ * Mic: the sendrecv audio transceiver is created at start() WITHOUT a track (so
+ * nothing is captured until the user turns the mic on). {@link #setMicEnabled}
+ * lazily creates the AudioSource/AudioTrack and attaches it with
+ * RtpSender.setTrack (replaceTrack — no renegotiation); muting detaches AND
+ * disposes the track/source so libwebrtc's recorder actually stops (privacy
+ * indicator off), instead of sending silence.
  *
  * Lifecycle: start() is called after a successful handshake. The controller
- * (AgentChannelPlugin) feeds each inbound `d.webRTC` signal to handleSignal() and
+ * (AgentChannelPlugin) feeds each inbound `d.webrtc` signal to handleSignal() and
  * calls close() on disconnect.
  */
 public final class WebRtcMedia {
@@ -40,16 +50,26 @@ public final class WebRtcMedia {
     private final Context context;
     private final SignalSink sink;
     private final PeerConnection.Observer observer;
+    private final List<String> iceUrls;
 
     private PeerConnectionFactory factory;
     private PeerConnection pc;
+    private RtpSender audioSender;
+    private AudioSource audioSource;
     private AudioTrack audioTrack;
+    private volatile boolean micWanted;   // requested state (may precede start())
+    private volatile boolean micLive;     // a track is attached and capturing
     private volatile boolean started;
     private volatile boolean closed;
 
-    public WebRtcMedia(Context context, SignalSink sink) {
+    public WebRtcMedia(Context context, SignalSink sink) { this(context, sink, null); }
+
+    /** @param iceUrls optional STUN/TURN urls advertised by the gateway (e.g. a self-hosted
+     *  stun on the tailnet). null/empty = host candidates only (Tailscale/LAN). */
+    public WebRtcMedia(Context context, SignalSink sink, List<String> iceUrls) {
         this.context = context.getApplicationContext();
         this.sink = sink;
+        this.iceUrls = iceUrls == null ? new ArrayList<String>() : new ArrayList<String>(iceUrls);
         this.observer = new PeerConnection.Observer() {
             @Override public void onIceCandidate(org.webrtc.IceCandidate c) {
                 try {
@@ -78,7 +98,7 @@ public final class WebRtcMedia {
         };
     }
 
-    /** Must run off the UI thread; spins up the peer and sends an offer. */
+    /** Must run on the MAIN thread (libwebrtc JVM attach); spins up the peer and sends an offer. */
     public void start() {
         if (started || closed) return;
         started = true;
@@ -89,20 +109,21 @@ public final class WebRtcMedia {
             PeerConnectionFactory.initialize(init);
             factory = PeerConnectionFactory.builder().createPeerConnectionFactory();
 
-            // iceServers: a public STUN server is the stability baseline (Pipecat
-            // defaults to it) — discovery only, no relay. Tailscale host candidates
-            // usually suffice, but this stops ICE stalling at `connecting` when the
-            // Android host candidate set omits the userspace TUN IP.
-            java.util.List<PeerConnection.IceServer> ice =
-                new java.util.ArrayList<PeerConnection.IceServer>();
-            ice.add(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer());
+            List<PeerConnection.IceServer> ice = new ArrayList<PeerConnection.IceServer>();
+            for (String u : iceUrls) {
+                try { ice.add(PeerConnection.IceServer.builder(u).createIceServer()); }
+                catch (Exception e) { Log.w(TAG, "bad ice url " + u + ": " + e); }
+            }
             PeerConnection.RTCConfiguration cfg = new PeerConnection.RTCConfiguration(ice);
+            cfg.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
             pc = factory.createPeerConnection(cfg, observer);
             if (pc == null) { Log.e(TAG, "createPeerConnection failed"); return; }
 
-            // Send + receive audio (mic capture + speaker playback) with AEC/NS on.
-            pc.addTransceiver(org.webrtc.MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
+            // Send + receive audio m-section. NO track yet: capture starts only when the
+            // user enables the mic (setMicEnabled) — the sender gets its track then.
+            RtpTransceiver tr = pc.addTransceiver(org.webrtc.MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
                 new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV));
+            audioSender = tr.getSender();
 
             MediaConstraints c = new MediaConstraints();
             pc.createOffer(new SdpObserver() {
@@ -116,9 +137,48 @@ public final class WebRtcMedia {
                 @Override public void onSetSuccess() {}
                 @Override public void onSetFailure(String reason) { Log.w(TAG, "offer set: " + reason); }
             }, c);
-            Log.i(TAG, "webrtc started, offer sent");
+            Log.i(TAG, "webrtc started, offer sent (ice servers=" + ice.size() + ")");
+            if (micWanted) applyMic(true);   // mic was requested before start() finished
         } catch (Exception e) {
             Log.e(TAG, "webrtc start: " + e);
+        }
+    }
+
+    /**
+     * Turn the microphone uplink on/off. Returns the requested state (true if the mic
+     * is live or will be as soon as the peer is up). Safe from any thread.
+     */
+    public synchronized boolean setMicEnabled(boolean on) {
+        micWanted = on;
+        if (audioSender == null || factory == null || closed) return on && !closed; // applied in start()
+        applyMic(on);
+        return micLive || (on && micWanted);
+    }
+
+    /** True when a capture track is attached (or requested and pending peer start). */
+    public boolean isMicEnabled() { return micLive || (micWanted && audioSender == null && !closed); }
+
+    private synchronized void applyMic(boolean on) {
+        try {
+            if (on) {
+                if (audioTrack == null) {
+                    audioSource = factory.createAudioSource(new MediaConstraints()); // AEC3/NS/AGC defaults
+                    audioTrack = factory.createAudioTrack("agentmob-mic", audioSource);
+                }
+                audioTrack.setEnabled(true);
+                audioSender.setTrack(audioTrack, false);   // replaceTrack: no renegotiation
+                micLive = true;
+                Log.i(TAG, "mic track attached (capturing)");
+            } else {
+                if (audioSender != null) audioSender.setTrack(null, false);
+                if (audioTrack != null) { try { audioTrack.dispose(); } catch (Exception ignored) {} audioTrack = null; }
+                if (audioSource != null) { try { audioSource.dispose(); } catch (Exception ignored) {} audioSource = null; }
+                micLive = false;
+                Log.i(TAG, "mic track detached (recorder stopped)");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "applyMic(" + on + "): " + e);
+            micLive = false;
         }
     }
 
@@ -143,6 +203,10 @@ public final class WebRtcMedia {
                 if (sdp.isEmpty()) return;
                 pc.setRemoteDescription(sdpObserver(), new SessionDescription(SessionDescription.Type.ANSWER, sdp));
                 Log.i(TAG, "remote answer applied, connected audio path");
+            } else if ("candidate".equals(rtype)) {
+                JSONObject c = w.optJSONObject("candidate");
+                if (c != null) pc.addIceCandidate(new org.webrtc.IceCandidate(
+                    c.optString("sdpMid"), c.optInt("sdpMLineIndex", 0), c.optString("candidate")));
             }
         } catch (Exception e) {
             Log.e(TAG, "handleSignal: " + e);
@@ -152,9 +216,11 @@ public final class WebRtcMedia {
     public void close() {
         if (closed) return;
         closed = true;
+        micWanted = false;
+        try { applyMic(false); } catch (Exception ignored) {}
         try { if (pc != null) pc.close(); } catch (Exception ignored) {}
         try { if (factory != null) factory.dispose(); } catch (Exception ignored) {}
-        pc = null; factory = null;
+        pc = null; factory = null; audioSender = null;
         Log.i(TAG, "webrtc closed");
     }
 }

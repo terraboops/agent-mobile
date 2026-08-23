@@ -250,7 +250,7 @@ public class AgentChannelPlugin extends Plugin {
 
     @PluginMethod
     public void startAudio(PluginCall call) {
-        if (audioRunning) { call.resolve(); return; }
+        if (micOn()) { call.resolve(); return; }
         if (getActivity() != null
                 && getActivity().checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startAudioActual();
@@ -278,7 +278,7 @@ public class AgentChannelPlugin extends Plugin {
     @PluginMethod
     public void isAudioRunning(PluginCall call) {
         JSObject r = new JSObject();
-        r.put("running", audioRunning);
+        r.put("running", micOn());
         call.resolve(r);
     }
 
@@ -352,6 +352,7 @@ public class AgentChannelPlugin extends Plugin {
                     derived = false;
                     emitConn(false);
                     if (!identityBlocked) badge(pendingAgentId, ID_DISCONNECTED);
+                    stopAudioActual();   // never leave the mic "on" with no uplink (encodeLoop exits on !connected)
                     closeMedia();
                     closeWebRtc();
                     var c = connectCall; if (c != null) { connectCall = null; c.reject("ws failure: " + t); }
@@ -363,6 +364,7 @@ public class AgentChannelPlugin extends Plugin {
                         derived = false;
                         emitConn(false);
                         if (!identityBlocked) badge(pendingAgentId, ID_DISCONNECTED);
+                        stopAudioActual();
                         closeMedia();
                         closeWebRtc();
                         scheduleReconnect();
@@ -542,7 +544,7 @@ public class AgentChannelPlugin extends Plugin {
     private void startWebRtc() {
         try {
             final Context c = getContext().getApplicationContext();
-            webRtc = new WebRtcMedia(c, this::sendSignal);
+            webRtc = new WebRtcMedia(c, this::sendSignal, java.util.Arrays.asList("stun:stun.l.google.com:19302"));
             // libwebrtc's PeerConnectionFactory must be initialized/created on the
             // MAIN thread — its native network/signaling threads attach to that
             // JavaVM. Running it on a worker thread dies with "Fatal error in jvm.cc".
@@ -684,11 +686,28 @@ public class AgentChannelPlugin extends Plugin {
     }
 
     // ---- audio (native Opus full-duplex, capability-gated) ---------------------
+    /** Mic is live on EITHER path: libwebrtc track attached, or the raw Concentus loop. */
+    private boolean micOn() {
+        WebRtcMedia w = webRtc;
+        return audioRunning || (w != null && w.isMicEnabled());
+    }
+
     private void startAudioActual() {
-        if (audioRunning) return; // reentry guard (session event can double-fire)
-        if (webRtc != null) {
-            // WebRTC owns mic + speaker (AEC): don't also run the raw recorder.
-            Log.i("AgentChannel", "audio owned by webrtc");
+        if (micOn()) return; // reentry guard (session event can double-fire)
+        WebRtcMedia w = webRtc;
+        if (w != null) {
+            // WebRTC owns mic + speaker (AEC3). Attach a REAL capture track to the sender
+            // (previously the transceiver had no track, so nothing was ever captured or sent).
+            boolean ok = w.setMicEnabled(true);
+            Log.i("AgentChannel", "audio owned by webrtc, mic enabled=" + ok);
+            if (ok) {
+                try { // mic-type foreground service keeps capture alive, same as the raw path
+                    android.content.Context c = getContext().getApplicationContext();
+                    c.startForegroundService(new android.content.Intent(c, AudioService.class));
+                } catch (Exception e) { Log.w("AgentChannel", "fgs start: " + e); }
+            }
+            JSObject ev = new JSObject(); ev.put("audio", ok); if (!ok) ev.put("error", "webrtc mic unavailable");
+            notifyListeners("audio", ev);
             return;
         }
         audioRunning = true;
@@ -742,6 +761,8 @@ public class AgentChannelPlugin extends Plugin {
     }
 
     private void stopAudioActual() {
+        WebRtcMedia w = webRtc;
+        if (w != null) { try { w.setMicEnabled(false); } catch (Exception ignored) {} }
         audioRunning = false;
         Thread t = audioThread; audioThread = null;
         if (t != null && t != Thread.currentThread()) { try { t.interrupt(); } catch (Exception ignored) {} }
