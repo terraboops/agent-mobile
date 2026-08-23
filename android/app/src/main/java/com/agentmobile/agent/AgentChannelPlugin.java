@@ -283,8 +283,14 @@ public class AgentChannelPlugin extends Plugin {
         if (getActivity() != null
                 && getActivity().checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startAudioActual();
+            call.resolve();
+        } else {
+            // Denied: say so, instead of resolving as if the mic were on (the ring showed
+            // "unmuted" while nothing was being captured).
+            JSObject ev = new JSObject(); ev.put("audio", false); ev.put("error", "microphone permission denied");
+            notifyListeners("audio", ev);
+            call.reject("microphone permission denied");
         }
-        call.resolve();
     }
 
     @PluginMethod
@@ -754,14 +760,14 @@ public class AgentChannelPlugin extends Plugin {
                 if (c != null) {
                     pendingAt.remove(i);
                     JSObject rep = new JSObject();
-                    rep.put("reply", jsonRaw(j, "d"));
+                    rep.put("reply", dField(j));
                     c.resolve(rep);
                     if (++rxCmd % 50 == 1) Log.i("AgentChannel", "cmd reply decrypted, resolved #" + i);
                 } else {
                     // No pending command -> the agent PUSHED this asynchronously
                     // (text / declarative UI / data). Forward to the web layer.
                     JSObject push = new JSObject();
-                    push.put("payload", jsonRaw(j, "d"));
+                    push.put("payload", dField(j));
                     notifyListeners("message", push);
                     if (++rxPush % 50 == 1) Log.i("AgentChannel", "agent push frame received");
                 }
@@ -1134,6 +1140,15 @@ public class AgentChannelPlugin extends Plugin {
         if (b < s.length() && s.charAt(b) == '-') b++;
         while (b < s.length() && Character.isDigit(s.charAt(b))) b++;
         return Integer.parseInt(s.substring(a, b));
+    }
+    /** The `d` field as text for the webview: objects/arrays as JSON, strings as-is
+     *  (the old hand parser returned "" for any scalar `d`, dropping the message). */
+    private static String dField(String j) {
+        try {
+            Object d = new JSONObject(j).opt("d");
+            if (d == null || d == JSONObject.NULL) return "";
+            return d instanceof String ? (String) d : d.toString();
+        } catch (Exception e) { return jsonRaw(j, "d"); }
     }
     private static String jsonRaw(String s, String key) {
         String nd = "\"" + key + "\":";
