@@ -10,7 +10,8 @@
     "containment": "node test/containment.test.mjs",
     "surface-core": "node test-surface-core.mjs",
     "surface-live": "node test/surface-live.test.mjs",
-    "frames": "node test/frames.test.mjs"
+    "frames": "node test/frames.test.mjs",
+    "surface-assets": "node test/surface-assets.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

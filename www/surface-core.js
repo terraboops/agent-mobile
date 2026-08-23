@@ -10,6 +10,7 @@
 //
 // Effects (emitted as { event: ... }):
 //   { event:'asset_ready',  name }
+//   { event:'asset_removed', name, freed, usage }   // unregister_asset (or replace)
 //   { event:'render',       key, type, props }        // instantiate a tile
 //   { event:'update',       key, props }
 //   { event:'data',         key, data }               // feed a tile in place
@@ -30,9 +31,12 @@ export function createSurface({ capacity = 100 * 1024 * 1024 } = {}) {
   function emit(ev) { emits.push(ev); }
 
   function base64Bytes(b64) {
+    // Decoded size of a base64 string WITHOUT decoding it: 3 bytes per 4 chars, minus the
+    // '=' padding (the old estimate counted padding as payload: 400 bytes read as 402).
     const s = (b64 || '').replace(/\s+/g, '');
-    const pad = s.length % 4; const clean = s + '==='.slice(0, pad ? 4 - pad : 0);
-    return Math.max(0, Math.floor((clean.length * 3) / 4));
+    if (!s.length) return 0;
+    const pad = (s.match(/=+$/) || [''])[0].length;
+    return s.length % 4 === 0 ? Math.max(0, (s.length / 4) * 3 - pad) : Math.floor((s.length * 3) / 4);
   }
 
   // Decode a standard-API base64 string to UTF-8 text. Works in both the webview
@@ -105,6 +109,9 @@ export function createSurface({ capacity = 100 * 1024 * 1024 } = {}) {
       switch (op.op) {
         case 'register_asset': {
           const { name, mime, b64, append } = op;
+          // Re-registering a COMPLETE asset replaces it: give its bytes back first, so a
+          // long session that refreshes a library doesn't consume the cap twice.
+          if (!pending[name] && assets[name]) { usage -= assets[name].size || 0; delete assets[name]; }
           if (!pending[name]) pending[name] = { mime: mime || 'application/octet-stream', chunks: [], bytes: 0 };
           const bytes = base64Bytes(b64);
           if ((usage + bytes) > capacity) {
@@ -115,6 +122,16 @@ export function createSurface({ capacity = 100 * 1024 * 1024 } = {}) {
           pending[name].bytes += bytes;
           usage += bytes;
           if (!append) finishAsset(name);
+          break;
+        }
+        case 'unregister_asset': {
+          // Drop a complete asset or an abandoned multi-chunk upload; return its bytes to the cap.
+          const { name } = op;
+          let freed = 0;
+          if (pending[name]) { freed += pending[name].bytes; delete pending[name]; }
+          if (assets[name]) { freed += assets[name].size || 0; delete assets[name]; }
+          usage = Math.max(0, usage - freed);
+          emit({ event: 'asset_removed', name, freed, usage });
           break;
         }
         case 'register_widget_type': {
