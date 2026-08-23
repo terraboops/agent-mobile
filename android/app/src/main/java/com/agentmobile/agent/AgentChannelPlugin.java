@@ -85,6 +85,7 @@ public class AgentChannelPlugin extends Plugin {
 
     private final ConcurrentLinkedQueue<byte[]> buffer = new ConcurrentLinkedQueue<>();
     private final Map<Integer, PluginCall> pending = new ConcurrentHashMap<>();
+    private final Map<Integer, Long> pendingAt = new ConcurrentHashMap<>(); // mid -> elapsedRealtime when sent
     private final AtomicInteger msgId = new AtomicInteger();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
@@ -215,6 +216,7 @@ public class AgentChannelPlugin extends Plugin {
                     .toString().getBytes(StandardCharsets.UTF_8);
             byte[] frame = ch.seal(KoCrypto.TYPE_CMD, plain);
             pending.put(mid, call);
+            pendingAt.put(mid, SystemClock.elapsedRealtime());
             outbound(frame);
         } catch (Exception e) {
             Log.w("AgentChannel", "send sealed-frame fail: " + e);
@@ -657,15 +659,22 @@ public class AgentChannelPlugin extends Plugin {
     private synchronized void onFrame(byte[] frame) {
         KoCrypto.Channel ch = channel;
         if (ch == null || frame == null || frame.length < KoCrypto.HEADER_LEN) return; // pre-auth or junk: drop
+        int type = frame[0] & 0xff;
+        byte[] plain;
+        try {
+            plain = ch.open(frame);            // AEAD (type as AAD) + anti-replay; throws -> drop
+        } catch (Exception e) {
+            if (++rxErr % 50 == 1) Log.w("AgentChannel", "rx frame drop (unauthenticated/replayed): " + e);
+            return;                            // NOT liveness: junk must not clear a partition or flush
+        }
+        // Only an AUTHENTICATED frame (pong included) proves the peer is alive.
         lastRx = SystemClock.elapsedRealtime();
         boolean wasBuffering = failures > 0;
         failures = 0;
         if (wasBuffering) flush();
-        int type = frame[0] & 0xff;
         if (++anyRx % 50 == 1) Log.i("AgentChannel", "any rx type=" + type + " len=" + frame.length);
         if (type == KoCrypto.TYPE_PONG) return;
         try {
-            byte[] plain = ch.open(frame);     // AEAD (type as AAD) + anti-replay; throws -> drop
             if (type == KoCrypto.TYPE_AUDIO) {
                 if (++rxAudioFrames % 50 == 1) Log.i("AgentChannel", "rx audio frame len=" + plain.length);
                 decodePlay(plain); return;
@@ -686,6 +695,7 @@ public class AgentChannelPlugin extends Plugin {
                 } catch (Exception ignored) {}
                 PluginCall c = pending.remove(i);
                 if (c != null) {
+                    pendingAt.remove(i);
                     JSObject rep = new JSObject();
                     rep.put("reply", jsonRaw(j, "d"));
                     c.resolve(rep);
@@ -700,7 +710,7 @@ public class AgentChannelPlugin extends Plugin {
                 }
             } // gap: not yet exercised in this slice
         } catch (Exception e) {
-            if (++rxErr % 50 == 1) Log.w("AgentChannel", "rx frame drop: " + e);
+            if (++rxErr % 50 == 1) Log.w("AgentChannel", "rx frame handling: " + e);
         }
     }
 
