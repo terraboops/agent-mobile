@@ -53,8 +53,7 @@
             h += '<div class="vizerr">[svg] missing or invalid SVG markup — the agent sent a placeholder, not a real chart</div>';
             return;
           }
-          const runner = '<div id="root" style="width:100%;height:100%"></div>'
-            + '<script>window.render=function(d){var r=document.getElementById("root");if(r&&d&&d.svg)r.innerHTML=d.svg;}<' + '/script>';
+          const runner = 'window.render=function(d){var r=document.getElementById("root");if(r&&d&&d.svg)r.innerHTML=d.svg;};';
           vizzes.push({ code: runner, data: { svg: svg }, label: c.label || '' });
           h += '<div class="viz"><iframe class="vizframe" sandbox="allow-scripts"></iframe></div>';
         }
@@ -79,8 +78,18 @@
     // frame (sandbox="allow-scripts", no allow-same-origin) so it can never touch the
     // parent's window, Capacitor plugins, mic, Stop, bridge, or identity badge. It only
     // sees the data we postMessage to it, and calls the author's `render(payload)`.
+    //
+    // `code` is JS (same contract as surface-host widget types: defines window.render /
+    // window.onData) and is wrapped in <script> with `</` escaped so a "</script>" inside
+    // a string cannot break out. For compatibility, code that is itself HTML (starts with
+    // a tag / contains <script>) is inlined RAW — it must not be escaped, or every closing
+    // tag turns into text and the runner script never closes (the old bug: viz/svg never
+    // rendered, silently).
     const jsEscape = str => String(str).replace(/<\//gi, '<\\/');
     const hasExternal = s => /<script[^>]+src=["']https?:/i.test(s || '');
+    const isHtml = s => /^\s*</.test(s || '') || /<script[\s>]/i.test(s || '');
+    const frames = window.__vizFrames = [];          // index -> { frame, label }
+    window.__vizStatus = {};                         // index -> 'ok' | 'error: ...' (render feedback)
     vizzes.forEach(function (v, i) {
       const fr = ui.querySelectorAll('.vizframe')[i];
       if (!fr) return;
@@ -93,14 +102,19 @@
         fr.replaceWith(warn);
         return;
       }
+      const body = isHtml(v.code) ? String(v.code) : ('<script>' + jsEscape(v.code) + '<' + '/script>');
       fr.setAttribute('sandbox', 'allow-scripts');
       fr.setAttribute('srcdoc',
         '<!doctype html><meta charset="utf-8">'
         + (window.__sandboxPreamble || '')   // realm hardening: no WebRTC, no nested frames (bridge.js)
         + '<style>html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;overflow:hidden;font:13px/1.4 system-ui,sans-serif}</style>'
-        + jsEscape(v.code)
-        + '<script>window.addEventListener("message",function(e){var m=e.data;if(m&&m.type==="vmdata"){try{(window.render||function(){})(m.payload);}catch(err){try{parent.postMessage({type:"vimer",s:String(err)},"*");}catch(_){}}}});<\/script>'
+        + '<div id="root" style="width:100%;height:100%"></div>'
+        + body
+        + '<script>window.addEventListener("message",function(e){var m=e.data;if(!m||m.type!=="vmdata")return;'
+        + 'try{if(window.onData&&window.__vizInit)window.onData(m.payload);else{(window.render||function(){throw new Error("viz code defines no window.render")})(m.payload);window.__vizInit=true;}'
+        + 'parent.postMessage({type:"vmok",i:' + i + '},"*");}catch(err){try{parent.postMessage({type:"vimer",i:' + i + ',s:String(err&&err.message||err)},"*");}catch(_){}}});<\/script>'
         + (v.label ? '<div style="position:absolute;top:6px;right:10px;color:#8b949e;font-size:11px">' + esc(v.label) + '</div>' : ''));
+      frames[i] = { frame: fr, label: v.label };
       fr.onload = function () { try { fr.contentWindow.postMessage({ type: 'vmdata', payload: v.data }, '*'); } catch (e) {} };
     });
     const b = document.getElementById('act');
@@ -146,6 +160,27 @@
     }
   }
   window.__applyStatus = applyStatus;
+
+  // Render feedback from the legacy viz/svg sandboxes: a failing viz is shown inline and
+  // reported to the agent as render_result (key "viz:<index>") so it can correct the code.
+  window.addEventListener('message', function (e) {
+    const d = e.data || {};
+    if (d.type !== 'vmok' && d.type !== 'vimer') return;
+    const entry = window.__vizFrames && window.__vizFrames[d.i];
+    if (!entry || !entry.frame || e.source !== entry.frame.contentWindow) return; // not ours
+    if (d.type === 'vmok') { window.__vizStatus[d.i] = 'ok'; return; }
+    window.__vizStatus[d.i] = 'error: ' + d.s;
+    try {
+      const box = entry.frame.parentNode;
+      if (box) {
+        const err = document.createElement('div');
+        err.className = 'vizerr';
+        err.textContent = '[viz' + (entry.label ? ' ' + entry.label : '') + '] ' + d.s;
+        box.appendChild(err);
+      }
+    } catch (_) {}
+    try { window.__agent.send(JSON.stringify({ type: 'render_result', key: 'viz:' + d.i, ok: false, error: String(d.s) })); } catch (_) {}
+  });
 
   window.__agent.onMessage.push(function (data) {
     let m = data;

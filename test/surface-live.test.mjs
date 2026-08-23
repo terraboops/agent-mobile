@@ -142,6 +142,23 @@ const legacy = await page.evaluate(() => document.getElementById('ui').innerHTML
 ok(legacy.includes('legacy still fine'), 'legacy flat render (type:render/ui.components) still draws');
 ok(legacy.includes('<li>a</li>'), 'legacy list component still draws');
 
+// ---- 7a. Legacy viz/svg sandboxes render (they used to die with a SyntaxError because
+// the runner HTML was `</`-escaped; nothing drew and no error surfaced) -----------------
+await push({ type: 'render', ui: { components: [
+  { t: 'svg', svg: '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>', label: 'S' },
+  { t: 'viz', code: 'window.render=function(d){document.getElementById("root").textContent="viz:"+d.n;};', data: { n: 42 }, label: 'J' },
+  { t: 'viz', code: '<div id="x">html</div><script>window.render=function(d){document.getElementById("x").textContent="h:"+d.n;};</script>', data: { n: 7 }, label: 'H' },
+  { t: 'viz', code: 'window.render=function(d){throw new Error("boom-" + d.n);};', data: { n: 1 }, label: 'E' },
+] } });
+await page.waitForFunction(() => { const s = window.__vizStatus || {}; return 0 in s && 1 in s && 2 in s && 3 in s; }, null, { timeout: 6000 }).catch(() => {});
+const vizStatus = await page.evaluate(() => window.__vizStatus || {});
+console.log('  legacy viz status:', JSON.stringify(vizStatus));
+ok(vizStatus[0] === 'ok', 'legacy svg component renders in its sandbox (runner ran, render() called)');
+ok(vizStatus[1] === 'ok', 'legacy viz (JS code) renders');
+ok(vizStatus[2] === 'ok', 'legacy viz (HTML+script code) renders without being escaped to text');
+ok(String(vizStatus[3]).includes('boom-1'), 'a throwing viz reports its error back (render feedback) instead of failing silently');
+ok((await page.evaluate(() => document.querySelectorAll('#ui .vizerr').length)) === 1, 'failing viz shows an inline error box');
+
 // ---- 7b. Sandbox realm hardening: no WebRTC, no nested realm, no shadow root -----------
 // Chromium ignores CSP `webrtc 'block'`, so the host strips the constructors and forbids
 // nested frames in every sandbox doc (bridge.js __sandboxPreamble). A hostile widget type:
