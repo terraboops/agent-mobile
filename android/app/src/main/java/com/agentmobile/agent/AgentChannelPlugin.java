@@ -84,6 +84,11 @@ import org.json.JSONObject;
 public class AgentChannelPlugin extends Plugin {
 
     private final ConcurrentLinkedQueue<byte[]> buffer = new ConcurrentLinkedQueue<>();
+    // Partition buffer bound: ~4 MB (≈15 min of Opus) — beyond that the OLDEST AUDIO frames
+    // are dropped first (stale speech is worthless after minutes), commands are kept.
+    private static final long MAX_BUFFER_BYTES = 4L * 1024 * 1024;
+    private static final int MAX_BUFFER_FRAMES = 12000;
+    private final AtomicLong bufferedBytes = new AtomicLong();
     private final Map<Integer, PluginCall> pending = new ConcurrentHashMap<>();
     private final Map<Integer, Long> pendingAt = new ConcurrentHashMap<>(); // mid -> elapsedRealtime when sent
     private final AtomicInteger msgId = new AtomicInteger();
@@ -356,7 +361,10 @@ public class AgentChannelPlugin extends Plugin {
             }
             // Persistent identity (IdentityStore) + fresh ephemeral per connection.
             hs = new KoCrypto.ClientHandshake(store().loadOrCreate());
-            client = new OkHttpClient();
+            // ONE shared client (the old code leaked a dispatcher + pool per reconnect).
+            // pingInterval: OkHttp-level WS pings detect a half-open TCP socket (cellular
+            // handoff) and fail the socket -> onFailure -> auto-reconnect.
+            if (client == null) client = new OkHttpClient.Builder().pingInterval(15, TimeUnit.SECONDS).build();
             Request req = new Request.Builder().url(url).build();
             ws = client.newWebSocket(req, new WebSocketListener() {
                 @Override public void onOpen(WebSocket w, Response response) { sendHello(); }
@@ -752,14 +760,30 @@ public class AgentChannelPlugin extends Plugin {
 
     private synchronized void flush() {
         byte[] f; int n = 0;
-        while ((f = buffer.poll()) != null && ws != null) { ws.send(ByteString.of(f)); n++; }
+        while ((f = buffer.poll()) != null && ws != null) { bufferedBytes.addAndGet(-f.length); ws.send(ByteString.of(f)); n++; }
+        if (buffer.isEmpty()) bufferedBytes.set(0);
         if (n > 0) { JSObject p = new JSObject(); p.put("partition", false); notifyListeners("partition", p); }
     }
 
     // ---- outbound -------------------------------------------------------------
     private synchronized void outbound(byte[] frame) {
-        if (failures > 0) { buffer.add(frame); }
+        if (failures > 0) { buffer.add(frame); bufferedBytes.addAndGet(frame.length); trimBuffer(); }
         else if (ws != null) { ws.send(ByteString.of(frame)); }
+    }
+
+    /** Keep the partition buffer bounded: drop oldest audio first, then oldest anything. */
+    private void trimBuffer() {
+        if (bufferedBytes.get() <= MAX_BUFFER_BYTES && buffer.size() <= MAX_BUFFER_FRAMES) return;
+        int dropped = 0;
+        java.util.Iterator<byte[]> it = buffer.iterator();
+        while (it.hasNext() && (bufferedBytes.get() > MAX_BUFFER_BYTES || buffer.size() > MAX_BUFFER_FRAMES)) {
+            byte[] f = it.next();
+            if ((f[0] & 0xff) == KoCrypto.TYPE_AUDIO) { it.remove(); bufferedBytes.addAndGet(-f.length); dropped++; }
+        }
+        while ((bufferedBytes.get() > MAX_BUFFER_BYTES || buffer.size() > MAX_BUFFER_FRAMES) && !buffer.isEmpty()) {
+            byte[] f = buffer.poll(); if (f != null) { bufferedBytes.addAndGet(-f.length); dropped++; }
+        }
+        if (dropped > 0) Log.w("AgentChannel", "partition buffer capped: dropped " + dropped + " oldest frames");
     }
 
     // ---- audio (native Opus full-duplex, capability-gated) ---------------------
@@ -1054,6 +1078,16 @@ public class AgentChannelPlugin extends Plugin {
                     if (acked) { interval = baseMs; }
                     else {
                         failures++;
+                        long silentMs = SystemClock.elapsedRealtime() - lastRx;
+                        if (failures >= partitionThreshold && silentMs > Math.max(2 * maxMs, 30000)) {
+                            // Half-open socket: keepalive has failed for longer than the backoff
+                            // cap with NO authenticated byte received. Buffering forever only grows
+                            // memory; tear the socket down so auto-reconnect builds a fresh one
+                            // (the partition buffer flushes on the new session's first liveness).
+                            Log.w("AgentChannel", "link silent " + silentMs + "ms after " + failures + " failed probes -> cancel socket, reconnect");
+                            WebSocket w = ws; if (w != null) { try { w.cancel(); } catch (Exception ignored) {} }
+                            return;
+                        }
                         if (failures >= partitionThreshold) {
                             JSObject p = new JSObject(); p.put("partition", true); notifyListeners("partition", p);
                         }
