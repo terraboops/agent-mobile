@@ -339,6 +339,7 @@ public class AgentChannelPlugin extends Plugin {
     public void handleOnDestroy() {
         destroying = true;
         keepaliveRunning = false;
+        failPending("plugin destroyed");
         stopAudioActual();
         closeWebRtc();
         try { if (ws != null) ws.close(1000, "bye"); } catch (Exception ignored) {}
@@ -366,6 +367,7 @@ public class AgentChannelPlugin extends Plugin {
                 @Override public void onFailure(WebSocket w, Throwable t, Response r) {
                     connected = false;
                     derived = false;
+                    dropSession("ws failure: " + t);
                     emitConn(false);
                     if (!identityBlocked) badge(pendingAgentId, ID_DISCONNECTED);
                     stopAudioActual();   // never leave the mic "on" with no uplink (encodeLoop exits on !connected)
@@ -378,6 +380,7 @@ public class AgentChannelPlugin extends Plugin {
                     if (connected || derived) {
                         connected = false;
                         derived = false;
+                        dropSession("ws closed " + code + " " + reason);
                         emitConn(false);
                         if (!identityBlocked) badge(pendingAgentId, ID_DISCONNECTED);
                         stopAudioActual();
@@ -389,6 +392,34 @@ public class AgentChannelPlugin extends Plugin {
             });
         } catch (Exception e) {
             var c = connectCall; if (c != null) { connectCall = null; c.reject("connect error: " + e); }
+        }
+    }
+
+    /** Forget the session keys (nothing may be sealed with a dead session) and fail every
+     *  command still waiting for a reply, so webview promises settle instead of hanging and
+     *  the PluginCalls are released. */
+    private void dropSession(String reason) {
+        channel = null;
+        hs = null;
+        failPending(reason);
+    }
+
+    private void failPending(String reason) {
+        for (Integer id : new java.util.ArrayList<>(pending.keySet())) {
+            PluginCall c = pending.remove(id); pendingAt.remove(id);
+            if (c != null) { try { c.reject(reason); } catch (Exception ignored) {} }
+        }
+    }
+
+    /** Commands with no reply after PENDING_TIMEOUT_MS are failed (agent never answered). */
+    private static final long PENDING_TIMEOUT_MS = 60000;
+    private void sweepPending() {
+        long now = SystemClock.elapsedRealtime();
+        for (Map.Entry<Integer, Long> e : new java.util.ArrayList<>(pendingAt.entrySet())) {
+            if (now - e.getValue() > PENDING_TIMEOUT_MS) {
+                PluginCall c = pending.remove(e.getKey()); pendingAt.remove(e.getKey());
+                if (c != null) { try { c.reject("no reply from agent within " + (PENDING_TIMEOUT_MS / 1000) + "s"); } catch (Exception ignored) {} }
+            }
         }
     }
 
@@ -1008,6 +1039,7 @@ public class AgentChannelPlugin extends Plugin {
             while (keepaliveRunning && connected) {
                 try { Thread.sleep(interval); } catch (InterruptedException e) { return; }
                 if (!keepaliveRunning || !connected) return;
+                sweepPending();
                 try {
                     KoCrypto.Channel ch = channel; if (ch == null) return;
                     byte[] ping = ch.seal(KoCrypto.TYPE_PING, new byte[0]);
