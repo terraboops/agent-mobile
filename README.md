@@ -34,11 +34,16 @@ voice, components, or both.
 - **Egress-free webview** — the phone renders only data it receives; a deny-all
   `WebViewClient` + strict CSP (`connect-src 'none'`) mean it can never reach the
   network on its own.
-- **Keyless, AEAD-authenticated channel** — ChaCha20-Poly1305 signs every message; only
-  a session-key holder can inject data. No static tokens.
+- **Pinned, mutually-authenticated channel (protocol v2)** — X25519 4-DH + HKDF; the
+  gateway proves its identity with a transcript MAC and the phone **pins the gateway's key
+  per host** (first contact = native fingerprint-confirmation dialog; any later key change is
+  refused with a red badge). The phone has a **persistent identity** (AndroidKeyStore-wrapped)
+  that the gateway allowlists. Every frame is ChaCha20-Poly1305 with the routing byte as AAD,
+  per-stream counter nonces and an anti-replay window — no replay, no type-flip, no static tokens.
 - **Per-capability native consent** — mic access is granted deliberately, not silently.
-- **Unforgeable identity badge** — a native overlay shows who you're connected to; the
-  webview cannot fake it.
+- **Unforgeable identity badge** — a native overlay shows who you're connected to; it turns
+  green only when the server MAC verified AND the key matched the stored pin; the webview
+  cannot fake it.
 - Transport stays private over **Tailscale** (VPN/egress rejected).
 
 ### Real-time, full-duplex voice, built for spotty cellular

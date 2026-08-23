@@ -3,8 +3,8 @@
 // Audio moves off WebSocket/TCP onto a UDP RTP-style socket (see
 // docs/udp-media-transport.md). Security stays on the EXISTING ChaCha20-Poly1305
 // proto Channel — each UDP datagram is one authenticated box; the nonce rides in
-// the frame and the sequential `tx` counter keeps nonces unique across WS+UDP
-// sends, so no crypto rework and no hand-rolled primitives.
+// the frame. UDP uses its OWN nonce stream (stream 1) with a per-stream counter
+// and anti-replay window, so WS stalls and UDP reordering never interfere.
 //
 // Wire layout per UDP datagram (authenticated plaintext):
 //   [ kind u8 ][ seq u32 ][ tsMs u64 ][ opus ... ]
@@ -27,6 +27,7 @@
 // never silence. `frame` is the raw opus bytes for real frames, null otherwise.
 import { createSocket } from 'node:dgram';
 import { unpack, T } from './wsframes.js';
+import { STREAM_UDP } from '../proto.js';
 
 export class UdpMedia {
   constructor({ channel, allow = () => true, respondToProbes = true }) {
@@ -38,7 +39,7 @@ export class UdpMedia {
     this.jb = null;                       // adaptive jitter buffer (created on first frame)
     this._handlers = new Map();
     this._next = null;                    // first seq seen -> stream anchor
-    this._firstReq = null;                // first sender (rinfo) learned for replies
+    this._firstReq = null;                // most recent AUTHENTICATED sender (rinfo) for replies
     this.lastKind = 0;                    // kind of the most recent frame
     this.lastTsMs = 0;
   }
@@ -66,7 +67,7 @@ export class UdpMedia {
     let pt = null;
     try {
       const f = unpack(msg);
-      pt = this.channel.recvBytes({ nonce: f.nonce, ct: f.ct, tag: f.tag });
+      pt = this.channel.recvBytes(f);       // AEAD + per-stream anti-replay (stream 1 = UDP)
     } catch { pt = null; }
     if (pt === null) { this._emit('authfail', rinfo); return; }   // AEAD is the real gate
     if (pt.length < 13) return;
@@ -74,7 +75,13 @@ export class UdpMedia {
     const seq = pt.readUInt32BE(1);
     const tsMs = Number(pt.readBigUInt64BE(5));
     const opus = Buffer.from(pt.subarray(13));
-    if (this._firstReq === null) { this._firstReq = rinfo; this._emit('peer', rinfo); }
+    // Learn / refresh the reply peer from the newest FRESH authenticated datagram
+    // (replayed frames never get here, so a captured packet from a spoofed source
+    // cannot redirect the downlink; a NAT rebind or network switch is followed).
+    const prev = this._firstReq;
+    if (!prev || prev.address !== rinfo.address || prev.port !== rinfo.port) {
+      this._firstReq = rinfo; this._emit('peer', rinfo);
+    }
 
     // Probe (kind 2, phone->sidecar)? Ack it and do NOT feed the jitter buffer.
     // The phone flips to UDP uplink only after it sees this authenticated ack.
@@ -100,7 +107,7 @@ export class UdpMedia {
     body[0] = kind;
     body.writeUInt32BE(seq, 1);
     body.writeBigUInt64BE(BigInt(Date.now()), 5);
-    const box = this.channel.send(body);
+    const box = this.channel.send(body, T.audio, STREAM_UDP);
     const wire = Buffer.alloc(1 + box.nonce.length + box.tag.length + box.ct.length);
     wire[0] = T.audio;
     box.nonce.copy(wire, 1);
@@ -128,7 +135,7 @@ export class UdpMedia {
     body.writeUInt32BE(seq, 1);
     body.writeBigUInt64BE(BigInt(tsMs), 5);
     opus.copy(body, 13);
-    const box = this.channel.send(body);           // sequential nonce, AEAD
+    const box = this.channel.send(body, T.audio, STREAM_UDP); // UDP stream counter, type as AAD
     const wire = Buffer.alloc(1 + box.nonce.length + box.tag.length + box.ct.length);
     wire[0] = T.audio;
     box.nonce.copy(wire, 1);

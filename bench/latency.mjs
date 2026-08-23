@@ -8,8 +8,7 @@
 // leg we built. A real agent adds ASR+decode+model-TTFT on top. The value is the
 // network budget + a structural streaming finding (see output).
 
-import { genIdentity, identityId, sessionFrom } from '../proto.js';
-import { startGateway } from '../gateway.js';
+import { startGateway, httpClientSession } from '../gateway.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -43,27 +42,20 @@ function makeNet({ rttMs = 0, jitterMs = 0, loss = 0, rtoMs = 250 } = {}) {
 
 // ---- setup ------------------------------------------------------------------
 const gw = await startGateway();
-const app = { identity: genIdentity(), eph: genIdentity() };
-const clientId = identityId(app.identity);
-
 let t = Date.now();
-const pair = await (await fetch(`${gw.baseUrl}/pair`)).json();
-const serverId = { publicKey: Buffer.from(pair.agent_public, 'base64') };
-const hello = await (await fetch(`${gw.baseUrl}/hello`, {
-  method: 'POST', headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ client_id: clientId, client_identity: app.identity.publicKey.toString('base64'), client_eph: app.eph.publicKey.toString('base64') }),
-})).json();
-const appCh = sessionFrom('client', app.identity, serverId, app.eph, Buffer.from(hello.server_eph, 'base64'));
+const session = await httpClientSession(gw.baseUrl);   // /pair + /hello + MAC + /confirm
+const appCh = session.channel;
+const clientId = session.clientId;
 const handshakeMs = Date.now() - t;
 
 function rawRoundtrip(payload) {
   return (async () => {
-    const frame = appCh.send(payload);
+    const frame = appCh.send(payload, 0);
     const r = await (await fetch(`${gw.baseUrl}/msg`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, nonce: frame.nonce.toString('base64'), ct: frame.ct.toString('base64'), tag: frame.tag.toString('base64') }),
+      body: JSON.stringify({ client_id: clientId, type: frame.type, nonce: frame.nonce.toString('base64'), ct: frame.ct.toString('base64'), tag: frame.tag.toString('base64') }),
     })).json();
-    appCh.recv({ nonce: Buffer.from(r.nonce, 'base64'), ct: Buffer.from(r.ct, 'base64'), tag: Buffer.from(r.tag, 'base64') });
+    appCh.recv({ type: r.type | 0, nonce: Buffer.from(r.nonce, 'base64'), ct: Buffer.from(r.ct, 'base64'), tag: Buffer.from(r.tag, 'base64') });
   })();
 }
 

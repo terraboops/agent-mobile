@@ -47,13 +47,30 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    /** Consumer fired (on the UI thread) when the AEAD handshake pins a verified agent. */
-    private java.util.function.Consumer<String> onAgentIdentity() {
-        return id -> {
-            if (identityBadge != null) {
-                // "✓" only after the agent's X25519 SPKI was verified by the handshake.
-                identityBadge.setText("✓ AGENT " + id + " · E2E");
-                identityBadge.setBackground(makeBadge(0xFF7EE787, 0xFF1A2718)); // verified green
+    /** Sink fired (on the UI thread) with the outcome of the authenticated handshake. */
+    private AgentChannelPlugin.IdentitySink onAgentIdentity() {
+        return (id, state) -> {
+            if (identityBadge == null) return;
+            switch (state) {
+                case AgentChannelPlugin.ID_VERIFIED:   // server MAC verified AND SPKI == stored pin
+                    identityBadge.setText("✓ AGENT " + id + " · PINNED");
+                    identityBadge.setBackground(makeBadge(0xFF7EE787, 0xFF1A2718)); // green
+                    break;
+                case AgentChannelPlugin.ID_PAIRED:     // first contact: MAC verified, user confirmed + pinned
+                    identityBadge.setText("✓ AGENT " + id + " · PAIRED");
+                    identityBadge.setBackground(makeBadge(0xFF7EE787, 0xFF1A2718)); // green
+                    break;
+                case AgentChannelPlugin.ID_MISMATCH:   // presented key != pin: connection refused
+                    identityBadge.setText("✗ IDENTITY MISMATCH " + id);
+                    identityBadge.setBackground(makeBadge(0xFFF85149, 0xFF3D1214)); // red
+                    break;
+                case AgentChannelPlugin.ID_DISCONNECTED:
+                    identityBadge.setText("⌁ disconnected");
+                    identityBadge.setBackground(makeBadge(0xFFE3B341, 0xFF221D10)); // amber
+                    break;
+                default:                               // handshake error / MAC failure
+                    identityBadge.setText("✗ HANDSHAKE FAILED");
+                    identityBadge.setBackground(makeBadge(0xFFF85149, 0xFF3D1214)); // red
             }
         };
     }
@@ -66,7 +83,7 @@ public class MainActivity extends BridgeActivity {
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         tv.setTypeface(Typeface.MONOSPACE);
         tv.setPadding(dp(14), dp(6), dp(14), dp(6));
-        tv.setBackground(makeBadge(0xFFE3B341, 0xFF221D10)); // amber = not yet verified
+        tv.setBackground(makeBadge(0xFFE3B341, 0xFF221D10)); // amber = not yet verified (never green without a pin match)
         tv.setElevation(dp(6));
         tv.setAlpha(0.92f);
         identityBadge = tv;

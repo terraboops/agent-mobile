@@ -1,5 +1,7 @@
 package com.agentmobile.agent;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -23,16 +25,18 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 /**
- * Proves the Java AEAD channel (KoCrypto) interoperates byte-for-byte with the Node
- * gateway (proto.js + transport/ws-gateway.js): handshake, sealed command round-trip,
- * and auth rejection of tampered frames. Runs on the host JVM against a spawned Node.
+ * Proves the Java AEAD channel (KoCrypto, protocol v2) interoperates byte-for-byte with the
+ * Node gateway (proto.js + transport/ws-gateway.js): hello -> reply(mac) -> confirm, server
+ * MAC verification, sealed command round-trip, and rejection of tampered / replayed /
+ * type-flipped frames. Runs on the host JVM against a spawned Node.
  */
 public class NodeInteropTest {
 
     static Process node;
     static String url;
-    static KeyPair clientId, clientEph;
-    static byte[] tx, rx;
+    static KeyPair clientId;
+    static KoCrypto.Channel channel;
+    static String lastReply;
     static BlockingQueue<Object> q = new LinkedBlockingQueue<>();
 
     @BeforeClass
@@ -83,49 +87,77 @@ public class NodeInteropTest {
         return ws;
     }
 
+    private static KoCrypto.ClientHandshake.Result handshake(WebSocketClient ws, byte[] pin) throws Exception {
+        clientId = clientId != null ? clientId : KoCrypto.genXdh();
+        KoCrypto.ClientHandshake hs = new KoCrypto.ClientHandshake(clientId);
+        ws.send(hs.helloJson());
+        Object first = q.take();
+        assertTrue("expected text hello reply, got " + first, first instanceof String && first.toString().startsWith("T:"));
+        lastReply = first.toString().substring(2);
+        KoCrypto.ClientHandshake.Result r = hs.finish(
+            Base64.getDecoder().decode(jsonGet(lastReply, "server_identity")),
+            Base64.getDecoder().decode(jsonGet(lastReply, "server_eph")),
+            Base64.getDecoder().decode(jsonGet(lastReply, "mac")), pin);
+        ws.send(r.confirmJson);
+        return r;
+    }
+
     @Test
     public void javaChannelInteropsWithNodeGateway() throws Exception {
-        clientId = KoCrypto.genXdh();
-        clientEph = KoCrypto.genXdh();
         WebSocketClient ws = openWs(url);
-
-        // handshake — plaintext hello, mirrored from Node
-        ws.send("{"
-            + "\"client_id\":\"" + KoCrypto.identityId(clientId.getPublic()) + "\","
-            + "\"client_identity\":\"" + Base64.getEncoder().encodeToString(KoCrypto.exportPublic(clientId)) + "\","
-            + "\"client_eph\":\"" + Base64.getEncoder().encodeToString(KoCrypto.exportPublic(clientEph)) + "\"}");
-
-        Object first = q.take();
-        assertTrue("expected text hello response, got " + first, first instanceof String && first.toString().startsWith("T:"));
-        String j = first.toString().substring(2);
-        String serverId = jsonGet(j, "server_identity");
-        String serverEph = jsonGet(j, "server_eph");
-
-        byte[][] session = KoCrypto.deriveClientSession(
-            clientId, Base64.getDecoder().decode(serverId),
-            clientEph, Base64.getDecoder().decode(serverEph));
-        tx = session[0];
-        rx = session[1];
+        KoCrypto.ClientHandshake.Result r = handshake(ws, null);   // TOFU (no pin yet)
+        channel = r.channel;
+        assertEquals(8, r.agentId.length());
 
         // sealed command round-trip: Java -> Node -> Java
         byte[] pt = "{\"i\":1,\"d\":\"hello-java\"}".getBytes(StandardCharsets.UTF_8);
-        ws.send(ByteBuffer.wrap(KoCrypto.sealMessage(tx, KoCrypto.TYPE_CMD, pt)));
-
-        Object r = q.take();
-        assertTrue("expected binary reply, got " + r, r instanceof byte[]);
-        byte[] plain = KoCrypto.openMessage(rx, (byte[]) r);
-        String decrypted = new String(plain, StandardCharsets.UTF_8);
+        byte[] frame = channel.seal(KoCrypto.TYPE_CMD, pt);
+        ws.send(ByteBuffer.wrap(frame));
+        Object rep = q.poll(5, TimeUnit.SECONDS);
+        assertTrue("expected binary reply, got " + rep, rep instanceof byte[]);
+        String decrypted = new String(channel.open((byte[]) rep), StandardCharsets.UTF_8);
         assertTrue("echo should come back from Node gateway: " + decrypted, decrypted.contains("hello-java"));
 
+        // replayed frame: the gateway must NOT answer again
+        ws.send(ByteBuffer.wrap(frame));
+        assertNull("replayed frame must be ignored", q.poll(700, TimeUnit.MILLISECONDS));
+
+        // flipped type byte (AAD): must be ignored
+        byte[] f2 = channel.seal(KoCrypto.TYPE_CMD, "{\"i\":2,\"d\":\"flip\"}".getBytes(StandardCharsets.UTF_8));
+        f2[0] = KoCrypto.TYPE_AUDIO;
+        ws.send(ByteBuffer.wrap(f2));
+        assertNull("type-flipped frame must be ignored", q.poll(700, TimeUnit.MILLISECONDS));
+
+        // the channel is still live afterwards
+        ws.send(ByteBuffer.wrap(channel.seal(KoCrypto.TYPE_CMD, "{\"i\":3,\"d\":\"again\"}".getBytes(StandardCharsets.UTF_8))));
+        Object rep3 = q.poll(5, TimeUnit.SECONDS);
+        assertTrue(new String(channel.open((byte[]) rep3), StandardCharsets.UTF_8).contains("again"));
         ws.close();
     }
 
     @Test
-    public void tamperIsRejected() throws Exception {
-        if (tx == null) javaChannelInteropsWithNodeGateway(); // ensure session exists
-        byte[] junk = KoCrypto.sealMessage(tx, KoCrypto.TYPE_CMD, "tamper".getBytes(StandardCharsets.UTF_8));
-        junk[20] ^= 0x01; // flip a ciphertext byte
-        assertThrows(Exception.class, () -> KoCrypto.openMessage(rx, junk));
+    public void pinnedIdentityMismatchIsRefused() throws Exception {
+        WebSocketClient ws = openWs(url);
+        byte[] wrongPin = KoCrypto.exportPublic(KoCrypto.genXdh());
+        Exception e = assertThrows(Exception.class, () -> handshake(ws, wrongPin));
+        assertEquals("identity_mismatch", e.getMessage());
+        ws.close();
+    }
+
+    @Test
+    public void tamperAndLocalReplayAreRejected() throws Exception {
+        if (channel == null) javaChannelInteropsWithNodeGateway(); // ensure session exists
+        KoCrypto.Channel a = new KoCrypto.Channel(new byte[32], new byte[32], new byte[32]);
+        KoCrypto.Channel b = new KoCrypto.Channel(new byte[32], new byte[32], new byte[32]); // mirror keys
+        byte[] good = a.seal(KoCrypto.TYPE_CMD, "tamper".getBytes(StandardCharsets.UTF_8));
+        assertEquals("tamper", new String(b.open(good), StandardCharsets.UTF_8));
+        assertThrows("replay", Exception.class, () -> b.open(good));
+        byte[] junk = a.seal(KoCrypto.TYPE_CMD, "tamper".getBytes(StandardCharsets.UTF_8));
+        junk[20] ^= 0x01; // flip a tag byte
+        assertThrows(Exception.class, () -> b.open(junk));
+        byte[] flip = a.seal(KoCrypto.TYPE_CMD, "tamper".getBytes(StandardCharsets.UTF_8));
+        flip[0] = KoCrypto.TYPE_PING;
+        assertThrows(Exception.class, () -> b.open(flip));
     }
 
     private static String jsonGet(String json, String key) {

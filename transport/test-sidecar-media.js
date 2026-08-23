@@ -4,7 +4,7 @@
 // sidecar accepted the media datagrams (no auth failure) and advertised a port.
 import { spawn } from 'node:child_process';
 import WebSocket from '/Users/terra/Developer/agent-mobile/node_modules/ws/wrapper.mjs';
-import { genIdentity, identityId, sessionFrom } from '../proto.js';
+import { genIdentity, clientHello, clientFinish } from '../proto.js';
 import { UdpMedia } from './udp-media.js';
 import { pack, T } from './wsframes.js';
 
@@ -40,23 +40,23 @@ await new Promise((res, rej) => { ws.on('open', res); ws.on('error', rej); });
 
 const got = [];
 ws.on('message', (d) => got.push(Buffer.isBuffer(d) ? d : Buffer.from(d)));
-ws.send(JSON.stringify({
-  client_identity: clientId.publicKey.toString('base64'),
-  client_eph: clientEph.publicKey.toString('base64'),
-}));
+const helloMsg = clientHello(clientId, clientEph);          // v2: { v, client_id, client_identity, client_eph }
+ws.send(JSON.stringify(helloMsg));
 
-// The hello is the first TEXT frame (starts with '{' = 0x7b); AEAD frames start
+// The reply is the first TEXT frame (starts with '{' = 0x7b); AEAD frames start
 // with a type byte. Wait for it regardless of what else arrives.
 await wait(() => got.some(b => b[0] === 0x7b));
 const hello = JSON.parse(got.find(b => b[0] === 0x7b).toString('utf8'));
+if (hello.error) { fail(`gateway refused handshake: ${hello.error}`); }
 
 const mediaPort = hello.media_port;
 if (typeof mediaPort !== 'number' || mediaPort < 1024) fail(`media_port not advertised: ${JSON.stringify(hello)}`);
 console.log(`SERVER HELLO keys=${Object.keys(hello).join(',')} media_port=${mediaPort}`);
 
-// Derive the client channel from the server's identity/ephemeral.
-const serverId = { publicKey: Buffer.from(hello.server_identity, 'base64') };
-const client = sessionFrom('client', clientId, serverId, clientEph, Buffer.from(hello.server_eph, 'base64'));
+// v2: verify the server's transcript MAC (TOFU here: no pin in a test), send confirm.
+const fin = clientFinish(clientId, clientEph, helloMsg, hello, {});
+ws.send(JSON.stringify(fin.confirm));
+const client = fin.channel;
 
 // --- send uplink audio over UDP (AEAD sealed) --------------------------------
 const phone = new UdpMedia({ channel: client, allow: () => false });
@@ -67,7 +67,7 @@ for (let s = 0; s < frames; s++) {
 await sleep(200);
 
 // Also prove the AEAD channel works end-to-end via a WS ping->pong.
-const ping = pack(T.ping, client.send(Buffer.alloc(0)));
+const ping = pack(T.ping, client.send(Buffer.alloc(0), T.ping));
 const before = got.length;
 ws.send(ping);
 await wait(() => got.length > before && got.slice(before).some(b => b[0] === T.pong), 10);

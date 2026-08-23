@@ -10,10 +10,10 @@ import java.net.InetAddress;
  * UdpMedia — Android side of the UDP media path (transport/udp-media.js).
  *
  * Audio rides UDP instead of WebSocket/TCP for spotty cellular. Security stays on
- * the SAME ChaCha20-Poly1305 keys via {@link KoCrypto}: each datagram is one
- * sealed frame `[type][nonce][tag][ct]` (KoCrypto.sealMessage), matching the
- * sidecar's UdpMedia exactly (it decrypts with the frame's nonce). Nonces are
- * random per frame, so there is no WS/UDP shared-counter risk.
+ * the SAME session {@link KoCrypto.Channel}: each datagram is one sealed frame
+ * `[type][nonce][tag][ct]` on nonce stream {@link KoCrypto#STREAM_UDP} (its own
+ * counter + anti-replay window, independent of the WS stream), matching the
+ * sidecar's UdpMedia exactly.
  *
  * Authenticated plaintext per datagram: `[kind u8][seq u32][tsMs u64][opus]`
  *   kind 0 = mic uplink (this device -> gateway), kind 1 = reply downlink,
@@ -34,7 +34,7 @@ public final class UdpMedia {
 
     private static final int PROBE_INTERVAL_MS = 1000;
 
-    private final byte[] rxKey, txKey;
+    private final KoCrypto.Channel channel;
     private final Sink sink;
     private final Ajb jitter = new Ajb(6, 60, 20, 80, 100);
 
@@ -47,8 +47,8 @@ public final class UdpMedia {
     private int gwPort;
     private volatile Callback probedCb;
 
-    public UdpMedia(byte[] rxKey, byte[] txKey, Sink sink) {
-        this.rxKey = rxKey; this.txKey = txKey; this.sink = sink;
+    public UdpMedia(KoCrypto.Channel channel, Sink sink) {
+        this.channel = channel; this.sink = sink;
     }
 
     /** Fired (on the udp-rx thread) once the sidecar's authenticated kind-2 ack arrives. */
@@ -92,7 +92,7 @@ public final class UdpMedia {
             System.arraycopy(seqB, 0, pt, 1, 4);
             for (int i = 0; i < 8; i++) pt[5 + i] = (byte) (tsMs >>> (56 - i * 8));
             System.arraycopy(opus, 0, pt, 13, opus.length);
-            byte[] wire = KoCrypto.sealMessage(txKey, KoCrypto.TYPE_AUDIO, pt);
+            byte[] wire = channel.seal(KoCrypto.TYPE_AUDIO, pt, KoCrypto.STREAM_UDP);
             s.send(new DatagramPacket(wire, wire.length, gwAddr, gwPort));
             return true;
         } catch (Exception e) {
@@ -108,7 +108,9 @@ public final class UdpMedia {
                 pkt.setLength(bufArr.length);
                 socket.receive(pkt);
                 byte[] wire = java.util.Arrays.copyOfRange(pkt.getData(), 0, pkt.getLength());
-                byte[] pt = KoCrypto.openMessage(rxKey, wire);
+                byte[] pt;
+                try { pt = channel.open(wire); }          // AEAD + anti-replay; throws -> drop
+                catch (Exception bad) { continue; }
                 if (pt == null || pt.length < 13) continue;
                 int kind = pt[0] & 0xff;
                 long seq = ((pt[1] & 0xffL) << 24) | ((pt[2] & 0xffL) << 16) | ((pt[3] & 0xffL) << 8) | (pt[4] & 0xffL);

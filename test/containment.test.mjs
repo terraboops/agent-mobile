@@ -15,8 +15,7 @@ import { chromium } from 'playwright';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
-import { startGateway } from '../gateway.js';
-import { genIdentity, identityId, sessionFrom } from '../proto.js';
+import { startGateway, httpClientSession } from '../gateway.js';
 
 let pass = 0, fail = 0;
 const ok = (cond, name) => { if (cond) { pass++; console.log('  ok  ', name); } else { fail++; console.log('  FAIL', name); } };
@@ -47,27 +46,9 @@ const CANARY = `http://127.0.0.1:${canary.address().port}`;
 
 // ---- start the agent gateway + do the mutual handshake (Node shell = native) --
 const gw = await startGateway(0, CANARY);
-const app = { identity: genIdentity(), eph: genIdentity() };
-const clientId = identityId(app.identity);
-
-const pair = await (await fetch(`${gw.baseUrl}/pair`)).json();
-const serverId = { publicKey: Buffer.from(pair.agent_public, 'base64') };
-const hello = await (await fetch(`${gw.baseUrl}/hello`, {
-  method: 'POST', headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ client_id: clientId, client_identity: app.identity.publicKey.toString('base64'), client_eph: app.eph.publicKey.toString('base64') }),
-})).json();
-const appCh = sessionFrom('client', app.identity, serverId, app.eph, Buffer.from(hello.server_eph, 'base64'));
-
-async function roundtrip(payload) {
-  const frame = appCh.send(typeof payload === 'string' ? payload : JSON.stringify(payload));
-  const r = await (await fetch(`${gw.baseUrl}/msg`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ client_id: clientId, nonce: frame.nonce.toString('base64'), ct: frame.ct.toString('base64'), tag: frame.tag.toString('base64') }),
-  })).json();
-  if (r.error) throw new Error('gateway: ' + r.error);
-  const reply = { nonce: Buffer.from(r.nonce, 'base64'), ct: Buffer.from(r.ct, 'base64'), tag: Buffer.from(r.tag, 'base64') };
-  return appCh.recv(reply); // decrypted agent response
-}
+// Full v2 handshake over HTTP: /pair pins the agent key, /hello + MAC verify, /confirm.
+const session = await httpClientSession(gw.baseUrl);
+const roundtrip = session.roundtrip;
 
 // ---- launch the locked webview ----------------------------------------------
 const browser = await chromium.launch();

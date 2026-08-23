@@ -1,6 +1,10 @@
-// ws-client.mjs — the app's WebSocket client with partition resilience.
+// ws-client.mjs — the app's WebSocket client with partition resilience (protocol v2).
 //
 //  * One durable WS connection; all frames AEAD-sealed (transport/wsframes.js).
+//  * Handshake: hello -> reply(mac) -> confirm. The client verifies the server's
+//    transcript MAC and compares server_identity to its PIN before sending
+//    anything. With no pin, `onPair(serverIdentity, agentId)` is consulted (TOFU:
+//    the caller shows the fingerprint and persists the pin on approval).
 //  * App-layer keepalive (ping/pong) with exponential backoff:
 //      base interval, double per failure up to max, reset on any liveness.
 //      Partition declared after P consecutive failed probes.
@@ -13,16 +17,22 @@
 //    discard-stale by policy.
 
 import WebSocket from 'ws';
-import { genIdentity, identityId, sessionFrom } from '../proto.js';
+import { genIdentity, clientHello, clientFinish } from '../proto.js';
 import { pack, unpack, T, packAudio } from './wsframes.js';
 
 export class AgentStream {
-  constructor({ url, base = 2000, max = 64000, P = 3, probeTimeout = 1000 } = {}) {
+  constructor({ url, base = 2000, max = 64000, P = 3, probeTimeout = 1000,
+                identity = null, expectServerIdentity = null, onPair = null } = {}) {
     this.url = url;
     this.base = base;
     this.max = max;
     this.P = P;
     this.probeTimeout = probeTimeout;
+    this.identity = identity || genIdentity();   // PERSISTENT client identity (caller stores it)
+    this.expectServerIdentity = expectServerIdentity; // pinned server SPKI (Buffer/base64) or null
+    this.onPair = onPair;                          // TOFU hook: async (serverIdentity, agentId) => bool
+    this.agentId = null;
+    this.serverIdentity = null;
     this.ws = null;
     this.channel = null;
     this.failures = 0;
@@ -40,29 +50,36 @@ export class AgentStream {
   // ---- connect + handshake -------------------------------------------------
   connect() {
     return new Promise((resolve, reject) => {
-      const me = { identity: genIdentity(), eph: genIdentity() };
+      const eph = genIdentity();
+      const hello = clientHello(this.identity, eph);
       const ws = new WebSocket(this.url);
       this.ws = ws;
-      ws.on('open', () => {
-        ws.send(JSON.stringify({
-          client_id: identityId(me.identity),
-          client_identity: me.identity.publicKey.toString('base64'),
-          client_eph: me.eph.publicKey.toString('base64'),
-        }));
-      });
-      ws.on('message', (data) => {
+      let settled = false;
+      const fail = (err) => { if (!settled) { settled = true; try { ws.close(); } catch {} reject(err); } };
+      ws.on('open', () => ws.send(JSON.stringify(hello)));
+      ws.on('message', async (data) => {
         const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-        if (!this.channel) {
-          const h = JSON.parse(buf.toString('utf8'));
-          const theirId = { publicKey: Buffer.from(h.server_identity, 'base64') };
-          this.channel = sessionFrom('client', me.identity, theirId, me.eph, Buffer.from(h.server_eph, 'base64'));
-          resolve();
-          return;
+        if (this.channel) { this._onFrame(buf); return; }
+        let reply;
+        try { reply = JSON.parse(buf.toString('utf8')); } catch { return; }   // not the hello reply
+        if (reply && reply.error) return fail(new Error('gateway: ' + reply.error));
+        let fin;
+        try { fin = clientFinish(this.identity, eph, hello, reply, { expectServerIdentity: this.expectServerIdentity }); }
+        catch (e) { return fail(e); }
+        if (!this.expectServerIdentity && this.onPair) {
+          let okPair = false;
+          try { okPair = await this.onPair(fin.serverIdentity, fin.agentId); } catch { okPair = false; }
+          if (!okPair) return fail(new Error('pairing_declined'));
         }
-        this._onFrame(buf);
+        ws.send(JSON.stringify(fin.confirm));
+        this.channel = fin.channel;
+        this.agentId = fin.agentId;
+        this.serverIdentity = fin.serverIdentity;
+        settled = true;
+        resolve({ agentId: fin.agentId, serverIdentity: fin.serverIdentity });
       });
-      ws.on('error', reject);
-      ws.on('close', () => { if (this.channel) this._onLivenessClosure(); });
+      ws.on('error', fail);
+      ws.on('close', () => { if (this.channel) this._onLivenessClosure(); else fail(new Error('closed before handshake')); });
     });
   }
 
@@ -74,7 +91,7 @@ export class AgentStream {
   cmd(payload, { timeoutMs = 5000 } = {}) {
     return new Promise((resolve, reject) => {
       const i = ++this._mid;
-      const box = this.channel.send(Buffer.from(JSON.stringify({ i, d: payload })));
+      const box = this.channel.send(Buffer.from(JSON.stringify({ i, d: payload })), T.cmd);
       const t = setTimeout(() => { this._pending.delete(i); reject(new Error('cmd timeout')); }, timeoutMs);
       this._pending.set(i, { resolve, reject, t });
       this._emit(pack(T.cmd, box));
@@ -83,12 +100,12 @@ export class AgentStream {
 
   // ---- audio stream ---------------------------------------------------------
   sendAudio(seq, tsMs, opusBytes) {
-    const box = this.channel.send(packAudio(seq, tsMs, opusBytes));
+    const box = this.channel.send(packAudio(seq, tsMs, opusBytes), T.audio);
     this._emit(pack(T.audio, box));
   }
 
   sendGap() {
-    const box = this.channel.send(Buffer.from('g'));
+    const box = this.channel.send(Buffer.from('g'), T.gap);
     this._emit(pack(T.gap, box));
   }
 
@@ -107,22 +124,21 @@ export class AgentStream {
 
   // ---- inbound ---------------------------------------------------------------
   _onFrame(raw) {
-    // ANY inbound frame is liveness: clears the partition and flushes the buffer.
+    let f; try { f = unpack(Buffer.from(raw)); } catch { return; }
+    if (!this.channel) return;
+    const pt = this.channel.recvBytes(f);
+    if (pt === null) return;               // forged / replayed: NOT liveness
+    // Only an AUTHENTICATED inbound frame is liveness: clears the partition and flushes.
     if (this.failures > 0) this._onLiveness();
-    const { type, nonce, tag, ct } = unpack(Buffer.from(raw));
-    if (type === T.pong) return; // keepalive ack, already handled as liveness
-    if (this.channel) {
-      const pt = this.channel.recvBytes({ nonce, ct, tag });
-      if (pt === null) return;
-      if (type === T.cmd) {
-        const { i, d } = JSON.parse(pt.toString('utf8'));
-        const p = this._pending.get(i);
-        if (p) { clearTimeout(p.t); this._pending.delete(i); p.resolve(d); }
-      } else if (type === T.audio) {
-        // inbound agent audio (not exercised by this mock, but supported)
-        const seq = pt.readUInt32BE(0);
-        this.onRemoteAudio(seq, pt.subarray(4));
-      }
+    if (f.type === T.pong) return;         // keepalive ack, already handled as liveness
+    if (f.type === T.cmd) {
+      const { i, d } = JSON.parse(pt.toString('utf8'));
+      const p = this._pending.get(i);
+      if (p) { clearTimeout(p.t); this._pending.delete(i); p.resolve(d); }
+    } else if (f.type === T.audio) {
+      // inbound agent audio (not exercised by this mock, but supported)
+      const seq = pt.readUInt32BE(0);
+      this.onRemoteAudio(seq, pt.subarray(4));
     }
   }
 
@@ -147,7 +163,7 @@ export class AgentStream {
     if (!this.channel) return;
     this.stats.probes++;
     let box;
-    try { box = this.channel.send(Buffer.alloc(0)); } catch (_) { return; } // pong
+    try { box = this.channel.send(Buffer.alloc(0), T.ping); } catch (_) { return; }
     this.ws.send(pack(T.ping, box), { binary: true });
     this._probeTimer = setTimeout(() => {
       this.failures++;

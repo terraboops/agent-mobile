@@ -37,6 +37,7 @@ import java.net.URISyntaxException;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.URI;
+import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.util.Arrays;
 import java.util.Base64;
@@ -62,8 +63,12 @@ import org.json.JSONObject;
  * AgentChannel — Capacitor plugin exposing the AEAD WebSocket channel to the web-layer.
  *
  * <p>The webview's ONLY native surface (window.Capacitor.Plugins.AgentChannel):
- *   connect(url), send(payload), identify(), startAudio(), stopAudio(). Everything else lives
- *   behind the AEAD channel over WebSocket; the webview never touches the network directly.
+ *   connect(url), send(payload), identify(), startAudio(), stopAudio(), resetPairing(). Everything
+ *   else lives behind the AEAD channel over WebSocket; the webview never touches the network directly.
+ *
+ * <p>Protocol v2 (KoCrypto / proto.js): persistent phone identity (IdentityStore), server
+ *   transcript MAC verified + server identity PINNED per host (first contact = native TOFU dialog),
+ *   client confirm MAC, type byte authenticated, per-stream counters + anti-replay windows.
  *
  * <p>Audio is NATIVE, capability-gated, user-consented (RECORD_AUDIO via Capacitor's @Permission
  * + @PermissionCallback flow). Voice is captured with AudioRecord, encoded with Concentus
@@ -85,8 +90,13 @@ public class AgentChannelPlugin extends Plugin {
 
     private OkHttpClient client;
     private volatile WebSocket ws;
-    private KeyPair clientId, clientEph;
-    private volatile byte[] tx, rx;
+    // Session: ONE authenticated channel (AEAD keys + per-stream counters/replay windows).
+    // null until the v2 handshake (MAC verified + identity pinned + confirm sent) completes.
+    private volatile KoCrypto.Channel channel;
+    private volatile KoCrypto.ClientHandshake hs;
+    private IdentityStore idStore;                  // persistent X25519 identity + server pins
+    private volatile boolean identityBlocked;       // pinned identity mismatch: refuse until reset
+    private volatile String pinnedState = ID_DISCONNECTED;
     private volatile boolean connected;
     private volatile boolean derived;
     private volatile int failures;
@@ -94,6 +104,14 @@ public class AgentChannelPlugin extends Plugin {
     private volatile boolean keepaliveRunning;
     private PluginCall connectCall;
     private volatile boolean connectConsented; // native per-capability consent gate (connect)
+
+    // Identity badge states (native overlay in MainActivity — the webview cannot reach it).
+    public static final String ID_VERIFIED = "verified";      // MAC ok AND server SPKI == stored pin
+    public static final String ID_PAIRED = "paired";          // first contact: MAC ok, user confirmed, pinned now
+    public static final String ID_MISMATCH = "mismatch";      // server SPKI != pin: refused
+    public static final String ID_ERROR = "error";            // MAC / handshake failure
+    public static final String ID_DISCONNECTED = "disconnected";
+    public interface IdentitySink { void onIdentity(String agentId, String state); }
 
     // auto-reconnect: re-establish the session when the socket truly dies
     // (gateway restart), WITHOUT touching partition-reconnect semantics
@@ -174,7 +192,8 @@ public class AgentChannelPlugin extends Plugin {
         // Guard: until the handshake completes there is NO transmit key. A
         // premature webview send (render_result, surface_state, hello, etc.) must
         // fail cleanly — NEVER let KoCrypto.sealMessage throw and crash the app.
-        if (tx == null) { call.reject("not connected"); return; }
+        KoCrypto.Channel ch = channel;
+        if (ch == null) { call.reject("not connected"); return; }
         int mid = msgId.incrementAndGet();
         try {
             // Proper JSON encoding (org.json escapes quotes, backslashes, control
@@ -183,7 +202,7 @@ public class AgentChannelPlugin extends Plugin {
             // was silently lost by the agent (e.g. render_result errors with quotes).
             byte[] plain = new JSONObject().put("i", mid).put("d", payload)
                     .toString().getBytes(StandardCharsets.UTF_8);
-            byte[] frame = KoCrypto.sealMessage(tx, KoCrypto.TYPE_CMD, plain);
+            byte[] frame = ch.seal(KoCrypto.TYPE_CMD, plain);
             pending.put(mid, call);
             outbound(frame);
         } catch (Exception e) {
@@ -196,7 +215,37 @@ public class AgentChannelPlugin extends Plugin {
     public void identify(PluginCall call) {
         JSObject r = new JSObject();
         r.put("agentId", connected ? pendingAgentId : null);
+        r.put("state", pinnedState);
+        r.put("clientId", store().clientId());
         call.resolve(r);
+    }
+
+    /**
+     * Forget the pinned agent identity for the current gateway host (e.g. after the
+     * agent legitimately rotated its key). Native confirmation — the webview cannot
+     * silently unpin. The next connection goes through first-contact pairing again.
+     */
+    @PluginMethod
+    public void resetPairing(PluginCall call) {
+        Activity a = getActivity();
+        final String host = hostOf(lastUrl);
+        if (a == null || host == null) { call.reject("no activity / no gateway host"); return; }
+        a.runOnUiThread(() -> new AlertDialog.Builder(a)
+            .setTitle("Forget paired agent?")
+            .setMessage("Forget the pinned agent identity for " + host + "?\n\nThe next connection will ask you to confirm the agent fingerprint again. Only do this if you KNOW the agent rotated its key.")
+            .setNegativeButton("Keep", (d, w) -> { d.dismiss(); call.reject("kept"); })
+            .setPositiveButton("Forget", (d, w) -> { d.dismiss(); store().clearPin(host); identityBlocked = false; badge("", ID_DISCONNECTED); call.resolve(); })
+            .setCancelable(false).show());
+    }
+
+    private IdentityStore store() {
+        IdentityStore st = idStore;
+        if (st == null) { st = new IdentityStore(getContext()); idStore = st; }
+        return st;
+    }
+
+    private static String hostOf(String url) {
+        try { return url == null ? null : new URI(url).getHost(); } catch (Exception e) { return null; }
     }
 
     @PluginMethod
@@ -237,8 +286,18 @@ public class AgentChannelPlugin extends Plugin {
 
     /** Native overlay sink: MainActivity installs it so the agent fingerprint can be shown
      *  on an unforgeable view the webview cannot reach. Fires on the UI thread. */
-    private volatile Consumer<String> identitySink;
-    public void setIdentitySink(Consumer<String> sink) { this.identitySink = sink; }
+    private volatile IdentitySink identitySink;
+    public void setIdentitySink(IdentitySink sink) { this.identitySink = sink; }
+
+    /** Update the native badge (UI thread). */
+    private void badge(String id, String state) {
+        pinnedState = state;
+        IdentitySink sink = identitySink;
+        Activity a = getActivity();
+        if (sink == null || a == null) return;
+        final String fid = id == null ? "" : id;
+        a.runOnUiThread(() -> { try { sink.onIdentity(fid, state); } catch (Exception ignored) {} });
+    }
 
     /** Per-capability native consent before opening the secure session. Webview cannot skip it. */
     private void requestConnectConsent(PluginCall call, String url) {
@@ -250,7 +309,9 @@ public class AgentChannelPlugin extends Plugin {
             new AlertDialog.Builder(a)
                 .setTitle("Confirm secure session")
                 .setMessage("Allow Agent to open an end-to-end encrypted session to "
-                    + host + "?\n\nThe agent identity is verified and pinned after the handshake.")
+                    + host + "?\n\n" + (store().getPin(host) != null
+                        ? "This host is paired: the agent must present its pinned identity key or the connection is refused."
+                        : "First connection to this host: after the key exchange you will be asked to confirm the agent's fingerprint before anything is sent."))
                 .setNegativeButton("Deny", (d, w) -> { d.dismiss(); connectCall = null; call.reject("connection denied by user"); })
                 .setPositiveButton("Allow", (d, w) -> { d.dismiss(); connectConsented = true; worker.execute(() -> connectWs(url)); })
                 .setCancelable(false)
@@ -272,8 +333,12 @@ public class AgentChannelPlugin extends Plugin {
     // ---- connection -----------------------------------------------------------
     private void connectWs(String url) {
         try {
-            clientId = KoCrypto.genXdh();
-            clientEph = KoCrypto.genXdh();
+            if (identityBlocked) {
+                var c = connectCall; if (c != null) { connectCall = null; c.reject("refused: pinned agent identity mismatch (resetPairing to re-pair)"); }
+                return;
+            }
+            // Persistent identity (IdentityStore) + fresh ephemeral per connection.
+            hs = new KoCrypto.ClientHandshake(store().loadOrCreate());
             client = new OkHttpClient();
             Request req = new Request.Builder().url(url).build();
             ws = client.newWebSocket(req, new WebSocketListener() {
@@ -286,6 +351,7 @@ public class AgentChannelPlugin extends Plugin {
                     connected = false;
                     derived = false;
                     emitConn(false);
+                    if (!identityBlocked) badge(pendingAgentId, ID_DISCONNECTED);
                     closeMedia();
                     closeWebRtc();
                     var c = connectCall; if (c != null) { connectCall = null; c.reject("ws failure: " + t); }
@@ -296,6 +362,7 @@ public class AgentChannelPlugin extends Plugin {
                         connected = false;
                         derived = false;
                         emitConn(false);
+                        if (!identityBlocked) badge(pendingAgentId, ID_DISCONNECTED);
                         closeMedia();
                         closeWebRtc();
                         scheduleReconnect();
@@ -312,7 +379,7 @@ public class AgentChannelPlugin extends Plugin {
      *  failures keep the socket open on purpose. Starts a fresh handshake after
      *  an exponential backoff capped at 60s. */
     private void scheduleReconnect() {
-        if (connected || destroying || !connectConsented || lastUrl == null) return;
+        if (connected || destroying || !connectConsented || lastUrl == null || identityBlocked) return;
         synchronized (reconnectLock) {
             if (reconnectPending) return;
             reconnectPending = true;
@@ -325,7 +392,7 @@ public class AgentChannelPlugin extends Plugin {
                 return;
             }
             synchronized (reconnectLock) { reconnectPending = false; }
-            if (connected || destroying || !connectConsented || lastUrl == null) return;
+            if (connected || destroying || !connectConsented || lastUrl == null || identityBlocked) return;
             Log.i("AgentChannel", "auto-reconnect to " + lastUrl);
             worker.execute(() -> { try { connectWs(lastUrl); } catch (Exception ignored) {} });
         });
@@ -334,53 +401,114 @@ public class AgentChannelPlugin extends Plugin {
     }
 
     private void sendHello() {
-        String hello = "{"
-            + "\"client_id\":\"" + KoCrypto.identityId(clientId.getPublic()) + "\","
-            + "\"client_identity\":\"" + Base64.getEncoder().encodeToString(KoCrypto.exportPublic(clientId)) + "\","
-            + "\"client_eph\":\"" + Base64.getEncoder().encodeToString(KoCrypto.exportPublic(clientEph)) + "\"}";
-        if (ws != null) ws.send(hello);
+        KoCrypto.ClientHandshake h = hs;
+        if (ws != null && h != null) ws.send(h.helloJson());
     }
 
+    /**
+     * Server reply: { v:2, server_identity, server_eph, mac }. Verify the transcript MAC
+     * (proves the server holds its identity private key) and compare server_identity to
+     * the PIN for this host. Only then derive the session and send the confirm MAC.
+     * First contact (no pin yet): native TOFU dialog showing the fingerprint.
+     */
     private void handleHello(String text) {
         try {
-            String serverId = jsonGet(text, "server_identity");
-            String serverEph = jsonGet(text, "server_eph");
-            byte[][] s = KoCrypto.deriveClientSession(
-                clientId, Base64.getDecoder().decode(serverId),
-                clientEph, Base64.getDecoder().decode(serverEph));
-            final byte[] krx = s[0], ktx = s[1];
-            tx = s[0]; rx = s[1];
-            // UDP fingerprints the SAME key roles as WS: uplink/probe is sealed
-            // with the phone's TX key (s[0]) so the sidecar's channel (which
-            // decrypts WS audio with s[0]) accepts it; downlink reads s[1].
-            tryStartUdpMedia(rx, tx, text);
-            pendingAgentId = KoCrypto.identityIdDer(Base64.getDecoder().decode(serverId));
+            KoCrypto.ClientHandshake h = hs;
+            if (h == null) return;
+            JSONObject j = new JSONObject(text);
+            if (j.has("error")) throw new IllegalStateException("gateway refused: " + j.optString("error"));
+            if (j.optInt("v", 0) != KoCrypto.PROTO_VERSION)
+                throw new IllegalStateException("gateway speaks protocol v" + j.opt("v") + ", this app needs v" + KoCrypto.PROTO_VERSION);
+            byte[] sId = Base64.getDecoder().decode(j.getString("server_identity"));
+            byte[] sEph = Base64.getDecoder().decode(j.getString("server_eph"));
+            byte[] mac = Base64.getDecoder().decode(j.getString("mac"));
+            final String host = hostOf(lastUrl);
+            byte[] pin = host == null ? null : store().getPin(host);
+            KoCrypto.ClientHandshake.Result r;
+            try {
+                r = h.finish(sId, sEph, mac, pin);
+            } catch (GeneralSecurityException e) {
+                if ("identity_mismatch".equals(e.getMessage())) { onIdentityMismatch(host, KoCrypto.identityIdDer(sId)); return; }
+                throw e; // mac_mismatch / bad_reply
+            }
+            if (pin != null) { completeHandshake(r, text, ID_VERIFIED); return; }
+            requestPairing(r, text, host);
+        } catch (Exception e) {
+            Log.w("AgentChannel", "handshake error: " + e);
+            rejectHandshake("handshake error: " + e, ID_ERROR);
+        }
+    }
+
+    /** Refuse the session (bad MAC, declined pairing, ...). No auto-reconnect loop: the
+     *  socket is closed before `connected`/`derived` were ever set. */
+    private void rejectHandshake(String reason, String state) {
+        badge("", state);
+        var c = connectCall; if (c != null) { connectCall = null; c.reject(reason); }
+        try { WebSocket w = ws; if (w != null) w.close(4002, "handshake rejected"); } catch (Exception ignored) {}
+    }
+
+    /** The server presented a key that is NOT the one pinned for this host. Refuse, block
+     *  auto-reconnect, and show it on the native badge. Nothing was sent. */
+    private void onIdentityMismatch(String host, String presentedId) {
+        identityBlocked = true;
+        Log.e("AgentChannel", "IDENTITY MISMATCH for " + host + ": presented " + presentedId + " != pinned key. Refusing.");
+        JSObject ev = new JSObject(); ev.put("error", "identity_mismatch"); ev.put("agentId", presentedId);
+        notifyListeners("session", ev);
+        rejectHandshake("refused: agent identity mismatch for " + host + " (presented " + presentedId + ")", ID_MISMATCH);
+        badge(presentedId, ID_MISMATCH);
+    }
+
+    /** First contact with this host: trust-on-first-use behind a native confirmation. */
+    private void requestPairing(KoCrypto.ClientHandshake.Result r, String helloText, String host) {
+        Activity a = getActivity();
+        if (a == null || host == null) { rejectHandshake("no activity/host for pairing", ID_ERROR); return; }
+        a.runOnUiThread(() -> new AlertDialog.Builder(a)
+            .setTitle("Pair with agent " + r.agentId + "?")
+            .setMessage("First connection to " + host + ".\n\nAgent fingerprint:  " + r.agentId
+                + "\n\nCompare it with the agent id your gateway prints. If it differs, tap Cancel — something else is answering on this address."
+                + "\n\nThis phone's id: " + store().clientId() + " (add it to the gateway allowlist).")
+            .setNegativeButton("Cancel", (d, w) -> { d.dismiss(); rejectHandshake("pairing declined by user", ID_ERROR); })
+            .setPositiveButton("Pair", (d, w) -> {
+                d.dismiss();
+                store().setPin(host, r.serverIdPub);
+                worker.execute(() -> completeHandshake(r, helloText, ID_PAIRED));
+            })
+            .setCancelable(false)
+            .show());
+    }
+
+    /** MAC verified + identity accepted: send confirm, install the channel, go live. */
+    private void completeHandshake(KoCrypto.ClientHandshake.Result r, String helloText, String state) {
+        try {
+            WebSocket w = ws;
+            if (w == null) return;
+            w.send(r.confirmJson);                 // proves WE hold the client identity key
+            channel = r.channel;
+            tryStartUdpMedia(r.channel, helloText);
+            pendingAgentId = r.agentId;
             derived = true; connected = true;
             reconnectDelayMs = 2000; // fresh handshake -> reset reconnect backoff
             emitConn(true);
             startWebRtc();
-            JSObject out = new JSObject(); out.put("agentId", pendingAgentId);
+            JSObject out = new JSObject(); out.put("agentId", r.agentId); out.put("state", state); out.put("pinned", true);
             notifyListeners("session", out);
-            var sink = identitySink; // native unforgeable badge (webview cannot alter)
-            if (sink != null) {
-                final String id = pendingAgentId;
-                Activity a = getActivity();
-                if (a != null) a.runOnUiThread(() -> sink.accept(id));
-            }
+            badge(r.agentId, state);               // native unforgeable badge (webview cannot alter)
             var c = connectCall; if (c != null) { connectCall = null; c.resolve(out); }
             startKeepalive();
         } catch (Exception e) {
-            var c = connectCall; if (c != null) { connectCall = null; c.reject("handshake error: " + e); }
+            Log.w("AgentChannel", "handshake completion: " + e);
+            rejectHandshake("handshake error: " + e, ID_ERROR);
         }
     }
 
     /** Start the UDP media path from the server hello (media_port) + WS URL host. */
-    private void tryStartUdpMedia(byte[] krx, byte[] ktx, String hello) {
+    private void tryStartUdpMedia(KoCrypto.Channel ch, String hello) {
         try {
-            int mp = jsonInt(hello, "media_port");
+            JSONObject j = new JSONObject(hello);
+            int mp = j.optInt("media_port", 0);
             String host = new URI(lastUrl).getHost();
             if (host == null || mp <= 0) return;
-            UdpMedia m = new UdpMedia(krx, ktx, (kind, seq, tsMs, opus, concealed) -> {
+            UdpMedia m = new UdpMedia(ch, (kind, seq, tsMs, opus, concealed) -> {
                 if (kind == 1) playReply(opus, concealed); // reply downlink
             });
             m.start();
@@ -448,7 +576,8 @@ public class AgentChannelPlugin extends Plugin {
             msg.put("i", mid);
             msg.put("d", d);
             byte[] plain = msg.toString().getBytes(StandardCharsets.UTF_8);
-            byte[] frame = KoCrypto.sealMessage(tx, KoCrypto.TYPE_CMD, plain);
+            KoCrypto.Channel ch = channel; if (ch == null) return;
+            byte[] frame = ch.seal(KoCrypto.TYPE_CMD, plain);
             outbound(frame);
         } catch (Exception e) {
             Log.w("AgentChannel", "webrtc signal: " + e);
@@ -488,6 +617,8 @@ public class AgentChannelPlugin extends Plugin {
 
     // ---- inbound --------------------------------------------------------------
     private synchronized void onFrame(byte[] frame) {
+        KoCrypto.Channel ch = channel;
+        if (ch == null || frame == null || frame.length < KoCrypto.HEADER_LEN) return; // pre-auth or junk: drop
         lastRx = SystemClock.elapsedRealtime();
         boolean wasBuffering = failures > 0;
         failures = 0;
@@ -496,7 +627,7 @@ public class AgentChannelPlugin extends Plugin {
         if (++anyRx % 50 == 1) Log.i("AgentChannel", "any rx type=" + type + " len=" + frame.length);
         if (type == KoCrypto.TYPE_PONG) return;
         try {
-            byte[] plain = KoCrypto.openMessage(rx, frame);
+            byte[] plain = ch.open(frame);     // AEAD (type as AAD) + anti-replay; throws -> drop
             if (type == KoCrypto.TYPE_AUDIO) {
                 if (++rxAudioFrames % 50 == 1) Log.i("AgentChannel", "rx audio frame len=" + plain.length);
                 decodePlay(plain); return;
@@ -665,7 +796,8 @@ public class AgentChannelPlugin extends Plugin {
                     // UDP media path: seal a [kind][seq][tsMs][opus] frame over UDP.
                     media.sendFrame(0, mediaSeq.getAndIncrement(), SystemClock.elapsedRealtime(), Arrays.copyOf(out, nb));
                 } else {
-                    byte[] frame = KoCrypto.sealMessage(tx, KoCrypto.TYPE_AUDIO, pl);
+                    KoCrypto.Channel ch = channel; if (ch == null) continue;
+                    byte[] frame = ch.seal(KoCrypto.TYPE_AUDIO, pl);
                     outbound(frame); // partition-aware (buffers in-order, unbounded)
                 }
                 if (++frames % 50 == 1) Log.i("AgentChannel", "audio tx #" + seq + " opus=" + nb + "B via " + (udpUp ? "UDP" : "WS"));
@@ -810,7 +942,8 @@ public class AgentChannelPlugin extends Plugin {
                 try { Thread.sleep(interval); } catch (InterruptedException e) { return; }
                 if (!keepaliveRunning || !connected) return;
                 try {
-                    byte[] ping = KoCrypto.sealMessage(tx, KoCrypto.TYPE_PING, new byte[0]);
+                    KoCrypto.Channel ch = channel; if (ch == null) return;
+                    byte[] ping = ch.seal(KoCrypto.TYPE_PING, new byte[0]);
                     long rx0 = lastRx;
                     if (ws != null) ws.send(ByteString.of(ping));
                     boolean acked = false;
