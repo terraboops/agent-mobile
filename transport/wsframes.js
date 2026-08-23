@@ -14,7 +14,11 @@ export function pack(type, box) {
   return Buffer.concat([Buffer.from([type]), box.nonce, box.tag, box.ct]);
 }
 
+export const HEADER_LEN = 1 + 12 + 16; // type + nonce + tag
+
 export function unpack(buf) {
+  // Reject anything that cannot be a sealed box. Callers treat a throw as "drop".
+  if (!Buffer.isBuffer(buf) || buf.length < HEADER_LEN) throw new RangeError('frame too short');
   let o = 0;
   const type = buf[o++];
   const nonce = buf.subarray(o, o + 12); o += 12;

@@ -92,13 +92,19 @@ function encrypt(key, counter, plaintext) {
 }
 
 function decrypt(key, counter, frame) {
-  const iv = Buffer.from(frame.nonce);
-  const d = createDecipheriv(ALGO, key, iv);
-  d.setAuthTag(frame.tag);
+  // EVERYTHING is inside the try: a malformed frame (short nonce, odd tag length,
+  // non-Buffer fields) must be a clean `null`, never an exception that escapes a
+  // socket/datagram handler and takes the process down.
   try {
-    return Buffer.concat([d.update(frame.ct), d.final()]);
+    if (!frame || !frame.nonce || !frame.tag || !frame.ct) return null;
+    const iv = Buffer.from(frame.nonce);
+    const tag = Buffer.from(frame.tag);
+    if (iv.length !== NONCE_LEN || tag.length !== TAG_LEN) return null;
+    const d = createDecipheriv(ALGO, key, iv);
+    d.setAuthTag(tag);
+    return Buffer.concat([d.update(Buffer.from(frame.ct)), d.final()]);
   } catch {
-    return null; // auth failure (wrong key / tamper / MITM)
+    return null; // auth failure (wrong key / tamper / MITM) or malformed frame
   }
 }
 

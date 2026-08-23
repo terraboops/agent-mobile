@@ -49,7 +49,9 @@ export class UdpMedia {
   start({ port = 0, host = '0.0.0.0' } = {}) {
     return new Promise((resolve, reject) => {
       this.socket.on('error', reject);
-      this.socket.on('message', (msg, rinfo) => this._onDatagram(msg, rinfo));
+      this.socket.on('message', (msg, rinfo) => {
+        try { this._onDatagram(msg, rinfo); } catch (e) { this._emit('error', e); }
+      });
       this.socket.bind(port, host, () => {
         this.port = this.socket.address().port;
         resolve(this);
@@ -59,8 +61,13 @@ export class UdpMedia {
 
   _onDatagram(msg, rinfo) {
     if (!this.allow(rinfo)) return;
-    let f; try { f = unpack(msg); } catch { return; }
-    const pt = this.channel.recvBytes({ nonce: f.nonce, ct: f.ct, tag: f.tag });
+    // Nothing below may throw out of the dgram handler: an unauthenticated peer
+    // sending one junk datagram must not be able to crash the receiver.
+    let pt = null;
+    try {
+      const f = unpack(msg);
+      pt = this.channel.recvBytes({ nonce: f.nonce, ct: f.ct, tag: f.tag });
+    } catch { pt = null; }
     if (pt === null) { this._emit('authfail', rinfo); return; }   // AEAD is the real gate
     if (pt.length < 13) return;
     const kind = pt[0];
