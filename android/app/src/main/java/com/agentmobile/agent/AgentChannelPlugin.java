@@ -176,9 +176,13 @@ public class AgentChannelPlugin extends Plugin {
         // fail cleanly — NEVER let KoCrypto.sealMessage throw and crash the app.
         if (tx == null) { call.reject("not connected"); return; }
         int mid = msgId.incrementAndGet();
-        byte[] plain = ("{\"i\":" + mid + ",\"d\":\"" + payload.replace("\"", "\\\"") + "\"}")
-                .getBytes(StandardCharsets.UTF_8);
         try {
+            // Proper JSON encoding (org.json escapes quotes, backslashes, control
+            // chars). The old string-concat only escaped '"', so any payload that
+            // already contained \" or a newline produced invalid/injected JSON and
+            // was silently lost by the agent (e.g. render_result errors with quotes).
+            byte[] plain = new JSONObject().put("i", mid).put("d", payload)
+                    .toString().getBytes(StandardCharsets.UTF_8);
             byte[] frame = KoCrypto.sealMessage(tx, KoCrypto.TYPE_CMD, plain);
             pending.put(mid, call);
             outbound(frame);
