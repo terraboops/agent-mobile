@@ -26,8 +26,9 @@
 //   const jb = new AdaptiveJitterBuffer({ baselineFrames, maxFrames, frameMs });
 //   jb.push(seq, tsMs, frame);   // feed a received packet (may reorder)
 //   jb.pull(nowMs) ->            // next frame to play, or null to wait
-//     { seq, frame, concealed:false }
-//     { seq, frame:null, concealed:true }
+//     { seq, frame, tsMs, concealed:false }
+//     { seq, frame:null, tsMs:null, concealed:true }
+//   jb.tick()                    // once per second: loss-penalty decay
 //   jb.stats() -> { target, lost, concealed, droppedLate, buffered, started }
 
 export class AdaptiveJitterBuffer {
@@ -81,8 +82,19 @@ export class AdaptiveJitterBuffer {
     this._prevTsMs = tsMs;
     this._prevSeq = seq;
 
-    this.buf.set(seq, frame);
+    this.buf.set(seq, { frame, tsMs });
     if (this.next === null) this.next = seq;
+    // Bound the buffer: a huge forward jump (sender reset / long stall) or overflow must not
+    // grow memory or make the playout spend minutes concealing the gap — jump to the live edge.
+    if (seq - this.next > this.max * 4) {
+      this.droppedLate += Math.max(0, this.buf.size - 1);
+      for (const k of this.buf.keys()) if (k < seq) this.buf.delete(k);
+      this.next = seq; this.started = false; this._waitingForLate.clear();
+    } else if (this.buf.size > this.max) {
+      let lowest = Infinity; for (const k of this.buf.keys()) if (k < lowest) lowest = k;
+      this.droppedLate += Math.max(0, lowest - this.next);
+      this.next = lowest; this._waitingForLate.clear();
+    }
 
     const jitterFrames = Math.ceil(this._ewmaJitterMs / this.frameMs);
     this.target = Math.min(this.max, this.baseline + jitterFrames + this._lossPenalty);
@@ -110,7 +122,7 @@ export class AdaptiveJitterBuffer {
       this._waitingForLate.delete(this.next);
       const seq = this.next;
       this.next++;
-      return { seq, frame: cur, concealed: false };
+      return { seq, frame: cur.frame, tsMs: cur.tsMs, concealed: false };
     }
 
     // Next seq not here yet — late-in-transit or lost.
@@ -125,9 +137,11 @@ export class AdaptiveJitterBuffer {
     const seq = this.next;
     this.next++;
     this.concealed++;
-    return { seq, frame: null, concealed: true };
+    return { seq, frame: null, tsMs: null, concealed: true };
   }
 
+  // Call ~once per second (UdpMedia does): decays the loss penalty so `target` returns
+  // to baseline after a burst instead of staying inflated for the whole session.
   tick(nowMs) {
     if (this._lossTimer > 0) {
       this._lossTimer -= 1000;

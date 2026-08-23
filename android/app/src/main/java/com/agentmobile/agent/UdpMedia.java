@@ -162,7 +162,7 @@ public final class UdpMedia {
         Ajb.Frame f;
         long now = SystemClock.elapsedRealtime();
         while ((f = jitter.pull(now)) != null) {
-            sink.onMedia(1, f.seq, tsMs, f.opus, f.concealed);
+            sink.onMedia(1, f.seq, f.concealed ? tsMs : f.tsMs, f.opus, f.concealed);
         }
     }
 

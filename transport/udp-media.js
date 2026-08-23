@@ -40,8 +40,9 @@ export class UdpMedia {
     this._handlers = new Map();
     this._next = null;                    // first seq seen -> stream anchor
     this._firstReq = null;                // most recent AUTHENTICATED sender (rinfo) for replies
-    this.lastKind = 0;                    // kind of the most recent frame
+    this.lastKind = 0;                    // kind of the most recent frame (diagnostics)
     this.lastTsMs = 0;
+    this._tick = null;
   }
 
   on(evt, fn) { (this._handlers.get(evt) || this._handlers.set(evt, []).get(evt)).push(fn); }
@@ -55,6 +56,8 @@ export class UdpMedia {
       });
       this.socket.bind(port, host, () => {
         this.port = this.socket.address().port;
+        this._tick = setInterval(() => { if (this.jb) this.jb.tick(); }, 1000);
+        if (this._tick.unref) this._tick.unref();
         resolve(this);
       });
     });
@@ -94,7 +97,7 @@ export class UdpMedia {
     if (this.jb === null) this.jb = new AdaptiveJitterBuffer({ frameMs: 20 }); // TODO: per-stream
     this.lastKind = kind;
     this.lastTsMs = tsMs;
-    this.jb.push(seq, tsMs, opus);
+    this.jb.push(seq, tsMs, { kind, opus });   // frame carries ITS OWN kind (not the latest one's)
     this.pump();
     this._emit('rcv', { kind, seq, tsMs, from: rinfo });
   }
@@ -123,7 +126,9 @@ export class UdpMedia {
     if (!this.jb) return;
     let out;
     while ((out = this.jb.pull(nowMs))) {
-      this._emit('media', { kind: this.lastKind, seq: out.seq, tsMs: this.lastTsMs, frame: out.frame, concealed: out.concealed });
+      const f = out.frame;   // { kind, opus } or null (concealed)
+      this._emit('media', { kind: f ? f.kind : this.lastKind, seq: out.seq, tsMs: out.tsMs,
+                            frame: f ? f.opus : null, concealed: out.concealed });
     }
   }
 
@@ -146,7 +151,7 @@ export class UdpMedia {
   }
 
   get learnedPeer() { return this._firstReq; }
-  close() { try { this.socket.close(); } catch {} }
+  close() { if (this._tick) clearInterval(this._tick); try { this.socket.close(); } catch {} }
 }
 
 import { AdaptiveJitterBuffer } from './adaptive-jitter.js';
