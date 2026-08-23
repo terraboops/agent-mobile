@@ -21,7 +21,7 @@ let pass = 0, fail = 0;
 const ok = (cond, name) => { if (cond) { pass++; console.log('  ok  ', name); } else { fail++; console.log('  FAIL', name); } };
 
 // ---- static server for the app web-layer ------------------------------------
-const ROOT = join(import.meta.dirname, '..', 'app');
+const ROOT = join(import.meta.dirname, '..', 'www');
 const TYPES = { html: 'text/html', js: 'application/javascript', css: 'text/css' };
 const appServer = http.createServer(async (req, res) => {
   try {
@@ -66,13 +66,23 @@ await context.route('**/*', (route) => {
   return route.abort();
 });
 
-// Neutralize storage + popups at the engine level (the native policy).
+// NO engine-level stubs: this test used to disable localStorage/window.open in the harness
+// and then "prove" they were refused — proving only the stubs. The real webview has DOM
+// storage (surface-host uses it) and window.open is neutralised natively (M1/M4:
+// setSupportMultipleWindows(false) + navigation guard), which a desktop browser can't model.
+// What this test CAN prove honestly: no bytes reach the canary, the network APIs are refused
+// by CSP, and WebRTC is unreachable. Storage/open are reported, not asserted.
+//
+// Minimal Capacitor shim: the real page talks to the native AgentChannel plugin; here the
+// plugin's send() is the Node channel round-trip (exposed as __native_send).
 await context.addInitScript(() => {
-  try {
-    Object.defineProperty(window, 'localStorage', { get: () => { throw new Error('storage disabled'); } });
-    Object.defineProperty(window, 'sessionStorage', { get: () => { throw new Error('storage disabled'); } });
-    window.open = function () { throw new Error('popups disabled'); };
-  } catch (_) {}
+  const noop = () => Promise.resolve({});
+  window.Capacitor = { Plugins: { AgentChannel: {
+    send: ({ payload }) => window.__native_send(String(payload)).then((reply) => ({ reply })),
+    addListener: () => Promise.resolve({ remove() {} }),
+    isAudioRunning: () => Promise.resolve({ running: false }),
+    startAudio: noop, stopAudio: noop, connect: noop, identify: noop, resetPairing: noop,
+  } } };
 });
 
 const page = await context.newPage();
@@ -110,10 +120,12 @@ console.log('  API-level attack results:', JSON.stringify(attacks));
 
 console.log('\n=== containment verdicts ===');
 // Layer-1 (CSP / API policy): these must throw or be refused synchronously.
-for (const k of ['fetch', 'img', 'storage', 'open', 'ws', 'webrtc']) {
+for (const k of ['fetch', 'img', 'ws', 'webrtc']) {
   const a = attacks[k];
   ok(a && a.ok === false, `agent JS cannot ${k} (refused${a ? ': ' + a.val : ''})`);
 }
+console.log('        (informational, not asserted here) storage:', JSON.stringify(attacks.storage), 'open:', JSON.stringify(attacks.open),
+  '— DOM storage is app-local by design; popups/navigation are refused natively (EgressWebViewClient + no multiple windows), which a desktop browser cannot model.');
 
 // Layer-2 (no egress): the load-bearing proof. The bundle fires xhr/sendBeacon/
 // fetch/img at a LIVE canary. Whether CSP stops them before the network layer
@@ -131,7 +143,7 @@ ok(bodyText.includes('channel works'), 'channel round-trip delivered agent conte
 
 console.log('\n=== identity badge ===');
 const badge = await page.textContent('#badge');
-ok(badge.includes(gw.agentId), 'unforgeable identity badge shows the pinned agent key');
+ok(!/CONNECTED|✓|PINNED|PAIRED/.test(badge), 'webview header makes NO trust claim (the identity badge is native, outside the webview)');
 
 await browser.close();
 appServer.close();
