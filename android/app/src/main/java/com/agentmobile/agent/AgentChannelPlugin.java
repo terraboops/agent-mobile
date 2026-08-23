@@ -645,8 +645,7 @@ public class AgentChannelPlugin extends Plugin {
                     am.setMode(AudioManager.MODE_IN_COMMUNICATION);
                     am.setSpeakerphoneOn(true);
                     am.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT);
-                    am.setStreamVolume(AudioManager.STREAM_VOICE_CALL,
-                        am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL), 0);
+                    // (no forced max volume — the user's level is theirs; see L2)
                 } catch (Exception e) { Log.w("AgentChannel", "webrtc route: " + e); }
                 try { webRtc.start(); } catch (Exception e) { Log.w("AgentChannel", "webrtc start: " + e); }
             });
@@ -674,7 +673,17 @@ public class AgentChannelPlugin extends Plugin {
 
     private void closeWebRtc() {
         WebRtcMedia w = webRtc; webRtc = null;
-        if (w != null) { try { w.close(); } catch (Exception ignored) {} }
+        if (w != null) {
+            try { w.close(); } catch (Exception ignored) {}
+            // Give the audio route back: communication mode + speakerphone + focus were taken
+            // for the call; leaving them set after disconnect changed every other app's audio.
+            try {
+                AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+                am.setSpeakerphoneOn(false);
+                am.setMode(AudioManager.MODE_NORMAL);
+                am.abandonAudioFocus(null);
+            } catch (Exception ignored) {}
+        }
     }
 
     /** Reply downlink from UDP media: decode + play in order (Concentus). A
@@ -842,10 +851,7 @@ public class AgentChannelPlugin extends Plugin {
             // in communication mode the default output is the EARPIECE; route to the loudspeaker
             // so downlink (loopback / agent replies) is audible, and lift the voice-call stream
             try { am.setSpeakerphoneOn(true); } catch (Exception e) { Log.w("AgentChannel", "speaker on: " + e); }
-            try {
-                am.setStreamVolume(AudioManager.STREAM_VOICE_CALL,
-                    am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL), 0);
-            } catch (Exception e) { Log.w("AgentChannel", "volume: " + e); }
+            // (no forced max volume — the user's level is theirs; see L2)
             // foreground service (microphone type) keeps the process foreground-active so the
             // RECORD_AUDIO app-op check passes for sustained full-duplex capture
             try {
@@ -1010,13 +1016,16 @@ public class AgentChannelPlugin extends Plugin {
                 replyThread = new Thread(() -> {
                     short[] zero = new short[AUDIO_FRAME];
                     try {
-                        while (!destroying) {
+                        // Run while connected (or until the queued reply has drained); do NOT spin
+                        // writing silence to the HAL forever after a disconnect (battery + route lock).
+                        while (!destroying && (connected || !replyQueue.isEmpty())) {
                             short[] f = replyQueue.poll(40, TimeUnit.MILLISECONDS);
                             if (f == null) { try { playTrack.write(zero, 0, AUDIO_FRAME); } catch (Exception ignored) {} }
                             else { try { playTrack.write(f, 0, f.length); } catch (Exception ignored) {} }
                         }
                     } catch (InterruptedException ignored) {}
-                    try { playTrack.stop(); playTrack.release(); } catch (Exception ignored) {}
+                    AudioTrack pt = playTrack; playTrack = null;   // ensureReplyPlayback() recreates on demand
+                    try { if (pt != null) { pt.stop(); pt.release(); } } catch (Exception ignored) {}
                 }, "agent-reply-play");
                 replyThread.setDaemon(true);
                 replyThread.start();
