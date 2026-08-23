@@ -44,6 +44,24 @@ public class MainActivity extends BridgeActivity {
             android.webkit.WebSettings ws = bridge.getWebView().getSettings();
             ws.setSupportMultipleWindows(false);
             ws.setJavaScriptCanOpenWindowsAutomatically(false);
+            // The webview has NO business with device sensors: the mic is native (plugin,
+            // consent-gated) and there is no geolocation feature. Capacitor's defaults enable
+            // geolocation and auto-grant getUserMedia AUDIO_CAPTURE once RECORD_AUDIO is held —
+            // that would let main-window JS open the mic behind the native gate.
+            ws.setGeolocationEnabled(false);
+            bridge.getWebView().setWebChromeClient(new com.getcapacitor.BridgeWebChromeClient(bridge) {
+                @Override public void onPermissionRequest(android.webkit.PermissionRequest request) {
+                    android.util.Log.w("MainActivity", "DENIED webview permission request: "
+                        + java.util.Arrays.toString(request.getResources()));
+                    request.deny();
+                }
+                @Override public void onGeolocationPermissionsShowPrompt(String origin, android.webkit.GeolocationPermissions.Callback cb) {
+                    cb.invoke(origin, false, false);
+                }
+                @Override public boolean onCreateWindow(android.webkit.WebView v, boolean d, boolean u, android.os.Message m) {
+                    return false; // never spawn a window
+                }
+            });
         } catch (Exception e) {
             android.util.Log.e("MainActivity", "webview window settings: " + e);
         }
