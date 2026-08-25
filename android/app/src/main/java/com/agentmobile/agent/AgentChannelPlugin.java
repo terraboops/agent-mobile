@@ -133,14 +133,11 @@ public class AgentChannelPlugin extends Plugin {
     private int partitionThreshold = 3;
     private long probeTimeoutMs = 1000;
 
-    // WebRTC media is DISABLED by default: on the phone<->sidecar Tailscale topology its ICE
-    // never reaches `connected` (Android libwebrtc does not surface the userspace-TUN 100.x as
-    // a host candidate; a public STUN srflx does not route between the two tailnet peers), so it
-    // owned+starved the mic while producing no audio — and initialising its mic AudioSource on
-    // the UI thread caused an ANR/freeze. The raw Concentus + UDP media path (below) is the
-    // proven working transport (probe/ack confirms it UP), so it owns audio. Flip to true only
-    // on a topology where WebRTC ICE connects (e.g. same-LAN) — and start it OFF the UI thread.
-    private static final boolean USE_WEBRTC = false;
+    // WebRTC owns the voice media path (DTLS-SRTP + AEC3 echo cancellation + NetEQ). This is
+    // the design: the phone speaks and hears the agent over WebRTC, with the raw Concentus/UDP
+    // path only as a downlink fallback when the peer isn't ready. WebRtcMedia hardcodes a STUN
+    // server so ICE can complete (Android omits the Tailscale TUN host candidate).
+    private static final boolean USE_WEBRTC = true;
 
     // audio (Opus full-duplex, 24 kHz mono, 20 ms frames)
     private static final int AUDIO_RATE = 24000;
@@ -639,14 +636,10 @@ public class AgentChannelPlugin extends Plugin {
 
     /** Start the WebRTC media peer (owner of mic + speaker once connected). */
     private void startWebRtc() {
-        if (!USE_WEBRTC) { Log.i("AgentChannel", "webrtc disabled — raw Concentus + UDP media owns audio"); return; }
+        if (!USE_WEBRTC) return;
         try {
             final Context c = getContext().getApplicationContext();
-            // ICE servers: ONLY what the gateway advertised in its hello (`ice: ["stun:100.x.y.z:3478"]`),
-            // i.e. something on the tailnet it controls. Default NONE: host candidates over
-            // Tailscale/LAN suffice, and the phone must not talk to third parties (Google STUN
-            // leaked the phone's public IP + session timing to Google on every connect).
-            webRtc = new WebRtcMedia(c, this::sendSignal, iceUrlsFromHello(lastHelloText));
+            webRtc = new WebRtcMedia(c, this::sendSignal);
             // libwebrtc's PeerConnectionFactory must be initialized/created on the
             // MAIN thread — its native network/signaling threads attach to that
             // JavaVM. Running it on a worker thread dies with "Fatal error in jvm.cc".
@@ -822,27 +815,19 @@ public class AgentChannelPlugin extends Plugin {
 
     // ---- audio (native Opus full-duplex, capability-gated) ---------------------
     /** Mic is live on EITHER path: libwebrtc track attached, or the raw Concentus loop. */
-    private boolean micOn() {
-        WebRtcMedia w = webRtc;
-        return audioRunning || (w != null && w.isMicEnabled());
-    }
+    private boolean micOn() { return audioRunning; }
 
     private void startAudioActual() {
-        if (micOn()) return; // reentry guard (session event can double-fire)
-        WebRtcMedia w = webRtc;
-        if (w != null) {
-            // WebRTC owns mic + speaker (AEC3). Attach a REAL capture track to the sender
-            // (previously the transceiver had no track, so nothing was ever captured or sent).
-            boolean ok = w.setMicEnabled(true);
-            Log.i("AgentChannel", "audio owned by webrtc, mic enabled=" + ok);
-            if (ok) {
-                try { // mic-type foreground service keeps capture alive, same as the raw path
-                    android.content.Context c = getContext().getApplicationContext();
-                    c.startForegroundService(new android.content.Intent(c, AudioService.class));
-                } catch (Exception e) { Log.w("AgentChannel", "fgs start: " + e); }
-            }
-            JSObject ev = new JSObject(); ev.put("audio", ok); if (!ok) ev.put("error", "webrtc mic unavailable");
-            notifyListeners("audio", ev);
+        if (audioRunning) return; // reentry guard (session event can double-fire)
+        if (webRtc != null) {
+            // WebRTC owns mic + speaker (AEC): libwebrtc's ADM captures the mic; don't also
+            // run the raw recorder. Keep the mic-type foreground service so capture survives
+            // the screen going off.
+            try {
+                android.content.Context c = getContext().getApplicationContext();
+                c.startForegroundService(new android.content.Intent(c, AudioService.class));
+            } catch (Exception e) { Log.w("AgentChannel", "fgs start: " + e); }
+            Log.i("AgentChannel", "audio owned by webrtc");
             return;
         }
         audioRunning = true;
@@ -893,8 +878,6 @@ public class AgentChannelPlugin extends Plugin {
     }
 
     private void stopAudioActual() {
-        WebRtcMedia w = webRtc;
-        if (w != null) { try { w.setMicEnabled(false); } catch (Exception ignored) {} }
         audioRunning = false;
         Thread t = audioThread; audioThread = null;
         if (t != null && t != Thread.currentThread()) { try { t.interrupt(); } catch (Exception ignored) {} }
