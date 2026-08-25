@@ -133,6 +133,15 @@ public class AgentChannelPlugin extends Plugin {
     private int partitionThreshold = 3;
     private long probeTimeoutMs = 1000;
 
+    // WebRTC media is DISABLED by default: on the phone<->sidecar Tailscale topology its ICE
+    // never reaches `connected` (Android libwebrtc does not surface the userspace-TUN 100.x as
+    // a host candidate; a public STUN srflx does not route between the two tailnet peers), so it
+    // owned+starved the mic while producing no audio — and initialising its mic AudioSource on
+    // the UI thread caused an ANR/freeze. The raw Concentus + UDP media path (below) is the
+    // proven working transport (probe/ack confirms it UP), so it owns audio. Flip to true only
+    // on a topology where WebRTC ICE connects (e.g. same-LAN) — and start it OFF the UI thread.
+    private static final boolean USE_WEBRTC = false;
+
     // audio (Opus full-duplex, 24 kHz mono, 20 ms frames)
     private static final int AUDIO_RATE = 24000;
     private static final int AUDIO_FRAME = 480; // 20 ms at 24 kHz
@@ -630,6 +639,7 @@ public class AgentChannelPlugin extends Plugin {
 
     /** Start the WebRTC media peer (owner of mic + speaker once connected). */
     private void startWebRtc() {
+        if (!USE_WEBRTC) { Log.i("AgentChannel", "webrtc disabled — raw Concentus + UDP media owns audio"); return; }
         try {
             final Context c = getContext().getApplicationContext();
             // ICE servers: ONLY what the gateway advertised in its hello (`ice: ["stun:100.x.y.z:3478"]`),
