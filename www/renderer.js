@@ -159,6 +159,39 @@
       else { w.classList.remove('show'); }
     }
   }
+  // ---- conversation log (visible confirmation of turns) ---------------------
+  // A compact, scrollable strip showing "you: <transcript>" and the agent's reply
+  // text. This is what tells the user her speech was heard + transcribed correctly,
+  // and what the agent said — independent of whether TTS audio played.
+  function logEl() {
+    var el = document.getElementById('convlog');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'convlog';
+      el.style.cssText = 'max-width:560px;margin:6px auto 0;padding:0 18px;'
+        + 'display:flex;flex-direction:column;gap:6px;';
+      var ui = document.getElementById('ui');
+      (ui && ui.parentNode ? ui.parentNode : document.body).insertBefore(el, ui ? ui.nextSibling : null);
+    }
+    return el;
+  }
+  function logLine(who, text) {
+    text = String(text == null ? '' : text).trim();
+    if (!text) return;
+    var el = logEl();
+    var row = document.createElement('div');
+    var mine = who === 'you';
+    row.style.cssText = 'font-size:13px;line-height:1.4;padding:8px 11px;border-radius:10px;'
+      + (mine
+          ? 'background:#1b2735;color:#cdd9e5;align-self:flex-end;border:1px solid #2a3a4d;'
+          : 'background:#161b22;color:#e6edf3;align-self:flex-start;border:1px solid #30363d;');
+    row.textContent = (mine ? '🗣 ' : '🤖 ') + text;
+    el.appendChild(row);
+    while (el.childNodes.length > 12) el.removeChild(el.firstChild); // keep it light
+    row.scrollIntoView({ block: 'nearest' });
+  }
+  window.__logLine = logLine;
+
   window.__applyStatus = applyStatus;
 
   // Render feedback from the legacy viz/svg sandboxes: a failing viz is shown inline and
@@ -202,7 +235,8 @@
     // NOT rendered as a text bubble. The display shows only agent-pushed widgets
     // (components). Leaving #ui untouched also keeps widgets from being wiped by
     // a mid-session spoken reply.
-    else if (m && m.type === 'text') { /* spoken only — no on-screen text */ }
+    else if (m && m.type === 'transcript') { logLine('you', m.text); }
+    else if (m && m.type === 'text') { logLine('agent', m.text); }  // show reply text too (visible confirmation; TTS still speaks it)
     else if (m && m.type === 'status') { if (window.__applyStatus) window.__applyStatus(m); }
     else if (m && m.echo !== undefined) draw({ text: 'agent › ' + m.echo });
   });
