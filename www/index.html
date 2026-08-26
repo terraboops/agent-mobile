@@ -172,7 +172,8 @@
   var N=['RTCPeerConnection','webkitRTCPeerConnection','mozRTCPeerConnection','RTCDataChannel','RTCIceCandidate','RTCSessionDescription','RTCDtlsTransport','RTCIceTransport','RTCSctpTransport','RTCRtpSender','RTCRtpReceiver','RTCRtpTransceiver'];
   for (var i=0;i<N.length;i++){ try{ Object.defineProperty(window,N[i],{value:undefined,writable:false,configurable:false,enumerable:false}); }catch(e){} }
 })();</script>
-  <script>window.AGENT_URL = 'ws://YOUR-GATEWAY-HOST:8123';</script>
+  <!-- Gateway address comes from config.local.js (gitignored). Copy config.example.js to set it. -->
+  <script src="/config.local.js"></script>
   <script src="/bridge.js"></script>
   <script src="/vendor/apexcharts.min.js"></script>
   <script src="/renderer.js"></script>
