@@ -111,6 +111,7 @@ public class AgentChannelPlugin extends Plugin {
     private volatile boolean keepaliveRunning;
     private PluginCall connectCall;
     private volatile boolean connectConsented; // native per-capability consent gate (connect)
+    private volatile boolean micMuted; // native mute state (issue #1): AudioManager.setMicrophoneMute
     private volatile String consentedHost;     // the ONE gateway host the user consented to
 
     // Identity badge states (native overlay in MainActivity — the webview cannot reach it).
@@ -330,7 +331,7 @@ public class AgentChannelPlugin extends Plugin {
     private void notifyAudioState() {
         AudioSink s = audioSink;
         if (s == null) return;
-        final boolean running = micOn();
+        final boolean running = connected && !micMuted;   // mic is LIVE when connected and not muted
         Activity a = getActivity();
         if (a != null) a.runOnUiThread(() -> { try { s.onAudio(running); } catch (Exception ignored) {} });
         else { try { s.onAudio(running); } catch (Exception ignored) {} }
@@ -340,19 +341,19 @@ public class AgentChannelPlugin extends Plugin {
      * Toggle the mic from the NATIVE control (issue #1). Consent/permission still gate it:
      * start only when RECORD_AUDIO is granted, else ask the webview flow to request it.
      */
-    public void nativeToggleMic() {
+    public void nativeToggleMic() { setMicMuted(!micMuted); }
+
+    /** Mute/unmute the microphone. WebRTC owns capture (so start/stopAudio can't gate it);
+     *  AudioManager.setMicrophoneMute() silences the mic hardware for whoever is capturing —
+     *  the reliable, path-independent mute. */
+    public void setMicMuted(boolean muted) {
         try {
-            if (micOn()) {
-                stopAudioActual();
-            } else if (getActivity() != null
-                    && getActivity().checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                startAudioActual();
-            } else {
-                Log.w("AgentChannel", "nativeToggleMic: RECORD_AUDIO not granted — asking webview to request");
-                notifyListeners("micPermissionNeeded", new JSObject());
-            }
-            notifyAudioState();
-        } catch (Exception e) { Log.w("AgentChannel", "nativeToggleMic: " + e); }
+            micMuted = muted;
+            AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+            am.setMicrophoneMute(muted);
+            Log.i("AgentChannel", "mic " + (muted ? "MUTED" : "unmuted") + " (native)");
+        } catch (Exception e) { Log.w("AgentChannel", "setMicMuted: " + e); }
+        notifyAudioState();
     }
 
     /** Update the native badge (UI thread). */
@@ -425,6 +426,7 @@ public class AgentChannelPlugin extends Plugin {
                     derived = false;
                     dropSession("ws failure: " + t);
                     emitConn(false);
+                    notifyAudioState();
                     if (!identityBlocked) badge(pendingAgentId, ID_DISCONNECTED);
                     stopAudioActual();   // never leave the mic "on" with no uplink (encodeLoop exits on !connected)
                     closeMedia();
@@ -438,6 +440,7 @@ public class AgentChannelPlugin extends Plugin {
                         derived = false;
                         dropSession("ws closed " + code + " " + reason);
                         emitConn(false);
+                        notifyAudioState();
                         if (!identityBlocked) badge(pendingAgentId, ID_DISCONNECTED);
                         stopAudioActual();
                         closeMedia();
@@ -593,6 +596,7 @@ public class AgentChannelPlugin extends Plugin {
             tryStartUdpMedia(r.channel, helloText);
             pendingAgentId = r.agentId;
             derived = true; connected = true;
+            setMicMuted(false);   // fresh session starts unmuted; refreshes the native mic button
             reconnectDelayMs = 2000; // fresh handshake -> reset reconnect backoff
             emitConn(true);
             startWebRtc();
