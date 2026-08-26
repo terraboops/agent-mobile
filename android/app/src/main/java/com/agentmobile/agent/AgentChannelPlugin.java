@@ -643,50 +643,46 @@ public class AgentChannelPlugin extends Plugin {
      */
     private void routeCommsAudio(AudioManager am) {
         try {
-            if (Build.VERSION.SDK_INT >= 31) {
-                java.util.List<android.media.AudioDeviceInfo> devs = am.getAvailableCommunicationDevices();
-                int[] pref = {
-                    android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
-                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-                    android.media.AudioDeviceInfo.TYPE_HEARING_AID,
-                    android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER,
-                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
-                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-                    android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
-                };
-                android.media.AudioDeviceInfo pick = null, speaker = null;
-                for (int want : pref) {
-                    for (android.media.AudioDeviceInfo d : devs) if (d.getType() == want) { pick = d; break; }
-                    if (pick != null) break;
+            // Detect a connected Bluetooth headset (has BOTH speaker and mic, via SCO).
+            boolean btHeadset = false;
+            try {
+                for (android.media.AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                    int t = d.getType();
+                    if (t == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                            || t == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
+                            || t == android.media.AudioDeviceInfo.TYPE_HEARING_AID) { btHeadset = true; break; }
                 }
-                for (android.media.AudioDeviceInfo d : devs)
-                    if (d.getType() == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) speaker = d;
-                android.media.AudioDeviceInfo target = (pick != null) ? pick : speaker;
-                if (target != null) {
-                    boolean ok = am.setCommunicationDevice(target);
-                    Log.i("AgentChannel", "comms route -> type=" + target.getType()
-                        + (pick != null ? " (headset)" : " (speaker)") + " ok=" + ok);
-                } else {
-                    Log.w("AgentChannel", "comms route: no communication device available");
+            } catch (Exception ignored) {}
+
+            if (btHeadset) {
+                // Route BOTH mic and speaker over the Bluetooth SCO link. startBluetoothSco() is
+                // what actually ENGAGES the BT microphone — setCommunicationDevice() alone left the
+                // SCO mic down, so there was no input source at all (mic went dead). SCO comes up
+                // asynchronously; the capture picks it up once the link is established.
+                am.setSpeakerphoneOn(false);
+                try { am.setBluetoothScoOn(true); } catch (Exception ignored) {}
+                try { am.startBluetoothSco(); } catch (Exception ignored) {}
+                if (Build.VERSION.SDK_INT >= 31) {
+                    // Also express the preference through the modern API so output follows the headset.
+                    try {
+                        for (android.media.AudioDeviceInfo d : am.getAvailableCommunicationDevices()) {
+                            int t = d.getType();
+                            if (t == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                                    || t == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET
+                                    || t == android.media.AudioDeviceInfo.TYPE_HEARING_AID) {
+                                am.setCommunicationDevice(d); break;
+                            }
+                        }
+                    } catch (Exception ignored) {}
                 }
+                Log.i("AgentChannel", "comms route -> bluetooth headset (SCO mic+speaker)");
             } else {
-                // Legacy (< API 31): use BT SCO if a Bluetooth output is connected, else speaker.
-                boolean bt = false;
-                try {
-                    for (android.media.AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
-                        int t = d.getType();
-                        if (t == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
-                                || t == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) { bt = true; break; }
-                    }
-                } catch (Exception ignored) {}
-                if (bt) {
-                    try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
-                    am.setSpeakerphoneOn(false);
-                    Log.i("AgentChannel", "comms route -> bluetooth SCO (legacy)");
-                } else {
-                    am.setSpeakerphoneOn(true);
-                    Log.i("AgentChannel", "comms route -> speaker (legacy)");
-                }
+                // No BT headset: the original working route — built-in mic + loudspeaker (comms
+                // mode's raw default is the quiet earpiece, so we pick the speaker explicitly).
+                if (Build.VERSION.SDK_INT >= 31) { try { am.clearCommunicationDevice(); } catch (Exception ignored) {} }
+                try { am.setBluetoothScoOn(false); am.stopBluetoothSco(); } catch (Exception ignored) {}
+                am.setSpeakerphoneOn(true);
+                Log.i("AgentChannel", "comms route -> speaker (built-in mic)");
             }
         } catch (Exception e) {
             Log.w("AgentChannel", "routeCommsAudio: " + e);
@@ -696,12 +692,9 @@ public class AgentChannelPlugin extends Plugin {
     /** Release the comms-audio route on disconnect (give the system default back). */
     private void clearCommsAudio(AudioManager am) {
         try {
-            if (Build.VERSION.SDK_INT >= 31) {
-                am.clearCommunicationDevice();
-            } else {
-                try { am.setBluetoothScoOn(false); am.stopBluetoothSco(); } catch (Exception ignored) {}
-                am.setSpeakerphoneOn(false);
-            }
+            try { am.setBluetoothScoOn(false); am.stopBluetoothSco(); } catch (Exception ignored) {}
+            if (Build.VERSION.SDK_INT >= 31) { try { am.clearCommunicationDevice(); } catch (Exception ignored) {} }
+            am.setSpeakerphoneOn(false);
         } catch (Exception e) { Log.w("AgentChannel", "clearCommsAudio: " + e); }
     }
 
