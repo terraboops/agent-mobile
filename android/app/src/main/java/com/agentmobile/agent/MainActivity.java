@@ -27,6 +27,8 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
 
     private TextView identityBadge;
+    private TextView micButton;   // NATIVE mic/mute control (issue #1), bound to the plugin
+    private volatile boolean micOnState;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -72,6 +74,59 @@ public class MainActivity extends BridgeActivity {
         } catch (Exception e) {
             android.util.Log.e("MainActivity", "identity sink: " + e);
         }
+        installMicButton();
+        try {
+            AgentChannelPlugin p = (AgentChannelPlugin) bridge.getPlugin("AgentChannel").getInstance();
+            if (p != null) {
+                final AgentChannelPlugin plugin = p;
+                if (micButton != null) micButton.setOnClickListener(v -> plugin.nativeToggleMic());
+                p.setAudioSink(running -> runOnUiThread(() -> renderMic(running)));
+            }
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "audio sink: " + e);
+        }
+    }
+
+    /** The NATIVE mic/mute button — a round control OUTSIDE the webview (issue #1). Tapping it
+     *  toggles the plugin mic directly; its filled/hollow state tracks real native audio state,
+     *  so a webview control can no longer wedge or drift it. */
+    private void installMicButton() {
+        TextView b = new TextView(this);
+        b.setText("🎤"); // 🎤
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
+        b.setGravity(Gravity.CENTER);
+        b.setClickable(true);
+        b.setFocusable(true);
+        micButton = b;
+        int sz = dp(64);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(sz, sz, Gravity.BOTTOM | Gravity.START);
+        lp.leftMargin = dp(40);
+        lp.bottomMargin = dp(28);
+        try {
+            ((FrameLayout) findViewById(android.R.id.content)).addView(b, lp);
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "mic button add: " + e);
+        }
+        renderMic(false);
+    }
+
+    /** Filled purple ring = mic LIVE (unmuted); hollow gray = muted. */
+    private void renderMic(boolean running) {
+        micOnState = running;
+        if (micButton == null) return;
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.OVAL);
+        if (running) {
+            d.setColor(0x4D8957E5);              // translucent purple fill
+            d.setStroke(dp(3), 0xFF8957E5);      // purple ring
+            micButton.setAlpha(1f);
+        } else {
+            d.setColor(0x00000000);              // transparent
+            d.setStroke(dp(3), 0xFF30363D);      // gray ring
+            micButton.setAlpha(0.75f);
+        }
+        micButton.setBackground(d);
+        micButton.setContentDescription(running ? "Mute microphone" : "Unmute microphone");
     }
 
     /** Sink fired (on the UI thread) with the outcome of the authenticated handshake. */

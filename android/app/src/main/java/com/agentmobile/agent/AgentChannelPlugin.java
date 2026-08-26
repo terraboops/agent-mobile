@@ -290,6 +290,7 @@ public class AgentChannelPlugin extends Plugin {
         if (getActivity() != null
                 && getActivity().checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startAudioActual();
+            notifyAudioState();
             call.resolve();
         } else {
             // Denied: say so, instead of resolving as if the mic were on (the ring showed
@@ -319,6 +320,40 @@ public class AgentChannelPlugin extends Plugin {
      *  on an unforgeable view the webview cannot reach. Fires on the UI thread. */
     private volatile IdentitySink identitySink;
     public void setIdentitySink(IdentitySink sink) { this.identitySink = sink; }
+
+    /** Native audio/mic state sink: MainActivity installs it so the NATIVE mic button reflects
+     *  real capture state (the webview cannot fake it). Fires on the UI thread. */
+    public interface AudioSink { void onAudio(boolean running); }
+    private volatile AudioSink audioSink;
+    public void setAudioSink(AudioSink sink) { this.audioSink = sink; if (sink != null) notifyAudioState(); }
+
+    private void notifyAudioState() {
+        AudioSink s = audioSink;
+        if (s == null) return;
+        final boolean running = micOn();
+        Activity a = getActivity();
+        if (a != null) a.runOnUiThread(() -> { try { s.onAudio(running); } catch (Exception ignored) {} });
+        else { try { s.onAudio(running); } catch (Exception ignored) {} }
+    }
+
+    /**
+     * Toggle the mic from the NATIVE control (issue #1). Consent/permission still gate it:
+     * start only when RECORD_AUDIO is granted, else ask the webview flow to request it.
+     */
+    public void nativeToggleMic() {
+        try {
+            if (micOn()) {
+                stopAudioActual();
+            } else if (getActivity() != null
+                    && getActivity().checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                startAudioActual();
+            } else {
+                Log.w("AgentChannel", "nativeToggleMic: RECORD_AUDIO not granted — asking webview to request");
+                notifyListeners("micPermissionNeeded", new JSObject());
+            }
+            notifyAudioState();
+        } catch (Exception e) { Log.w("AgentChannel", "nativeToggleMic: " + e); }
+    }
 
     /** Update the native badge (UI thread). */
     private void badge(String id, String state) {
@@ -936,6 +971,7 @@ public class AgentChannelPlugin extends Plugin {
             Log.i("AgentChannel", "audio on; recorder state=" + recorder.getState()
                 + " hwRate=" + recorder.getSampleRate() + " minBuf=" + minRec);
             JSObject ev = new JSObject(); ev.put("audio", true); notifyListeners("audio", ev);
+            notifyAudioState();
         } catch (Exception e) {
             audioRunning = false;
             JSObject ev = new JSObject(); ev.put("audio", false); ev.put("error", String.valueOf(e));
@@ -964,6 +1000,7 @@ public class AgentChannelPlugin extends Plugin {
         } catch (Exception ignored) {}
         recorder = null; track = null; encoder = null; decoder = null;
         JSObject ev = new JSObject(); ev.put("audio", false); notifyListeners("audio", ev);
+        notifyAudioState();
     }
 
     private void encodeLoop() {

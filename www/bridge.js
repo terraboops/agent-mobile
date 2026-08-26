@@ -110,6 +110,17 @@
       .catch(function () { return false; });
   };
 
+  // Start the mic if it is not already running — NEVER stop it. Safe to call on every
+  // (re)connect; the native mic button (MainActivity) is the only thing that mutes.
+  window.__ensureMicOn = function () {
+    var P = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AgentChannel;
+    if (!P || !P.isAudioRunning) return Promise.resolve(false);
+    return P.isAudioRunning().then(function (r) {
+      if (r && r.running) return true;
+      return P.startAudio().then(function () { return true; });
+    }).catch(function () { return false; });
+  };
+
   window.__agent = {
     onMessage: [],
     send: function (payload) {
@@ -180,7 +191,10 @@
         // we must NOT wait on it (the greeting is what starts the fresh session).
         if (window.__mode === 'new') window.__agent.send('/new');
         window.__agent.send('hello from Pixel');
-        window.toggleAudio(); window.__syncLiveCtl();
+        // Idempotent: ensure the mic is ON without TOGGLING. The old toggleAudio() flipped the
+        // mic state on EVERY session connect, so an auto-reconnect turned the mic OFF under the
+        // user and the control wedged (issue #1). The native mic button owns muting now.
+        window.__ensureMicOn(); window.__syncLiveCtl();
       });
       window.Capacitor.Plugins.AgentChannel.addListener('partition', function (d) {
         window.__pushAgentMessage(JSON.stringify({
