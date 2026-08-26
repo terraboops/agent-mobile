@@ -10,6 +10,7 @@ import androidx.activity.result.ActivityResult;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioManager;
+import android.os.Build;
 import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
@@ -634,6 +635,76 @@ public class AgentChannelPlugin extends Plugin {
         return out;
     }
 
+    /**
+     * Route communication audio to the system-preferred device: a connected Bluetooth or
+     * wired/USB headset if present, otherwise the built-in loudspeaker (a voice assistant must
+     * be audible hands-free when there is no headset). The old code forced setSpeakerphoneOn(true),
+     * which pinned output to the phone speaker and OVERRODE a connected Bluetooth device.
+     */
+    private void routeCommsAudio(AudioManager am) {
+        try {
+            if (Build.VERSION.SDK_INT >= 31) {
+                java.util.List<android.media.AudioDeviceInfo> devs = am.getAvailableCommunicationDevices();
+                int[] pref = {
+                    android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
+                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    android.media.AudioDeviceInfo.TYPE_HEARING_AID,
+                    android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER,
+                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                    android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+                };
+                android.media.AudioDeviceInfo pick = null, speaker = null;
+                for (int want : pref) {
+                    for (android.media.AudioDeviceInfo d : devs) if (d.getType() == want) { pick = d; break; }
+                    if (pick != null) break;
+                }
+                for (android.media.AudioDeviceInfo d : devs)
+                    if (d.getType() == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) speaker = d;
+                android.media.AudioDeviceInfo target = (pick != null) ? pick : speaker;
+                if (target != null) {
+                    boolean ok = am.setCommunicationDevice(target);
+                    Log.i("AgentChannel", "comms route -> type=" + target.getType()
+                        + (pick != null ? " (headset)" : " (speaker)") + " ok=" + ok);
+                } else {
+                    Log.w("AgentChannel", "comms route: no communication device available");
+                }
+            } else {
+                // Legacy (< API 31): use BT SCO if a Bluetooth output is connected, else speaker.
+                boolean bt = false;
+                try {
+                    for (android.media.AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                        int t = d.getType();
+                        if (t == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                                || t == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) { bt = true; break; }
+                    }
+                } catch (Exception ignored) {}
+                if (bt) {
+                    try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
+                    am.setSpeakerphoneOn(false);
+                    Log.i("AgentChannel", "comms route -> bluetooth SCO (legacy)");
+                } else {
+                    am.setSpeakerphoneOn(true);
+                    Log.i("AgentChannel", "comms route -> speaker (legacy)");
+                }
+            }
+        } catch (Exception e) {
+            Log.w("AgentChannel", "routeCommsAudio: " + e);
+        }
+    }
+
+    /** Release the comms-audio route on disconnect (give the system default back). */
+    private void clearCommsAudio(AudioManager am) {
+        try {
+            if (Build.VERSION.SDK_INT >= 31) {
+                am.clearCommunicationDevice();
+            } else {
+                try { am.setBluetoothScoOn(false); am.stopBluetoothSco(); } catch (Exception ignored) {}
+                am.setSpeakerphoneOn(false);
+            }
+        } catch (Exception e) { Log.w("AgentChannel", "clearCommsAudio: " + e); }
+    }
+
     /** Start the WebRTC media peer (owner of mic + speaker once connected). */
     private void startWebRtc() {
         if (!USE_WEBRTC) return;
@@ -652,8 +723,8 @@ public class AgentChannelPlugin extends Plugin {
                 try {
                     AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
                     am.setMode(AudioManager.MODE_IN_COMMUNICATION);
-                    am.setSpeakerphoneOn(true);
                     am.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT);
+                    routeCommsAudio(am);   // Bluetooth/wired headset if connected, else speaker (not forced)
                     // (no forced max volume — the user's level is theirs; see L2)
                 } catch (Exception e) { Log.w("AgentChannel", "webrtc route: " + e); }
                 try { webRtc.start(); } catch (Exception e) { Log.w("AgentChannel", "webrtc start: " + e); }
@@ -688,7 +759,7 @@ public class AgentChannelPlugin extends Plugin {
             // for the call; leaving them set after disconnect changed every other app's audio.
             try {
                 AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
-                am.setSpeakerphoneOn(false);
+                clearCommsAudio(am);
                 am.setMode(AudioManager.MODE_NORMAL);
                 am.abandonAudioFocus(null);
             } catch (Exception ignored) {}
@@ -849,9 +920,11 @@ public class AgentChannelPlugin extends Plugin {
             AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
             am.setMode(AudioManager.MODE_IN_COMMUNICATION);
             am.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT);
-            // in communication mode the default output is the EARPIECE; route to the loudspeaker
-            // so downlink (loopback / agent replies) is audible, and lift the voice-call stream
-            try { am.setSpeakerphoneOn(true); } catch (Exception e) { Log.w("AgentChannel", "speaker on: " + e); }
+            // Route to the system-preferred comms device: a connected Bluetooth/wired headset,
+            // else the built-in speaker (in comms mode the raw default is the quiet EARPIECE, so
+            // we still need to pick the speaker when there is no headset). Do NOT force
+            // speakerphone — that overrode a connected Bluetooth device (agent spoke on the phone).
+            routeCommsAudio(am);
             // (no forced max volume — the user's level is theirs; see L2)
             // foreground service (microphone type) keeps the process foreground-active so the
             // RECORD_AUDIO app-op check passes for sustained full-duplex capture
@@ -888,6 +961,7 @@ public class AgentChannelPlugin extends Plugin {
         playQueue.clear();
         try {
             AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+            clearCommsAudio(am);
             am.abandonAudioFocus(null);
             am.setMode(AudioManager.MODE_NORMAL);
         } catch (Exception ignored) {}
