@@ -131,11 +131,14 @@
   #hb.off { background: var(--danger); box-shadow: 0 0 10px rgba(255,92,92,.5); }
   #hb.pulse { animation: hbpulse 1.4s infinite ease-in-out; }
   @keyframes hbpulse { 0%,100% { opacity: 1; box-shadow: var(--glow); } 50% { opacity: .35; box-shadow: 0 0 4px rgba(34,211,238,.3); } }
-  .miclvl { width: 72px; height: 6px; background: var(--panel); border: 1px solid var(--hairline);
-            border-radius: var(--r-pill); overflow: hidden; display: inline-block; }
-  .miclvl i { display: block; height: 100%; width: 0%; border-radius: var(--r-pill);
-              background: linear-gradient(90deg, var(--accent-2), var(--accent)); box-shadow: var(--glow);
-              transition: width .09s linear; }
+  /* Live mic waveform — reacts to the real uplink RMS. A voice surface should LOOK
+     like it is listening; a flat progress bar does not read as sound. */
+  .miclvl { width: 72px; height: 14px; display: inline-block; line-height: 0; }
+  #micwave { width: 72px; height: 14px; overflow: visible; }
+  #micwave rect { fill: var(--accent); opacity: .75;
+                  transition: height .07s linear, y .07s linear, opacity .12s linear; }
+  #micwave.hot rect { opacity: 1; filter: drop-shadow(0 0 3px var(--accent)); }
+  .miclvl i { display: none; }
   .st { display: none; align-items: center; gap: 5px; }
   .st.show { display: inline-flex; }
   #heard.show { color: var(--accent); }
@@ -284,7 +287,7 @@
   <header id="badge" title="tap to change theme">agent terminal<i class="cursor"></i>
     <div id="status">
       <span id="hb" title="heartbeat">●</span>
-      <span class="miclvl" id="miclvl" title="mic pickup"><i id="micfill"></i></span>
+      <span class="miclvl" id="miclvl" title="mic pickup"><svg id="micwave" viewBox="0 0 72 14" preserveAspectRatio="none" aria-hidden="true"></svg><i id="micfill" hidden></i></span>
       <span id="heard" class="st"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 12h2l2 5 4-14 2.5 9H18"/><path d="M20 9v6"/></svg>heard</span>
       <span id="work" class="st"><i class="wdot"></i>working<span id="workprog"></span></span>
     </div>

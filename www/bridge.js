@@ -85,11 +85,46 @@
 
     // Mic input level (0..1, from the sidecar's uplink RMS) -> pulse the ring
     // ONLY while the mic is live (unmuted). No pulse when muted/silent.
+    // Reactive mic waveform: N bars whose heights follow the live uplink RMS, with
+    // a per-bar weighting so the centre reacts hardest (reads as a voice, not a
+    // progress bar) and light smoothing so it breathes instead of strobing.
+    var WAVE_N = 11, waveBars = null, waveSmooth = 0;
+    function buildWave() {
+      var svg = document.getElementById('micwave');
+      if (!svg || waveBars) return;
+      var w = 72 / WAVE_N, bw = Math.max(2, w - 2), ns = 'http://www.w3.org/2000/svg';
+      waveBars = [];
+      for (var i = 0; i < WAVE_N; i++) {
+        var r = document.createElementNS(ns, 'rect');
+        r.setAttribute('x', (i * w + (w - bw) / 2).toFixed(2));
+        r.setAttribute('width', bw.toFixed(2));
+        r.setAttribute('rx', (bw / 2).toFixed(2));
+        r.setAttribute('y', 6); r.setAttribute('height', 2);
+        svg.appendChild(r); waveBars.push(r);
+      }
+    }
     window.__setMicLevel = function (lvl) {
       var r = document.getElementById('mic-ring');
-      if (!r || r.classList.contains('muted')) return;
-      if (typeof lvl === 'number' && lvl > 0.03) r.classList.add('pulse');
-      else r.classList.remove('pulse');
+      if (r && !r.classList.contains('muted')) {
+        if (typeof lvl === 'number' && lvl > 0.03) r.classList.add('pulse');
+        else r.classList.remove('pulse');
+      }
+      buildWave();
+      var svg = document.getElementById('micwave');
+      if (!svg || !waveBars) return;
+      var v = (typeof lvl === 'number' && isFinite(lvl)) ? Math.max(0, Math.min(1, lvl)) : 0;
+      // muted mic: flatline, no glow
+      if (r && r.classList.contains('muted')) v = 0;
+      waveSmooth = waveSmooth * 0.55 + v * 0.45;          // ease, don't strobe
+      svg.classList.toggle('hot', waveSmooth > 0.06);
+      var mid = (WAVE_N - 1) / 2;
+      for (var i = 0; i < WAVE_N; i++) {
+        var weight = 1 - Math.abs(i - mid) / (mid + 1);    // centre-weighted envelope
+        var jitter = 0.72 + 0.28 * Math.abs(Math.sin((Date.now() / 90) + i));
+        var h = Math.max(2, Math.min(14, 2 + waveSmooth * 26 * weight * jitter));
+        waveBars[i].setAttribute('height', h.toFixed(2));
+        waveBars[i].setAttribute('y', ((14 - h) / 2).toFixed(2));
+      }
     };
 
     // Agent speaking -> show/hide the floating voice widget.
