@@ -508,6 +508,19 @@ public class AgentChannelPlugin extends Plugin {
         t.start();
     }
 
+    /** The app came back to the foreground. Android may have silently killed the
+     *  socket while we were backgrounded (doze, network handoff), and the media
+     *  session dies with it — the user then finds the agent deaf with no error.
+     *  Collapse the backoff and retry immediately so returning to the app always
+     *  restores a live session. All the usual guards still apply (consent, pinned
+     *  identity, destroying), so this can never force an unwanted connection. */
+    public void onAppResume() {
+        if (connected || destroying || !connectConsented || lastUrl == null || identityBlocked) return;
+        Log.i("AgentChannel", "app resumed with no live session — reconnecting now");
+        reconnectDelayMs = 300;   // snappy on an explicit user return, not the 60s backoff
+        scheduleReconnect();
+    }
+
     private void sendHello() {
         KoCrypto.ClientHandshake h = hs;
         if (ws != null && h != null) ws.send(h.helloJson());

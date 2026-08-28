@@ -87,6 +87,21 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    /** Returning to the app must always restore a live session. Backgrounding can kill
+     *  the socket silently (doze / network handoff), which also kills the WebRTC media
+     *  path — the agent then appears deaf with no visible error. Poke the plugin to
+     *  reconnect immediately on resume. */
+    @Override
+    public void onResume() {
+        super.onResume();
+        try {
+            AgentChannelPlugin p = (AgentChannelPlugin) bridge.getPlugin("AgentChannel").getInstance();
+            if (p != null) p.onAppResume();
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "resume reconnect: " + e);
+        }
+    }
+
     /** The NATIVE mic/mute button — a round control OUTSIDE the webview (issue #1). Tapping it
      *  toggles the plugin mic directly; its filled/hollow state tracks real native audio state,
      *  so a webview control can no longer wedge or drift it. */
