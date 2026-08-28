@@ -252,13 +252,31 @@
   .viz iframe { width: 100%; height: 100%; border: 0; background: var(--surface); }
   /* Session bootstrap: shown on open; choices are native-ish UI outside #ui. */
   #boot { position: fixed; inset: 0; z-index: 50; background: rgba(11,15,20,.94); backdrop-filter: blur(6px);
-          display: flex; align-items: center; justify-content: center; }
-  #boot .box { max-width: 320px; width: 100%; text-align: center; padding: 26px;
+          display: flex; align-items: center; justify-content: center; padding: 24px; }
+  #boot .box { max-width: 340px; width: 100%; text-align: left; padding: 22px;
                background: var(--panel); border: 1px solid var(--hairline); border-radius: var(--r-lg);
-               box-shadow: 0 20px 60px rgba(0,0,0,.5); }
-  #boot h2 { margin: 0 0 8px; font-size: 18px; letter-spacing: .01em; }
-  #boot p { margin: 0 0 18px; }
+               box-shadow: 0 20px 60px rgba(0,0,0,.55); position: relative; overflow: hidden; }
+  #boot h2 { margin: 0 0 8px; font: 600 18px/1.2 var(--display); letter-spacing: .02em; color: var(--ink); }
+  #boot p { margin: 0 0 18px; font-size: 13px; line-height: 1.55; }
   #boot button { margin-top: 10px; }
+  /* the boot line above the title — themed idiom, not a generic dialog */
+  #boot .box::before { content: ''; display: block; height: 2px; margin: 0 0 14px;
+               background: linear-gradient(90deg, var(--accent) 0 40px, var(--hairline) 40px); }
+  /* MATRIX: a boot sequence in a terminal */
+  body[data-theme="matrix"] #boot { background: rgba(0,6,0,.93); }
+  body[data-theme="matrix"] #boot .box::before {
+               content: 'root@hermes:~# ./agent --init'; height: auto; background: none;
+               font: 600 10px/1.4 var(--mono); letter-spacing: .1em; color: var(--accent);
+               text-shadow: 0 0 8px rgba(0,255,102,.45); margin: 0 0 12px; }
+  body[data-theme="matrix"] #boot h2::after { content: '_'; margin-left: 4px; opacity: .8;
+               animation: mcursor 1.05s steps(1) infinite; }
+  /* LCARS: an Okudagram panel — elbow cap, uppercase title */
+  body[data-theme="lcars"] #boot .box { border-left: 14px solid var(--lcars-amber); border-radius: 0 var(--r-lg) var(--r-lg) 0; }
+  body[data-theme="lcars"] #boot .box::before {
+               height: 20px; border-radius: 0 0 0 14px; margin: 0 0 14px;
+               background: linear-gradient(90deg, var(--lcars-mauve) 0 62px, transparent 62px 70px,
+                                           var(--accent) 70px 108px, transparent 108px); }
+  body[data-theme="lcars"] #boot h2 { text-transform: uppercase; letter-spacing: .18em; font-size: 15px; }
 </style>
 </head>
 <body data-theme="matrix">
