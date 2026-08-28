@@ -170,6 +170,30 @@
   button:active { background: rgba(34,211,238,.24); box-shadow: var(--glow); }
   .muted { color: var(--muted); }
   #ui { padding: 18px; max-width: 560px; margin: 0 auto; padding-bottom: 6px; }
+  /* Idle / empty state. A voice surface with a blank void reads as broken; show
+     that it is alive and hint at what to SAY (the input here is speech, not taps). */
+  .idle { padding: 26px 2px 8px; }
+  .idle-orb { display: flex; align-items: flex-end; gap: 5px; height: 26px; margin-bottom: 18px; }
+  .idle-orb span { width: 5px; border-radius: 3px; background: var(--accent); opacity: .8;
+                   box-shadow: var(--glow); animation: idlebar 1.9s ease-in-out infinite; }
+  .idle-orb span:nth-child(1) { height: 10px; animation-delay: -.6s; }
+  .idle-orb span:nth-child(2) { height: 20px; animation-delay: -.25s; }
+  .idle-orb span:nth-child(3) { height: 13px; animation-delay: -.95s; }
+  @keyframes idlebar { 0%,100% { transform: scaleY(.45); opacity: .45; }
+                       50%     { transform: scaleY(1);   opacity: .95; } }
+  .idle-lead { margin: 0 0 6px; font: 600 17px/1.25 var(--display); color: var(--ink); letter-spacing: .02em; }
+  .idle-sub  { margin: 0 0 18px; font-size: 13px; color: var(--muted); line-height: 1.55; }
+  .idle-hints { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .idle-hints li { padding: 10px 12px; background: transparent; border: 1px dashed var(--hairline);
+                   border-radius: var(--r); color: var(--muted); font-size: 13px; line-height: 1.4; }
+  /* MATRIX: the idle state is a prompt awaiting input */
+  body[data-theme="matrix"] .idle-lead::before { content: '> '; color: var(--accent); }
+  body[data-theme="matrix"] .idle-hints li { font-family: var(--mono); font-size: 12px; }
+  body[data-theme="matrix"] .idle-hints li::before { content: '$ '; color: var(--accent); opacity: .7; }
+  /* LCARS: hint rows get a segment spine */
+  body[data-theme="lcars"] .idle-hints li { border: 0; border-left: 6px solid var(--lcars-mauve);
+                   border-radius: 0 var(--r) var(--r) 0; background: var(--panel); }
+  body[data-theme="lcars"] .idle-lead { text-transform: uppercase; letter-spacing: .16em; font-size: 14px; }
   .img { margin: 12px 0; }
   .img img { max-width: 100%; border-radius: var(--r); display: block; border: 1px solid var(--hairline); }
   .img figcaption { font-size: 12px; color: var(--muted); margin-top: 6px; }
@@ -293,7 +317,18 @@
     </div>
   </header>
   <div id="worksweep"><i></i></div>
-  <main id="ui"><p class="muted">Waiting for the agent…</p></main>
+  <main id="ui">
+    <div class="idle">
+      <div class="idle-orb" aria-hidden="true"><span></span><span></span><span></span></div>
+      <p class="idle-lead">Listening.</p>
+      <p class="idle-sub">Speak to the agent — it answers out loud and draws here.</p>
+      <ul class="idle-hints">
+        <li>"Chart the weather in Nelson for the next 24 hours"</li>
+        <li>"Show me a picture of a golden retriever"</li>
+        <li>"What's on my calendar tomorrow?"</li>
+      </ul>
+    </div>
+  </main>
   <div id="surface"></div>
   <div id="agentSpeech" aria-hidden="true">
     <div id="speechWidget" class="speech-widget"></div>
