@@ -45,8 +45,8 @@
     }
     var mics = document.querySelectorAll('#ui [data-ctl="mic"]');
     mics.forEach(function (b) {
-      var off = b.getAttribute('data-off') || '🎤 Start audio';
-      b.textContent = running ? (b.getAttribute('data-on') || '⏹ Mic on') : off;
+      var off = b.getAttribute('data-off') || 'Start audio';
+      b.textContent = running ? (b.getAttribute('data-on') || 'Mic on') : off;
     });
     return running;
   };
@@ -199,7 +199,7 @@
       window.Capacitor.Plugins.AgentChannel.addListener('partition', function (d) {
         window.__pushAgentMessage(JSON.stringify({
           type: 'text',
-          text: d && d.partition ? '⚠ network partition — speech is being buffered' : '✓ network restored — buffered speech flushed',
+          text: d && d.partition ? 'Network partition — speech is being buffered' : 'Network restored — buffered speech flushed',
         }));
       });
       // Agent-initiated pushes (async text / declarative UI / data) -> renderer
