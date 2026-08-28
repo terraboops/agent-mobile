@@ -321,6 +321,44 @@
   }
   if (cv){ size(); addEventListener('resize', size); raf = requestAnimationFrame(draw); }
 
+  // ── Theme-aware chart defaults ──────────────────────────────────────────────
+  // A chart should read as part of the surface. Pull the LIVE css tokens so the
+  // chart follows whatever theme is active, and deep-merge UNDER the agent's
+  // options so anything it sets explicitly still wins.
+  function tok(n, f){ try { return getComputedStyle(document.body).getPropertyValue(n).trim() || f; } catch(e){ return f; } }
+  function isObj(v){ return v && typeof v === 'object' && !Array.isArray(v); }
+  function deepUnder(base, over){            // over wins; base fills gaps
+    var out = Object.assign({}, base);
+    Object.keys(over || {}).forEach(function(k){
+      out[k] = (isObj(base[k]) && isObj(over[k])) ? deepUnder(base[k], over[k]) : over[k];
+    });
+    return out;
+  }
+  window.__chartTheme = function (options) {
+    var accent = tok('--accent', '#22D3EE'), accent2 = tok('--accent-2', '#7C5CFF');
+    var ink = tok('--ink', '#E6EDF3'), muted = tok('--muted', '#8B98A9');
+    var hair = tok('--hairline', '#1E2A38'), mono = tok('--mono', 'ui-monospace, monospace');
+    var axis = { labels: { style: { colors: muted, fontFamily: mono, fontSize: '11px' } },
+                 axisBorder: { color: hair }, axisTicks: { color: hair } };
+    var base = {
+      chart: { background: 'transparent', foreColor: muted, toolbar: { show: false },
+               animations: { easing: 'easeout', speed: 420 }, fontFamily: mono },
+      theme: { mode: 'dark' },
+      colors: [accent, accent2, ink],
+      stroke: { curve: 'smooth', width: 2 },
+      dataLabels: { enabled: false },
+      grid: { borderColor: hair, strokeDashArray: 3,
+              xaxis: { lines: { show: false } }, yaxis: { lines: { show: true } } },
+      xaxis: axis, yaxis: axis,
+      tooltip: { theme: 'dark' },
+      legend: { labels: { colors: muted }, fontFamily: mono },
+      fill: { type: 'gradient',
+              gradient: { shadeIntensity: .5, opacityFrom: .45, opacityTo: .04, stops: [0, 95] } },
+      markers: { size: 0, strokeColors: accent, hover: { size: 4 } },
+    };
+    return deepUnder(base, options || {});
+  };
+
   // ── Theme cycling: tap the header rail ──────────────────────────────────────
   var THEMES = ['matrix','hud','lcars'];
   var b = document.getElementById('badge');

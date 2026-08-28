@@ -71,7 +71,14 @@
     charts.forEach(function (ch, i) {
       const el = ui.querySelectorAll('.chart')[i];
       if (el && window.ApexCharts) {
-        try { new window.ApexCharts(el, ch.options).render(); } catch (e) { el.textContent = '[chart] ' + (e && e.message || e); }
+        try {
+          // Charts must belong to the surface, not look like a stock ApexCharts
+          // widget pasted onto it. Apply theme defaults (neon series on dark,
+          // hairline grid, mono axes) UNDER whatever the agent sent, so an explicit
+          // option always still wins.
+          const opts = window.__chartTheme ? window.__chartTheme(ch.options) : ch.options;
+          new window.ApexCharts(el, opts).render();
+        } catch (e) { el.textContent = '[chart] ' + (e && e.message || e); }
       }
     });
     // Mount the viz sandbox. The injected code is embedded in a fresh opaque-origin
