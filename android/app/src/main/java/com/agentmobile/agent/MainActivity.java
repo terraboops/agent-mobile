@@ -27,7 +27,7 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
 
     private TextView identityBadge;
-    private TextView micButton;   // NATIVE mic/mute control (issue #1), bound to the plugin
+    private android.widget.ImageView micButton;   // NATIVE mic/mute control (issue #1), bound to the plugin
     private volatile boolean micOnState;
 
     @Override
@@ -91,17 +91,20 @@ public class MainActivity extends BridgeActivity {
      *  toggles the plugin mic directly; its filled/hollow state tracks real native audio state,
      *  so a webview control can no longer wedge or drift it. */
     private void installMicButton() {
-        TextView b = new TextView(this);
-        b.setText("🎤"); // 🎤
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
-        b.setGravity(Gravity.CENTER);
+        // Voice-first surface: the mic is the PRIMARY control, so it sits centred at the
+        // bottom (not shoved into a corner) and uses a crisp vector glyph, never an emoji.
+        android.widget.ImageView b = new android.widget.ImageView(this);
+        b.setImageResource(R.drawable.ic_mic);
+        b.setScaleType(android.widget.ImageView.ScaleType.CENTER_INSIDE);
+        int pad = dp(18);
+        b.setPadding(pad, pad, pad, pad);
         b.setClickable(true);
         b.setFocusable(true);
         micButton = b;
-        int sz = dp(64);
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(sz, sz, Gravity.BOTTOM | Gravity.START);
-        lp.leftMargin = dp(40);
-        lp.bottomMargin = dp(28);
+        int sz = dp(72);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(sz, sz,
+            Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        lp.bottomMargin = dp(26);
         try {
             ((FrameLayout) findViewById(android.R.id.content)).addView(b, lp);
         } catch (Exception e) {
@@ -110,20 +113,23 @@ public class MainActivity extends BridgeActivity {
         renderMic(false);
     }
 
-    /** Filled purple ring = mic LIVE (unmuted); hollow gray = muted. */
+    /** Filled cyan ring = mic LIVE (unmuted); hollow slate = muted. Matches the webview
+     *  design tokens (--accent #22D3EE / --hairline #1E2A38). */
     private void renderMic(boolean running) {
         micOnState = running;
         if (micButton == null) return;
         GradientDrawable d = new GradientDrawable();
         d.setShape(GradientDrawable.OVAL);
         if (running) {
-            d.setColor(0x4D8957E5);              // translucent purple fill
-            d.setStroke(dp(3), 0xFF8957E5);      // purple ring
+            d.setColor(0x2622D3EE);              // translucent cyan fill
+            d.setStroke(dp(2), 0xFF22D3EE);      // luminous cyan ring
+            micButton.setImageTintList(android.content.res.ColorStateList.valueOf(0xFF22D3EE));
             micButton.setAlpha(1f);
         } else {
             d.setColor(0x00000000);              // transparent
-            d.setStroke(dp(3), 0xFF30363D);      // gray ring
-            micButton.setAlpha(0.75f);
+            d.setStroke(dp(2), 0xFF1E2A38);      // hairline ring
+            micButton.setImageTintList(android.content.res.ColorStateList.valueOf(0xFF8B98A9));
+            micButton.setAlpha(0.9f);
         }
         micButton.setBackground(d);
         micButton.setContentDescription(running ? "Mute microphone" : "Unmute microphone");

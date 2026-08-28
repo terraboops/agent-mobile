@@ -27,6 +27,10 @@
 <title>agent app</title>
 <style>
   /* ── Design tokens: futuristic, near-black, single luminous accent ──────────── */
+  /* ── THEMES ────────────────────────────────────────────────────────────────
+     Everything below is driven by tokens, so a theme is just a variable block.
+     Switch with  document.body.dataset.theme = 'hud' | 'lcars' | 'matrix'
+     (or tap the status rail). Default: hud. */
   :root {
     color-scheme: dark;
     --surface:#0B0F14; --panel:#111823; --panel-hi:#151F2B; --hairline:#1E2A38;
@@ -34,10 +38,42 @@
     --accent:#22D3EE; --accent-dim:rgba(34,211,238,.14); --accent-2:#7C5CFF;
     --pos:#3FB950; --warn:#F0883E; --danger:#FF5C5C;
     --glow:0 0 14px rgba(34,211,238,.45);
+    --lcars-amber:#FF9C00; --lcars-mauve:#CC99CC;
+    --grid:rgba(255,255,255,.014); --scan:rgba(34,211,238,.05);
     --r-sm:8px; --r:12px; --r-lg:16px; --r-pill:999px;
     --mono:ui-monospace,"SF Mono",Menlo,monospace;
     --sans:-apple-system,system-ui,"Segoe UI",sans-serif;
+    --display:var(--sans);
   }
+  /* LCARS — Okudagram: warm amber/mauve rails, chunky radii, all-caps mono */
+  body[data-theme="lcars"] {
+    --surface:#000000; --panel:#141018; --panel-hi:#1C1520; --hairline:#3A2A34;
+    --ink:#FFCC99; --muted:#CC99CC;
+    --accent:#FF9C00; --accent-dim:rgba(255,156,0,.16); --accent-2:#CC99CC;
+    --pos:#99CC99; --warn:#FFCC66; --danger:#CC6666;
+    --glow:0 0 16px rgba(255,156,0,.45);
+    --lcars-amber:#FF9C00; --lcars-mauve:#CC99CC;
+    --grid:rgba(255,156,0,.02); --scan:rgba(255,156,0,.06);
+    --r-sm:4px; --r:4px; --r-lg:18px; --display:var(--mono);
+  }
+  /* MATRIX — phosphor green on black, digital rain, terminal type */
+  body[data-theme="matrix"] {
+    --surface:#000600; --panel:#04140A; --panel-hi:#062010; --hairline:#0E3B1E;
+    --ink:#B9FFC9; --muted:#4FA96A;
+    --accent:#00FF66; --accent-dim:rgba(0,255,102,.12); --accent-2:#00B347;
+    --pos:#00FF66; --warn:#CCFF66; --danger:#FF5C5C;
+    --glow:0 0 12px rgba(0,255,102,.55);
+    --lcars-amber:#00FF66; --lcars-mauve:#00B347;
+    --grid:rgba(0,255,102,.03); --scan:rgba(0,255,102,.07);
+    --r-sm:2px; --r:3px; --r-lg:4px; --display:var(--mono);
+  }
+  /* Matrix digital rain — a fixed, non-interactive canvas behind everything */
+  #rain { position: fixed; inset: 0; z-index: 0; pointer-events: none; display: none; opacity: .85; }
+  body[data-theme="matrix"] #rain { display: block; }
+  body > *:not(#rain) { position: relative; z-index: 1; }
+  /* Scanline veil (all themes, subtle; stronger on matrix/lcars) */
+  body::after { content:''; position: fixed; inset: 0; z-index: 2; pointer-events: none;
+     background: repeating-linear-gradient(180deg, var(--scan) 0 1px, transparent 1px 3px); opacity: .55; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 15px/1.5 var(--sans); background: var(--surface); color: var(--ink);
          background-image:
@@ -48,11 +84,25 @@
   .icon { width: 1em; height: 1em; display: inline-block; vertical-align: -.14em; flex: none; }
   /* Trust/identity is shown by the NATIVE overlay badge (unforgeable). The webview header
      makes no connection claim — agent JS can rewrite this DOM freely, so we never trust it. */
-  #badge { position: sticky; top: 0; z-index: 30; padding: 10px 16px;
+  /* ── LCARS-flavoured HUD header ─────────────────────────────────────────────
+     The NATIVE identity badge floats top-centre (unforgeable), so we reserve that
+     band and give the webview header an LCARS elbow rail + status readout. */
+  #badge { position: sticky; top: 0; z-index: 30; padding: 92px 16px 10px;
            background: rgba(11,15,20,.72); backdrop-filter: blur(10px) saturate(1.3);
-           border-bottom: 1px solid var(--hairline);
-           font: 600 11px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--ink); }
+           font: 600 11px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--ink);
+           border-bottom: 0; }
+  /* LCARS rail: a solid elbow that sweeps from the left, capped by segment blocks */
+  #badge::before { content: ''; display: block; height: 22px; margin: 0 0 10px;
+           border-radius: 0 0 0 16px;
+           background:
+             linear-gradient(90deg, var(--lcars-amber) 0 84px, transparent 84px 90px,
+                             var(--lcars-mauve) 90px 132px, transparent 132px 138px,
+                             var(--accent) 138px 168px, transparent 168px);
+           box-shadow: 0 1px 0 rgba(34,211,238,.18); }
   #badge .key { font-family: var(--mono); color: var(--muted); letter-spacing: .1em; }
+  /* hairline under the whole header, LCARS style (thin bright rule) */
+  #badge::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+           background: linear-gradient(90deg, var(--lcars-amber), var(--accent) 40%, transparent); }
   /* Live status strip: heartbeat dot, mic level, "heard", agent working/progress. */
   #status { display: flex; align-items: center; gap: 12px; margin-top: 9px;
             font: 500 11px/1 var(--mono); letter-spacing: .06em; text-transform: none; color: var(--muted); }
@@ -70,8 +120,22 @@
   .st.show { display: inline-flex; }
   #heard.show { color: var(--accent); }
   #heard .icon { color: var(--accent); }
-  #work.show { color: var(--warn); }
-  h1 { font-size: 17px; margin: 0 0 12px; letter-spacing: -.01em; }
+  /* WORKING / thinking state — a visible, animated cue so a long turn never reads as
+     "dead". Perceived-progress: an indeterminate sweep + pulsing label beats silence
+     (Loading & Performance Perception — UX-271/UX-274). */
+  #work.show { color: var(--accent); display: inline-flex; align-items: center; gap: 7px; }
+  #work .wdot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+                box-shadow: var(--glow); animation: wpulse 1s infinite ease-in-out; }
+  @keyframes wpulse { 0%,100% { opacity: .3; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); } }
+  /* full-width indeterminate sweep pinned under the header while the agent works */
+  #worksweep { position: sticky; top: 0; z-index: 29; height: 2px; display: none; overflow: hidden;
+               background: var(--hairline); }
+  #worksweep.show { display: block; }
+  #worksweep i { display: block; height: 100%; width: 38%;
+               background: linear-gradient(90deg, transparent, var(--accent), transparent);
+               box-shadow: var(--glow); animation: wsweep 1.5s infinite linear; }
+  @keyframes wsweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(360%); } }
+  h1 { font: 600 17px/1.3 var(--display); margin: 0 0 12px; letter-spacing: .02em; color: var(--ink); }
   ul { list-style: none; margin: 0 0 16px; padding: 0; }
   li { padding: 12px 14px; background: linear-gradient(var(--panel), var(--surface));
        border: 1px solid var(--hairline); border-radius: var(--r); margin-bottom: 8px;
@@ -120,10 +184,13 @@
   #mic-ring.pulse   { animation: mring 1.1s infinite; }
   @keyframes mring { 0%,100% { box-shadow: 0 0 0 3px rgba(34,211,238,.28); }
                      50% { box-shadow: 0 0 0 22px rgba(34,211,238,0); } }
-  #ctl-stop { flex: 1 1 auto; width: auto; min-width: 60px; padding: 14px 18px; border: 1px solid rgba(255,92,92,.45);
-              border-radius: var(--r-lg); font: 600 15px var(--sans); color: var(--danger);
-              background: rgba(255,92,92,.12); display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
-  #ctl-stop:active { background: rgba(255,92,92,.22); }
+  /* Stop is SECONDARY (mic is the primary control) — quiet chrome, compact, never
+     the loudest thing on screen. Danger colour only on press. */
+  #ctl-stop { flex: 0 0 auto; width: auto; min-width: 92px; max-width: 132px; padding: 12px 16px;
+              border: 1px solid var(--hairline); border-radius: var(--r-lg);
+              font: 600 14px var(--display); letter-spacing: .04em; color: var(--muted);
+              background: var(--panel); display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+  #ctl-stop:active { color: var(--danger); border-color: rgba(255,92,92,.5); background: rgba(255,92,92,.14); }
   #ctl-stop .icon { width: 16px; height: 16px; }
 
   /* Agent voice indicator — a floating "default example widget" shown while the
@@ -174,15 +241,17 @@
   #boot button { margin-top: 10px; }
 </style>
 </head>
-<body>
-  <header id="badge">agent terminal
+<body data-theme="matrix">
+  <canvas id="rain" aria-hidden="true"></canvas>
+  <header id="badge" title="tap to change theme">agent terminal
     <div id="status">
       <span id="hb" title="heartbeat">●</span>
       <span class="miclvl" id="miclvl" title="mic pickup"><i id="micfill"></i></span>
       <span id="heard" class="st"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 12h2l2 5 4-14 2.5 9H18"/><path d="M20 9v6"/></svg>heard</span>
-      <span id="work" class="st">working… <span id="workprog"></span></span>
+      <span id="work" class="st"><i class="wdot"></i>working<span id="workprog"></span></span>
     </div>
   </header>
+  <div id="worksweep"><i></i></div>
   <main id="ui"><p class="muted">Waiting for the agent…</p></main>
   <div id="surface"></div>
   <div id="agentSpeech" aria-hidden="true">
@@ -207,6 +276,48 @@
   // see window.__sandboxPreamble in bridge.js.
   var N=['RTCPeerConnection','webkitRTCPeerConnection','mozRTCPeerConnection','RTCDataChannel','RTCIceCandidate','RTCSessionDescription','RTCDtlsTransport','RTCIceTransport','RTCSctpTransport','RTCRtpSender','RTCRtpReceiver','RTCRtpTransceiver'];
   for (var i=0;i<N.length;i++){ try{ Object.defineProperty(window,N[i],{value:undefined,writable:false,configurable:false,enumerable:false}); }catch(e){} }
+})();</script>
+  <script>(function(){
+  // ── Matrix digital rain ─────────────────────────────────────────────────────
+  // Canvas-only, no deps, paused whenever the theme isn't 'matrix' or the tab is
+  // hidden (so it never burns battery in the background on the phone).
+  var cv = document.getElementById('rain'), ctx = cv && cv.getContext('2d');
+  var cols = [], glyphs = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜ0123456789';
+  var FS = 14, raf = null, last = 0;
+  function size(){ if(!cv) return; cv.width = innerWidth; cv.height = innerHeight;
+    cols = new Array(Math.ceil(innerWidth / FS)).fill(0).map(function(){ return Math.random()*-40; }); }
+  function draw(t){
+    raf = requestAnimationFrame(draw);
+    if (t - last < 55) return; last = t;                       // ~18fps: plenty, cheap
+    if (!ctx || document.body.dataset.theme !== 'matrix' || document.hidden) return;
+    ctx.fillStyle = 'rgba(0,6,0,.09)'; ctx.fillRect(0,0,cv.width,cv.height);
+    ctx.font = FS + 'px ui-monospace, monospace';
+    for (var i=0;i<cols.length;i++){
+      var y = cols[i]*FS, ch = glyphs[(Math.random()*glyphs.length)|0];
+      ctx.fillStyle = 'rgba(185,255,201,.85)'; ctx.fillText(ch, i*FS, y);          // bright head
+      ctx.fillStyle = 'rgba(0,255,102,.35)';   ctx.fillText(ch, i*FS, y - FS);     // green tail
+      cols[i] = (y > cv.height && Math.random() > 0.975) ? 0 : cols[i] + 1;
+    }
+  }
+  if (cv){ size(); addEventListener('resize', size); raf = requestAnimationFrame(draw); }
+
+  // ── Theme cycling: tap the header rail ──────────────────────────────────────
+  var THEMES = ['matrix','hud','lcars'];
+  var b = document.getElementById('badge');
+  if (b) b.addEventListener('click', function(){
+    var cur = document.body.dataset.theme || 'matrix';
+    document.body.dataset.theme = THEMES[(THEMES.indexOf(cur)+1) % THEMES.length];
+  });
+
+  // ── Working sweep follows the existing #work status flag ────────────────────
+  // The adapter already pushes working=true/false; mirror it onto the sweep so a
+  // long turn shows continuous motion instead of dead air.
+  var work = document.getElementById('work'), sweep = document.getElementById('worksweep');
+  if (work && sweep && window.MutationObserver) {
+    new MutationObserver(function(){
+      sweep.classList.toggle('show', work.classList.contains('show'));
+    }).observe(work, { attributes: true, attributeFilter: ['class'] });
+  }
 })();</script>
   <!-- Gateway address comes from config.local.js (gitignored). Copy config.example.js to set it. -->
   <script src="/config.local.js"></script>
