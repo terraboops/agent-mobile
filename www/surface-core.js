@@ -155,13 +155,17 @@ export function createSurface({ capacity = 100 * 1024 * 1024 } = {}) {
           break;
         }
         case 'update_widget': {
-          if (!widgets[op.key]) { emit({ event: 'render_result', ok: false, error: `no widget ${op.key}` }); break; }
+          // Must carry `key` (publish already did) or the agent cannot tell WHICH
+          // widget failed, and the message must say how to fix it.
+          if (!widgets[op.key]) { emit({ event: 'render_result', ok: false, key: op.key,
+            error: `update_widget: no widget with key "${op.key}" (add_widget first)` }); break; }
           widgets[op.key].props = opts(widgets[op.key].props, op.props);
           emit({ event: 'update', key: op.key, props: op.props });
           break;
         }
         case 'publish': {
-          if (!widgets[op.key]) { emit({ event: 'render_result', ok: false, error: `no widget ${op.key}`, key: op.key }); break; }
+          if (!widgets[op.key]) { emit({ event: 'render_result', ok: false, key: op.key,
+            error: `publish: no widget with key "${op.key}" (add_widget first)` }); break; }
           emit({ event: 'data', key: op.key, data: op.data });
           break;
         }
