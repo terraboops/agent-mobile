@@ -258,7 +258,11 @@ import { createSurface } from './surface-core.js';
         break;
       case 'update': { // update_widget -> props-only, in place, one tile
         const v = views[ev.key];
-        if (!v) break;
+        // An op for a key we never added used to `break` silently: the agent
+        // believed it updated a tile while nothing changed on screen. Report it
+        // so the register -> test -> build loop can self-correct.
+        if (!v) { sendUp({ type: 'render_result', key: ev.key, ok: false,
+                           error: 'update_widget: no widget with key "' + ev.key + '" (add_widget first)' }); break; }
         if (surface.getType(v.type) && v.iframe) {
           try { v.iframe.contentWindow.postMessage({ type: 'vmrender', props: ev.props || {} }, '*'); } catch (_) {}
         } else {
@@ -268,7 +272,8 @@ import { createSurface } from './surface-core.js';
       }
       case 'data': { // publish -> feed one tile in place, no peer repaint
         const v = views[ev.key];
-        if (!v) break;
+        if (!v) { sendUp({ type: 'render_result', key: ev.key, ok: false,
+                           error: 'publish: no widget with key "' + ev.key + '" (add_widget first)' }); break; }
         if (surface.getType(v.type) && v.iframe) {
           try { v.iframe.contentWindow.postMessage({ type: 'vmdata', data: ev.data || {} }, '*'); } catch (_) {}
         } else {
