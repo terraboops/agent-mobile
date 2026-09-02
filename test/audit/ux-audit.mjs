@@ -77,8 +77,8 @@ const AUDIT = () => {
 };
 
 const results = {};
-async function snap(name, prep){
-  if(prep) await page.evaluate(prep); await page.waitForTimeout(350);
+async function snap(name, prep, arg){
+  if(prep) await page.evaluate(prep, arg); await page.waitForTimeout(350);
   await page.screenshot({ path: join(OUT, name+'.png') });
   results[name] = await page.evaluate(AUDIT);
 }
@@ -121,6 +121,29 @@ await page.evaluate(SCALE); await snap('12-fontscale-160', null);
 await page.reload(); await page.waitForTimeout(400);
 await page.evaluate(() => { document.getElementById('boot').style.display='none'; document.body.dataset.theme='matrix'; });
 await page.evaluate(SAMPLE); await page.waitForTimeout(250); await page.evaluate(SCALE); await page.evaluate(()=>window.dispatchEvent(new Event('resize'))); await snap('13-fontscale-160-content', null);
+
+// Component states the earlier runs never touched: text/title/image/svg, and
+// the live status strip (heard, working, mic level, agent speaking).
+await page.setViewportSize({ width: 412, height: 915 });
+await page.reload(); await page.waitForTimeout(400);
+await page.evaluate(() => { document.getElementById('boot').style.display='none'; document.body.dataset.theme='matrix'; });
+const COMPONENTS = () => {
+  // 1x1 PNG pixel scaled up: a real <img> path through img-src data:
+  const png='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60"><rect x="4" y="4" width="192" height="52" rx="6" fill="none" stroke="currentColor"/><polyline points="10,45 40,30 70,38 100,15 130,25 160,10 190,20" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+  const ui={title:'Golden retriever',components:[
+    {t:'image',src:png,alt:'A golden retriever lying on a lawn (example image)'},
+    {t:'text',text:'Retrievers were bred in the Scottish Highlands in the 1860s to recover waterfowl. Adults weigh 25–34 kg and live 10–12 years.'},
+    {t:'svg',svg},
+    {t:'list',items:[{title:'Weight',subtitle:'25–34 kg'},{title:'Lifespan',subtitle:'10–12 y'},{title:'Coat',subtitle:'double, water-repellent'}]}]};
+  (window.__agent.onMessage||[]).forEach(fn=>{try{fn({type:'render',ui});}catch(_){}});
+};
+await snap('14-components-matrix', COMPONENTS);
+await snap('15-components-lcars', () => { document.body.dataset.theme='lcars'; });
+await snap('16-status-live', () => { document.body.dataset.theme='matrix';
+  const st={type:'status',hb:true,heard:'chart the weather in Nelson for the next twenty four hours please',level:.62,working:true,speaking:true};
+  (window.__agent.onMessage||[]).forEach(fn=>{try{fn(st);}catch(_){}}); });
+for (const t of ['hud','lcars']) await snap(`17-status-${t}`, (t) => { document.body.dataset.theme=t; }, t);
 
 writeFileSync(join(OUT,'findings.json'), JSON.stringify({errors, results}, null, 2));
 await browser.close(); server.close();
