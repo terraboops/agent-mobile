@@ -35,12 +35,19 @@ const AUDIT = () => {
   tappable.forEach(el=>{ const name=(el.getAttribute('aria-label')||el.getAttribute('title')||el.textContent||'').trim();
     if(!name) out.issues.push({sev:'high',cat:'a11y-name',el: el.id?('#'+el.id):el.tagName.toLowerCase(), msg:'interactive element has no accessible name'}); });
   // 3. tiny text (<12px is hard to read on mobile)
-  const textEls=[...document.querySelectorAll('body *')].filter(el=>vis(el)&&el.childNodes.length&&[...el.childNodes].some(n=>n.nodeType===3&&n.textContent.trim()));
+  // Decorative nodes (aria-hidden, or font-size:0 dots whose text is never painted)
+  // are not text and must not be measured as text.
+  const decorative=(el)=>el.closest('[aria-hidden="true"]')||parseFloat(getComputedStyle(el).fontSize)===0;
+  const textEls=[...document.querySelectorAll('body *')].filter(el=>vis(el)&&!decorative(el)&&el.childNodes.length&&[...el.childNodes].some(n=>n.nodeType===3&&n.textContent.trim()));
   const tiny=new Set(); textEls.forEach(el=>{ const fs=parseFloat(getComputedStyle(el).fontSize); if(fs<12) tiny.add(`${el.id?'#'+el.id:el.tagName.toLowerCase()} ${fs}px`); });
   tiny.forEach(t=>out.issues.push({sev:'med',cat:'legibility',el:t.split(' ')[0],msg:`text ${t.split(' ')[1]} < 12px`}));
   // 4. contrast of text vs effective background (approx: walks up for a solid bg)
   const lum=(c)=>{const m=c.match(/\d+(\.\d+)?/g)||[0,0,0];const [r,g,b]=m.slice(0,3).map(Number).map(v=>{v/=255;return v<=.03928?v/12.92:((v+.055)/1.055)**2.4;});return .2126*r+.7152*g+.0722*b;};
-  const bgOf=(el)=>{ let e=el; while(e){ const bg=getComputedStyle(e).backgroundColor; if(bg&&!/rgba\(\s*\d+,\s*\d+,\s*\d+,\s*0\)/.test(bg)&&bg!=='transparent') return bg; e=e.parentElement;} return 'rgb(0,0,0)'; };
+  // Effective background: alpha-composite every translucent layer up the tree
+  // (source-over) until an opaque one, falling back to the body colour.
+  const parse=(c)=>{ const m=(c||'').match(/[\d.]+/g); if(!m) return [0,0,0,0]; const [r,g,b]=m.slice(0,3).map(Number); const a=m.length>3?Number(m[3]):1; return [r,g,b,a]; };
+  const bgOf=(el)=>{ let e=el; const layers=[]; while(e){ const [r,g,b,a]=parse(getComputedStyle(e).backgroundColor); if(a>0){ layers.push([r,g,b,a]); if(a>=1) break; } e=e.parentElement; }
+    let out=[0,0,0]; for(const [r,g,b,a] of layers.reverse()) out=[0,1,2].map(i=>[r,g,b][i]*a+out[i]*(1-a)); return `rgb(${out.map(Math.round).join(', ')})`; };
   const seen=new Set();
   textEls.slice(0,120).forEach(el=>{ const cs=getComputedStyle(el); const fg=cs.color; const bg=bgOf(el);
     const l1=lum(fg),l2=lum(bg); const ratio=(Math.max(l1,l2)+.05)/(Math.min(l1,l2)+.05); const fs=parseFloat(cs.fontSize); const bold=parseInt(cs.fontWeight)>=700;
@@ -57,6 +64,10 @@ const AUDIT = () => {
   // 7. landmarks / semantics
   out.stats.landmarks={main:!!document.querySelector('main'),header:!!document.querySelector('header'),h1:document.querySelectorAll('h1').length};
   if(!document.querySelector('[role=status],[aria-live]')) out.issues.push({sev:'med',cat:'a11y-live',el:'#status',msg:'live status strip (heard/working) has no aria-live region — screen readers get no updates'});
+  // 7b. horizontal overflow — the body must never scroll sideways
+  if(document.documentElement.scrollWidth>document.documentElement.clientWidth+1) out.issues.push({sev:'high',cat:'overflow',el:'html',msg:`horizontal overflow ${document.documentElement.scrollWidth}px > ${document.documentElement.clientWidth}px viewport`});
+  // 7c. clipped text — visible text nodes whose box is cut off by an overflow:hidden ancestor
+  textEls.slice(0,200).forEach(el=>{ let a=el.parentElement; while(a&&a!==document.body){ const cs=getComputedStyle(a); if(/hidden|clip/.test(cs.overflow+cs.overflowX+cs.overflowY)){ const r=el.getBoundingClientRect(), ar=a.getBoundingClientRect(); if(r.right>ar.right+1||r.bottom>ar.bottom+1) out.issues.push({sev:'med',cat:'clipped',el: el.id?('#'+el.id):el.tagName.toLowerCase()+(el.className?'.'+String(el.className).split(' ')[0]:''), msg:`text clipped by ${a.id?'#'+a.id:a.tagName.toLowerCase()}`}); break; } a=a.parentElement; } });
   // 8. lang + viewport
   if(!document.documentElement.lang) out.issues.push({sev:'low',cat:'a11y',el:'html',msg:'missing lang attribute'});
   const vp=document.querySelector('meta[name=viewport]')?.content||''; if(/user-scalable=no|maximum-scale=1/.test(vp)) out.issues.push({sev:'high',cat:'a11y',el:'meta viewport',msg:'pinch-zoom disabled'});
@@ -74,19 +85,42 @@ async function snap(name, prep){
 // STATES
 await snap('01-boot-matrix', null);
 await snap('02-idle-matrix', () => { document.getElementById('boot').style.display='none'; document.getElementById('hb').classList.add('pulse'); });
-await snap('03-content-chart-matrix', () => {
+const SAMPLE = () => {
   // Drive the REAL renderer path (what the sidecar sends), not a hand-mount —
   // otherwise the audit measures its own scaffolding instead of the app.
   const o={chart:{type:'area',height:220},series:[{name:'Temp',data:[9,8,7,6,5,4,4,5,7,10,13,15,16]}],xaxis:{categories:['00','02','04','06','08','10','12','14','16','18','20','22','24']}};
   const ui={title:'Nelson · next 24h',components:[{t:'chart',options:o},
     {t:'list',items:[{title:'Now',subtitle:'14°C'},{title:'Low',subtitle:'6°C'}]}]};
   (window.__agent.onMessage||[]).forEach(fn=>{try{fn({type:'render',ui});}catch(_){}});
-});
+};
+await snap('03-content-chart-matrix', SAMPLE);
 await snap('04-working-matrix', () => { document.getElementById('work').classList.add('show'); });
 await snap('05-idle-lcars', () => { document.getElementById('work').classList.remove('show'); (window.__agent.onMessage||[]).forEach(fn=>{try{fn({type:'render',ui:{}});}catch(_){}}); location.hash=''; document.body.dataset.theme='lcars'; document.getElementById('ui').innerHTML=document.querySelector('#ui').innerHTML; });
 await page.reload(); await page.waitForTimeout(400);
 await snap('06-idle-hud', () => { document.getElementById('boot').style.display='none'; document.body.dataset.theme='hud'; });
 await snap('07-idle-lcars', () => { document.body.dataset.theme='lcars'; });
+// Per-theme CONTENT chrome (not just the header)
+await snap('08-content-hud', () => { document.body.dataset.theme='hud'; });
+await page.evaluate(SAMPLE); await snap('08-content-hud', null);
+await snap('09-content-lcars', () => { document.body.dataset.theme='lcars'; });
+// Landscape (Pixel 7 rotated): the pinned chrome must not eat the content
+await page.setViewportSize({ width: 915, height: 412 });
+await snap('10-landscape-content', () => { document.body.dataset.theme='matrix'; });
+await snap('11-landscape-idle', () => { (window.__agent.onMessage||[]).forEach(fn=>{try{fn({type:'render',ui:{}});}catch(_){}}); });
+await page.setViewportSize({ width: 412, height: 915 });
+// System font scaling: Android WebView applies the OS text zoom to every px
+// font size. Emulate the accessibility 'largest' step (x1.6) on all text.
+// Collect every computed size FIRST, then apply — writing inline sizes while
+// walking the tree compounds through inheritance (a child of an inflated parent
+// is inflated twice). Charts are re-rendered AFTER scaling so ApexCharts measures
+// the scaled labels, as the WebView would.
+const SCALE = () => { const m=[...document.querySelectorAll('body *')].map(el=>[el,parseFloat(getComputedStyle(el).fontSize)]); m.forEach(([el,fs])=>{ if(fs>0) el.style.fontSize=(fs*1.6)+'px'; }); };
+await snap('12-fontscale-160', () => { document.body.dataset.theme='matrix'; });
+await page.evaluate(SCALE); await snap('12-fontscale-160', null);
+// Fresh page: scaling twice compounds through inheritance.
+await page.reload(); await page.waitForTimeout(400);
+await page.evaluate(() => { document.getElementById('boot').style.display='none'; document.body.dataset.theme='matrix'; });
+await page.evaluate(SAMPLE); await page.waitForTimeout(250); await page.evaluate(SCALE); await page.evaluate(()=>window.dispatchEvent(new Event('resize'))); await snap('13-fontscale-160-content', null);
 
 writeFileSync(join(OUT,'findings.json'), JSON.stringify({errors, results}, null, 2));
 await browser.close(); server.close();
