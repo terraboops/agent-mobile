@@ -93,7 +93,7 @@
      band and give the webview header an LCARS elbow rail + status readout. */
   #badge { position: sticky; top: 0; z-index: 30; padding: 92px 16px 10px;
            background: rgba(11,15,20,.72); backdrop-filter: blur(10px) saturate(1.3);
-           font: 600 11px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--ink);
+           font: 600 12px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--ink);
            border-bottom: 0; }
   #badge .key { font-family: var(--mono); color: var(--muted); letter-spacing: .1em; }
   /* Per-theme header chrome. Each theme gets its OWN idiom — an LCARS elbow has no
@@ -129,7 +129,7 @@
   @keyframes mcursor { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
   /* Live status strip: heartbeat dot, mic level, "heard", agent working/progress. */
   #status { display: flex; align-items: center; gap: 12px; margin-top: 9px;
-            font: 500 11px/1 var(--mono); letter-spacing: .06em; text-transform: none; color: var(--muted); }
+            font: 500 12px/1 var(--mono); letter-spacing: .06em; text-transform: none; color: var(--muted); }
   #hb { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
         box-shadow: var(--glow); font-size: 0; }
   #hb.off { background: var(--danger); box-shadow: 0 0 10px rgba(255,92,92,.5); }
@@ -190,6 +190,7 @@
   @keyframes idlebar { 0%,100% { transform: scaleY(.45); opacity: .45; }
                        50%     { transform: scaleY(1);   opacity: .95; } }
   .idle-lead { margin: 0 0 6px; font: 600 17px/1.25 var(--display); color: var(--ink); letter-spacing: .02em; }
+  h1.idle-lead { font-size: 17px; }
   .idle-sub  { margin: 0 0 18px; font-size: 13px; color: var(--muted); line-height: 1.55; }
   .idle-hints { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
   .idle-hints li { padding: 10px 12px; background: transparent; border: 1px dashed var(--hairline);
@@ -212,7 +213,7 @@
               margin-top: 14px; padding: 10px 2px 14px;
               background: linear-gradient(rgba(11,15,20,0), var(--surface) 30%); }
   .controls button { flex: 1 1 auto; margin: 0; }
-  .chart { width: 100%; height: 260px; margin: 12px 0; }
+  .chart { width: 100%; height: 260px; min-height: 260px; margin: 12px 0; }
   /* Display-surface widget tiles (docs/display-surface.md). Persistent, additive,
      keyed viewport: an update re-renders ONLY its own tile, never peers or #ui. */
   #surface { max-width: 560px; margin: 0 auto; padding: 0 18px; }
@@ -312,12 +313,23 @@
                background: linear-gradient(90deg, var(--lcars-mauve) 0 62px, transparent 62px 70px,
                                            var(--accent) 70px 108px, transparent 108px); }
   body[data-theme="lcars"] #boot h2 { text-transform: uppercase; letter-spacing: .18em; font-size: 15px; }
+  /* ── Accessibility ──────────────────────────────────────────────────────── */
+  /* Keyboard / switch-access users must be able to SEE focus. */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--r-sm); }
+  button:focus-visible { box-shadow: var(--glow); }
+  /* Vestibular safety: honour the OS reduced-motion setting. Kill the rain and
+     every decorative animation; keep only instant state changes. */
+  @media (prefers-reduced-motion: reduce) {
+    #rain { display: none !important; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    #worksweep.show i { animation: none; width: 100%; }
+  }
 </style>
 </head>
 <body data-theme="matrix">
   <canvas id="rain" aria-hidden="true"></canvas>
   <header id="badge" title="tap to change theme">agent terminal<i class="cursor"></i>
-    <div id="status">
+    <div id="status" role="status" aria-live="polite" aria-atomic="false">
       <span id="hb" title="heartbeat">●</span>
       <span class="miclvl" id="miclvl" title="mic pickup"><svg id="micwave" viewBox="0 0 72 14" preserveAspectRatio="none" aria-hidden="true"></svg><i id="micfill" hidden></i></span>
       <span id="heard" class="st"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 12h2l2 5 4-14 2.5 9H18"/><path d="M20 9v6"/></svg>heard</span>
@@ -328,7 +340,7 @@
   <main id="ui">
     <div class="idle">
       <div class="idle-orb" aria-hidden="true"><span></span><span></span><span></span></div>
-      <p class="idle-lead">Listening.</p>
+      <h1 class="idle-lead">Listening.</h1>
       <p class="idle-sub">Speak to the agent — it answers out loud and draws here.</p>
       <ul class="idle-hints">
         <li>"Chart the weather in Nelson for the next 24 hours"</li>
@@ -402,7 +414,7 @@
     var accent = tok('--accent', '#22D3EE'), accent2 = tok('--accent-2', '#7C5CFF');
     var ink = tok('--ink', '#E6EDF3'), muted = tok('--muted', '#8B98A9');
     var hair = tok('--hairline', '#1E2A38'), mono = tok('--mono', 'ui-monospace, monospace');
-    var axis = { labels: { style: { colors: muted, fontFamily: mono, fontSize: '11px' } },
+    var axis = { labels: { style: { colors: muted, fontFamily: mono, fontSize: '12px' } },
                  axisBorder: { color: hair }, axisTicks: { color: hair } };
     var base = {
       chart: { background: 'transparent', foreColor: muted, toolbar: { show: false },
