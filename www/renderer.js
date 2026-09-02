@@ -20,6 +20,9 @@
   // detached nodes forever (console NaN errors on rotate/keyboard/theme change,
   // and one leaked chart per render).
   const liveCharts = [];
+  window.addEventListener('themechange', function () {
+    liveCharts.forEach(function (c) { try { c.updateOptions(window.__chartTheme ? window.__chartTheme(c.__raw) : c.__raw, false, true); } catch (_) {} });
+  });
   function draw(u) {
     liveCharts.splice(0).forEach(function (c) { try { c.destroy(); } catch (_) {} });
     if (!u) return;
@@ -91,7 +94,7 @@
           const mount = function () {
             if (!el.isConnected) return;
             if (el.clientWidth === 0 && tries++ < 10) return requestAnimationFrame(mount);
-            try { const c = new window.ApexCharts(el, opts); liveCharts.push(c); c.render(); }
+            try { const c = new window.ApexCharts(el, opts); c.__raw = ch.options; liveCharts.push(c); c.render(); }
             catch (e) { el.textContent = '[chart] ' + (e && e.message || e); }
           };
           requestAnimationFrame(mount);

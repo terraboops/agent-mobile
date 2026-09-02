@@ -414,8 +414,11 @@
     var accent = tok('--accent', '#22D3EE'), accent2 = tok('--accent-2', '#7C5CFF');
     var ink = tok('--ink', '#E6EDF3'), muted = tok('--muted', '#8B98A9');
     var hair = tok('--hairline', '#1E2A38'), mono = tok('--mono', 'ui-monospace, monospace');
-    var axis = { labels: { style: { colors: muted, fontFamily: mono, fontSize: '12px' } },
-                 axisBorder: { color: hair }, axisTicks: { color: hair } };
+    // One object PER axis. Sharing a reference let the merge that hands x its
+    // categories hand them to y as well — visible after a re-theme as a y-axis
+    // labelled with hours.
+    var axis = function () { return { labels: { style: { colors: muted, fontFamily: mono, fontSize: '12px' } },
+                 axisBorder: { color: hair }, axisTicks: { color: hair } }; };
     var base = {
       chart: { background: 'transparent', foreColor: muted, toolbar: { show: false },
                animations: { easing: 'easeout', speed: 420 }, fontFamily: mono },
@@ -425,7 +428,7 @@
       dataLabels: { enabled: false },
       grid: { borderColor: hair, strokeDashArray: 3,
               xaxis: { lines: { show: false } }, yaxis: { lines: { show: true } } },
-      xaxis: axis, yaxis: axis,
+      xaxis: axis(), yaxis: axis(),
       tooltip: { theme: 'dark' },
       legend: { labels: { colors: muted }, fontFamily: mono },
       fill: { type: 'gradient',
@@ -461,3 +464,7 @@
   <script type="module" src="/surface-host.js"></script>
 </body>
 </html>
+  // Any change to data-theme (tap, agent, test) broadcasts 'themechange' so live
+  // charts/widgets re-read the tokens; they'd otherwise keep the old palette.
+  new MutationObserver(function(){ window.dispatchEvent(new CustomEvent('themechange', { detail: document.body.dataset.theme })); })
+    .observe(document.body, { attributes: true, attributeFilter: ['data-theme'] });

@@ -123,6 +123,7 @@ import { createSurface } from './surface-core.js';
       // Same theme defaults as renderer.js so a surface-op chart is not a stock
       // ApexCharts widget pasted onto the surface (explicit options still win).
       const options = window.__chartTheme ? window.__chartTheme(raw) : raw;
+      v.chartRaw = raw;
       v.node.classList.add('chartbox');
       if (window.ApexCharts) {
         try {
@@ -259,6 +260,10 @@ import { createSurface } from './surface-core.js';
     }
   }
 
+  // Re-skin every live chart when the surface theme changes.
+  window.addEventListener('themechange', function () {
+    Object.keys(views).forEach(function (k) { const v = views[k]; if (v && v.chart && v.chartRaw) { try { v.chart.updateOptions(window.__chartTheme ? window.__chartTheme(v.chartRaw) : v.chartRaw, false, true); } catch (_) {} } });
+  });
   function teardownView(key) {
     const v = views[key];
     if (!v) return;
