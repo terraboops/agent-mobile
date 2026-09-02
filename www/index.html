@@ -307,7 +307,7 @@
             border: 1px dashed var(--hairline); border-radius: var(--r-sm); }
   /* Arbitrary visualization sandbox: an opaque-origin iframe the agent's code runs
      in. It can draw on its own canvas but has no access to the bridge/mic/identity. */
-  .viz { width: 100%; height: 320px; margin: 12px 0; border: 1px solid var(--hairline);
+  .viz { width: 100%; height: 320px; margin: 12px 0; border: 1px solid var(--hairline); transition: height .2s ease;
          border-radius: var(--r); overflow: hidden; }
   .viz iframe { width: 100%; height: 100%; border: 0; background: var(--surface); }
   /* Session bootstrap: shown on open; choices are native-ish UI outside #ui. */
@@ -441,6 +441,45 @@
     });
     return out;
   }
+  // Tokens handed to sandboxed frames (svg/viz/widgets). They cannot read our CSS
+  // (opaque origin), so we ship the values: at creation as a <style>, and on every
+  // themechange as a postMessage the runner applies to its root.
+  window.__frameTheme = function () {
+    return { surface: tok('--panel', '#111823'), ink: tok('--ink', '#E6EDF3'), muted: tok('--muted', '#8B98A9'),
+             accent: tok('--accent', '#22D3EE'), accent2: tok('--accent-2', '#7C5CFF'), hairline: tok('--hairline', '#1E2A38'),
+             mono: tok('--mono', 'ui-monospace, monospace') };
+  };
+  window.__frameThemeCss = function () {
+    var t = window.__frameTheme();
+    return ':root{--surface:' + t.surface + ';--ink:' + t.ink + ';--muted:' + t.muted + ';--accent:' + t.accent + ';--accent-2:' + t.accent2 + ';--hairline:' + t.hairline + ';--mono:' + t.mono + '}'
+         + 'html,body{margin:0;height:100%;background:var(--surface);color:var(--ink);overflow:hidden;font:13px/1.4 system-ui,sans-serif}';
+  };
+  // Runner script shared by every sandbox: applies vmtheme, reports its content
+  // height (vmsize) after each render and whenever the root resizes.
+  window.__frameRunner = '<script>(function(){'
+    + 'function h(){var r=document.getElementById("root");if(!r)return 0;var b=0;for(var i=0;i<r.children.length;i++){var c=r.children[i].getBoundingClientRect();if(c.bottom>b)b=c.bottom;}return Math.ceil(b);}'
+    + 'function rep(){try{parent.postMessage({type:"vmsize",h:h()},"*");}catch(_){}}'
+    + 'window.__vmReport=rep;'
+    + 'window.addEventListener("message",function(e){var m=e.data;if(!m||m.type!=="vmtheme")return;var t=m.tokens||{};for(var k in t)document.documentElement.style.setProperty("--"+k.replace("accent2","accent-2"),t[k]);});'
+    + 'if(window.ResizeObserver){try{new ResizeObserver(rep).observe(document.documentElement);}catch(_){}}'
+    + 'window.addEventListener("load",function(){setTimeout(rep,0);});'
+    + '})();<' + '/script>';
+  window.addEventListener('themechange', function () {
+    var tokens = window.__frameTheme();
+    document.querySelectorAll('iframe[sandbox]').forEach(function (f) { try { f.contentWindow.postMessage({ type: 'vmtheme', tokens: tokens }, '*'); } catch (_) {} });
+  });
+  // Frames report their content height; clamp and apply to the hosting box.
+  window.addEventListener('message', function (e) {
+    var d = e.data || {}; if (d.type !== 'vmsize') return;
+    var frames = document.querySelectorAll('iframe[sandbox]');
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i].contentWindow !== e.source) continue;
+      var box = frames[i].parentNode; if (!box || !/\bviz\b|\bswidget\b/.test(box.className)) return;
+      var h = Math.max(64, Math.min(640, Math.round(d.h || 0) + 2));
+      if (d.h > 0) box.style.height = h + 'px';
+      return;
+    }
+  });
   window.__chartTheme = function (options) {
     var accent = tok('--accent', '#22D3EE'), accent2 = tok('--accent-2', '#7C5CFF');
     var ink = tok('--ink', '#E6EDF3'), muted = tok('--muted', '#8B98A9');

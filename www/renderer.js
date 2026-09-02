@@ -134,12 +134,13 @@
       fr.setAttribute('srcdoc',
         '<!doctype html><meta charset="utf-8">'
         + (window.__sandboxPreamble || '')   // realm hardening: no WebRTC, no nested frames (bridge.js)
-        + '<style>html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;overflow:hidden;font:13px/1.4 system-ui,sans-serif}</style>'
+        + '<style>' + (window.__frameThemeCss ? window.__frameThemeCss() : 'html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;overflow:hidden}') + '</style>'
         + '<div id="root" style="width:100%;height:100%"></div>'
+        + (window.__frameRunner || '')
         + body
         + '<script>window.addEventListener("message",function(e){var m=e.data;if(!m||m.type!=="vmdata")return;'
         + 'try{if(window.onData&&window.__vizInit)window.onData(m.payload);else{(window.render||function(){throw new Error("viz code defines no window.render")})(m.payload);window.__vizInit=true;}'
-        + 'parent.postMessage({type:"vmok",i:' + i + '},"*");}catch(err){try{parent.postMessage({type:"vimer",i:' + i + ',s:String(err&&err.message||err)},"*");}catch(_){}}});<\/script>'
+        + 'parent.postMessage({type:"vmok",i:' + i + '},"*");if(window.__vmReport)setTimeout(window.__vmReport,0);}catch(err){try{parent.postMessage({type:"vimer",i:' + i + ',s:String(err&&err.message||err)},"*");}catch(_){}}});<\/script>'
         + (v.label ? '<div style="position:absolute;top:6px;right:10px;color:#8b949e;font-size:11px">' + esc(v.label) + '</div>' : ''));
       frames[i] = { frame: fr, label: v.label };
       fr.onload = function () { try { fr.contentWindow.postMessage({ type: 'vmdata', payload: v.data }, '*'); } catch (e) {} };

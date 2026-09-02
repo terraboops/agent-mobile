@@ -69,8 +69,9 @@ import { createSurface } from './surface-core.js';
   function sandboxDoc(body, label) {
     return '<!doctype html><meta charset="utf-8">'
       + (window.__sandboxPreamble || '')   // realm hardening: no WebRTC, no nested frames (bridge.js)
-      + '<style>html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;overflow:hidden;font:13px/1.4 system-ui,sans-serif}</style>'
+      + '<style>' + (window.__frameThemeCss ? window.__frameThemeCss() : 'html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;overflow:hidden}') + '</style>'
       + '<div id="root" style="width:100%;height:100%"></div>'
+      + (window.__frameRunner || '')
       + body
       + '<script>(function(){window.addEventListener("message",function(e){var m=e.data;if(!m)return;var r=document.getElementById("root");var ok=true;var t="";'
       + 'try{if(m.type==="vmrender"){if(window.render)window.render(m.props||{});}'
