@@ -298,7 +298,14 @@
   #agentSpeech .sp-speech.dots { font: 12px/1 var(--mono); letter-spacing: 2px; color: var(--accent); }
   #agentSpeech .sp-speech.dots::after { content: ''; animation: spdots 1.2s steps(1) infinite; }
   @keyframes spdots { 0%{content:''} 25%{content:'·'} 50%{content:'··'} 75%{content:'···'} 100%{content:'····'} }
-  .swidget { margin: 0 0 14px; }
+  /* Widget tiles: a themed panel whose height follows the frame's reported
+     content (vmsize → box.style.height); 320px until the first report. */
+  .swidget { margin: 0 0 14px; height: 320px; border: 1px solid var(--hairline); border-radius: var(--r);
+             overflow: hidden; background: var(--panel); transition: height .2s ease; }
+  .swidget .vizframe { display: block; width: 100%; height: 100%; border: 0; background: transparent; }
+  .swidget.chartbox { height: auto; }
+  /* The idle empty state must not sit above live widgets. */
+  body:has(#surface .swidget) #ui .idle { display: none; }
   .swidget .swtext { margin: 0 0 10px; }
   .swidget img { max-width: 100%; border-radius: var(--r); display: block; border: 1px solid var(--hairline); }
   .swidget figcaption { font-size: 12px; color: var(--muted); margin-top: 6px; }
