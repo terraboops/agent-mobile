@@ -13,3 +13,4 @@ www/config.local.js
 __pycache__/
 *.pyc
 .DS_Store
+test/audit/out/
