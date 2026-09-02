@@ -145,6 +145,21 @@ await snap('16-status-live', () => { document.body.dataset.theme='matrix';
   (window.__agent.onMessage||[]).forEach(fn=>{try{fn(st);}catch(_){}}); });
 for (const t of ['hud','lcars']) await snap(`17-status-${t}`, (t) => { document.body.dataset.theme=t; }, t);
 
+// Live widget tiles (surface ops): the shipped example widgets, in two themes —
+// proves the token hand-off into sandboxed frames and the content-sized frame.
+await page.reload(); await page.waitForTimeout(400);
+const WIDGETS = { clock: readFileSync(join(ROOT,'widgets','clock-widget.js'),'utf8'), weather: readFileSync(join(ROOT,'widgets','weather-tile.js'),'utf8') };
+await snap('18-widgets-matrix', (W) => {
+  document.getElementById('boot').style.display='none'; document.body.dataset.theme='matrix';
+  const ops=[{op:'register_widget_type',name:'clock',code:W.clock},{op:'register_widget_type',name:'weather',code:W.weather},
+    {op:'add_widget',key:'c',type:'clock',props:{text:'14:32'}},
+    {op:'add_widget',key:'w',type:'weather',props:{title:'Castlegar'}},
+    {op:'publish',key:'w',data:{now:9,min:2,max:12,cond:'clear',hourly:[{h:'00',t:9},{h:'02',t:8},{h:'04',t:7},null,{h:'08',t:6},{h:'10',t:10}]}}];
+  (window.__agent.onMessage||[]).forEach(fn=>{try{fn({type:'surface',ops});}catch(_){}});
+}, WIDGETS);
+await page.waitForTimeout(500); await snap('18-widgets-matrix', null);
+await snap('19-widgets-lcars', () => { document.body.dataset.theme='lcars'; });
+
 writeFileSync(join(OUT,'findings.json'), JSON.stringify({errors, results}, null, 2));
 await browser.close(); server.close();
 // summary
