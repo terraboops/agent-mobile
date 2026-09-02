@@ -119,15 +119,33 @@ import { createSurface } from './surface-core.js';
         + (alt ? '<figcaption>' + esc(alt) + '</figcaption>' : '') + '</figure>';
     } else if (type === 'chart') {
       // Declarative ApexCharts options (JSON only — no functions can survive the wire).
-      const options = (props && props.options) || (data && data.options) || {};
+      const raw = (props && props.options) || (data && data.options) || {};
+      // Same theme defaults as renderer.js so a surface-op chart is not a stock
+      // ApexCharts widget pasted onto the surface (explicit options still win).
+      const options = window.__chartTheme ? window.__chartTheme(raw) : raw;
       v.node.classList.add('chartbox');
-      v.node.innerHTML = '<div class="chart"></div>';
       if (window.ApexCharts) {
         try {
-          if (v.chart) { v.chart.updateOptions(options, true); }
-          else { v.chart = new window.ApexCharts(v.node.firstChild, options); v.chart.render(); }
+          if (v.chart) {
+            // Do NOT rebuild innerHTML here: that detached the live chart's element
+            // and updateOptions then drew into nothing (update/publish blanked it).
+            v.chart.updateOptions(options, true);
+          } else {
+            v.node.innerHTML = '<div class="chart"></div>';
+            const el = v.node.firstChild;
+            // Defer to layout: ApexCharts measures synchronously and a 0-width
+            // container yields NaN widths and broken <svg>/<foreignObject>.
+            let tries = 0;
+            const mount = function () {
+              if (!el.isConnected || v.chart) return;
+              if (el.clientWidth === 0 && tries++ < 10) return requestAnimationFrame(mount);
+              try { v.chart = new window.ApexCharts(el, options); v.chart.render(); }
+              catch (e) { v.node.textContent = '[chart] ' + (e && e.message || e); }
+            };
+            requestAnimationFrame(mount);
+          }
         } catch (e) { v.node.textContent = '[chart] ' + (e && e.message || e); }
-      }
+      } else { v.node.innerHTML = '<div class="chart"></div>'; }
     } else if (type === 'svg') {
       const svg = String((props && props.svg) || (data && data.svg) || '').trim();
       if (!/^<svg[\s>]/i.test(svg)) { v.node.innerHTML = '<div class="vizerr">[svg] missing or invalid SVG markup</div>'; return; }
@@ -244,6 +262,10 @@ import { createSurface } from './surface-core.js';
   function teardownView(key) {
     const v = views[key];
     if (!v) return;
+    // Destroy a live ApexCharts instance FIRST: it keeps window resize / observer
+    // hooks that would keep re-measuring a detached element (NaN widths, leaked
+    // listeners) for the life of the page.
+    try { if (v.chart) { v.chart.destroy(); v.chart = null; } } catch (_) {}
     try { if (v.node && v.node.parentNode) v.node.parentNode.removeChild(v.node); } catch (_) {}
     delete views[key];
   }

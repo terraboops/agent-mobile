@@ -15,7 +15,13 @@
   // bound once in bridge.js — no longer drawn per-render by the agent, so they
   // can never be hidden or omitted.
 
+  // Every draw() replaces #ui wholesale. ApexCharts instances mounted by the
+  // previous draw must be destroyed first, or their resize hooks keep measuring
+  // detached nodes forever (console NaN errors on rotate/keyboard/theme change,
+  // and one leaked chart per render).
+  const liveCharts = [];
   function draw(u) {
+    liveCharts.splice(0).forEach(function (c) { try { c.destroy(); } catch (_) {} });
     if (!u) return;
     let h = '';
     const charts = [];
@@ -77,7 +83,18 @@
           // hairline grid, mono axes) UNDER whatever the agent sent, so an explicit
           // option always still wins.
           const opts = window.__chartTheme ? window.__chartTheme(ch.options) : ch.options;
-          new window.ApexCharts(el, opts).render();
+          // ApexCharts measures its container synchronously; rendering in the same
+          // tick as innerHTML (before layout) yields width NaN -> broken <svg>/
+          // <foreignObject> and console errors. Defer one frame and only mount once
+          // the element actually has a box (retry a few frames if it is still 0).
+          let tries = 0;
+          const mount = function () {
+            if (!el.isConnected) return;
+            if (el.clientWidth === 0 && tries++ < 10) return requestAnimationFrame(mount);
+            try { const c = new window.ApexCharts(el, opts); liveCharts.push(c); c.render(); }
+            catch (e) { el.textContent = '[chart] ' + (e && e.message || e); }
+          };
+          requestAnimationFrame(mount);
         } catch (e) { el.textContent = '[chart] ' + (e && e.message || e); }
       }
     });
