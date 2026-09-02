@@ -79,6 +79,8 @@
   body::after { content:''; position: fixed; inset: 0; z-index: 2; pointer-events: none;
      background: repeating-linear-gradient(180deg, var(--scan) 0 1px, transparent 1px 3px); opacity: .55; }
   * { box-sizing: border-box; }
+  /* Reserve the band the fixed #ctrlbar occupies, so scrolled content ends above it. */
+  body { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
   body { margin: 0; font: 15px/1.5 var(--sans); background: var(--surface); color: var(--ink);
          background-image:
            radial-gradient(1200px 480px at 50% -8%, rgba(34,211,238,.06), transparent 60%),
@@ -228,6 +230,8 @@
               background: linear-gradient(rgba(11,15,20,0), var(--surface) 30%); }
   .controls button { flex: 1 1 auto; margin: 0; }
   .chart { width: 100%; height: 260px; min-height: 260px; margin: 12px 0; }
+  /* The plot area owns its ground: no rain/grid through the data. */
+  body[data-theme="matrix"] .chart, body[data-theme="matrix"] .chartbox { background: rgba(0,6,0,.78); border-radius: var(--r); }
   /* Display-surface widget tiles (docs/display-surface.md). Persistent, additive,
      keyed viewport: an update re-renders ONLY its own tile, never peers or #ui. */
   #surface { max-width: 560px; margin: 0 auto; padding: 0 18px; }
@@ -327,6 +331,13 @@
                background: linear-gradient(90deg, var(--lcars-mauve) 0 62px, transparent 62px 70px,
                                            var(--accent) 70px 108px, transparent 108px); }
   body[data-theme="lcars"] #boot h2 { text-transform: uppercase; letter-spacing: .18em; font-size: 15px; }
+  /* ── Landscape: keep the rail to a strip; content is what matters sideways ── */
+  @media (orientation: landscape) and (max-height: 500px) {
+    #badge { padding: 52px 16px 6px; }
+    #badge::before { margin-bottom: 6px; }
+    #ui, #surface { max-width: 720px; }
+    .chart { height: 200px; min-height: 200px; }
+  }
   /* ── Accessibility ──────────────────────────────────────────────────────── */
   /* Keyboard / switch-access users must be able to SEE focus. */
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--r-sm); }
@@ -459,6 +470,10 @@
     var cur = document.body.dataset.theme || 'matrix';
     document.body.dataset.theme = THEMES[(THEMES.indexOf(cur)+1) % THEMES.length];
   });
+  // Any change to data-theme (tap, agent, test) broadcasts 'themechange' so live
+  // charts/widgets re-read the tokens; they'd otherwise keep the old palette.
+  new MutationObserver(function(){ window.dispatchEvent(new CustomEvent('themechange', { detail: document.body.dataset.theme })); })
+    .observe(document.body, { attributes: true, attributeFilter: ['data-theme'] });
 
   // ── Working sweep follows the existing #work status flag ────────────────────
   // The adapter already pushes working=true/false; mirror it onto the sweep so a
@@ -478,7 +493,3 @@
   <script type="module" src="/surface-host.js"></script>
 </body>
 </html>
-  // Any change to data-theme (tap, agent, test) broadcasts 'themechange' so live
-  // charts/widgets re-read the tokens; they'd otherwise keep the old palette.
-  new MutationObserver(function(){ window.dispatchEvent(new CustomEvent('themechange', { detail: document.body.dataset.theme })); })
-    .observe(document.body, { attributes: true, attributeFilter: ['data-theme'] });
