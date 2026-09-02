@@ -77,19 +77,34 @@ import { createSurface } from './surface-core.js';
       + 'try{if(m.type==="vmrender"){if(window.render)window.render(m.props||{});}'
       + 'else if(m.type==="vmdata"){if(window.onData)window.onData(m.data||{});else if(window.render)window.render(m.data||{});}'
       + 't=r?r.innerText:"";}catch(err){ok=false;t=String(err&&err.message||err);}'
-      + 'try{window.parent.postMessage({type:ok?"vmroot":"vimer",text:t},"*");}catch(_){}});})();<' + '/script>'
+      + 'try{window.parent.postMessage({type:ok?"vmroot":"vimer",text:t},"*");}catch(_){}'
+      + 'if(window.__vmReport)setTimeout(window.__vmReport,0);});})();<' + '/script>'
       + (label ? '<div style="position:absolute;top:6px;right:10px;color:#8b949e;font-size:11px">' + esc(label) + '</div>' : '');
   }
 
+  // Messages for a frame that has not finished loading are QUEUED and flushed on
+  // load. Posting to a not-yet-loaded srcdoc frame silently drops the message —
+  // which is why a publish in the same batch as add_widget used to vanish.
+  function post(v, msg) {
+    if (!v.iframe) return;
+    if (!v.ready) { v.queue.push(msg); return; }
+    try { v.iframe.contentWindow.postMessage(msg, '*'); } catch (_) {}
+  }
   function mountSandbox(v, body, data, label, autoPost) {
     v.node.innerHTML = '';
     const fr = document.createElement('iframe');
     fr.className = 'vizframe';
     fr.setAttribute('sandbox', 'allow-scripts');
     fr.setAttribute('srcdoc', sandboxDoc(body, label));
-    v.iframe = fr;
+    v.iframe = fr; v.ready = false; v.queue = [];
     v.node.appendChild(fr);
-    fr.onload = autoPost ? function () { try { fr.contentWindow.postMessage({ type: 'vmdata', data: data || {} }, '*'); } catch (_) {} } : null;
+    if (autoPost) v.queue.push({ type: 'vmdata', data: data || {} });
+    fr.onload = function () {
+      if (v.iframe !== fr) return;               // replaced while loading
+      v.ready = true;
+      const q = v.queue.splice(0);
+      q.forEach(function (m) { try { fr.contentWindow.postMessage(m, '*'); } catch (_) {} });
+    };
     return v;
   }
 
@@ -98,10 +113,8 @@ import { createSurface } from './surface-core.js';
   function feed(v, props, data) {
     // Registered agent-shipped type -> sandboxed module, postMessage only.
     if (surface.getType(v.type) && v.iframe) {
-      try {
-        if (props !== undefined) v.iframe.contentWindow.postMessage({ type: 'vmrender', props: props || {} }, '*');
-        if (data !== undefined) v.iframe.contentWindow.postMessage({ type: 'vmdata', data: data || {} }, '*');
-      } catch (_) {}
+      if (props !== undefined) post(v, { type: 'vmrender', props: props || {} });
+      if (data !== undefined) post(v, { type: 'vmdata', data: data || {} });
       return;
     }
     // Built-in primitive for backward compatibility with the flat renderer.
@@ -182,16 +195,10 @@ import { createSurface } from './surface-core.js';
       + '<script>' + jsEscape(def.code || '') + '<' + '/script>';
     if (hasExternal(body)) { v.node.innerHTML = '<div style="padding:6px;font-size:12px;color:#f0883e">[widget] external script blocked (egress-free).</div>'; return; }
     mountSandbox(v, body, data || {}, (props && props.label) || v.label, false);
-    // Deliver initial props once the frame is up (calls window.render(props)).
-    if (props !== undefined) {
-      const fr = v.iframe;
-      (function (p, d) {
-        fr.onload = function () {
-          try { fr.contentWindow.postMessage({ type: 'vmrender', props: p || {} }, '*'); } catch (_) {}
-          try { if (d !== undefined) fr.contentWindow.postMessage({ type: 'vmdata', data: d || {} }, '*'); } catch (_) {}
-        };
-      })(props, data);
-    }
+    // Initial props (window.render) then data (window.onData) — queued until the
+    // frame is up, in order, alongside anything published meanwhile.
+    if (props !== undefined) post(v, { type: 'vmrender', props: props || {} });
+    if (data !== undefined) post(v, { type: 'vmdata', data: data || {} });
   }
 
   // ---- report render outcomes to the agent --------------------------------
@@ -302,11 +309,10 @@ import { createSurface } from './surface-core.js';
         const v = views[ev.key];
         if (!v) { sendUp({ type: 'render_result', key: ev.key, ok: false,
                            error: 'publish: no widget with key "' + ev.key + '" (add_widget first)' }); break; }
-        if (surface.getType(v.type) && v.iframe) {
-          try { v.iframe.contentWindow.postMessage({ type: 'vmdata', data: ev.data || {} }, '*'); } catch (_) {}
-        } else {
-          feed(v, undefined, ev.data || {});
-        }
+        // Always through feed(): it queues until the frame has loaded. Posting
+        // straight to the iframe dropped any publish sent in the same batch as
+        // add_widget (the frame was still parsing its srcdoc).
+        feed(v, undefined, ev.data || {});
         break;
       }
       case 'destroy': // remove_widget

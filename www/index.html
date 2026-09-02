@@ -461,7 +461,7 @@
     + 'function rep(){try{parent.postMessage({type:"vmsize",h:h()},"*");}catch(_){}}'
     + 'window.__vmReport=rep;'
     + 'window.addEventListener("message",function(e){var m=e.data;if(!m||m.type!=="vmtheme")return;var t=m.tokens||{};for(var k in t)document.documentElement.style.setProperty("--"+k.replace("accent2","accent-2"),t[k]);});'
-    + 'if(window.ResizeObserver){try{new ResizeObserver(rep).observe(document.documentElement);}catch(_){}}'
+    + 'window.addEventListener("load",function(){var r=document.getElementById("root");if(r&&window.MutationObserver){try{new MutationObserver(function(){setTimeout(rep,0);}).observe(r,{childList:true,subtree:true,attributes:true,characterData:true});}catch(_){}}});'
     + 'window.addEventListener("load",function(){setTimeout(rep,0);});'
     + '})();<' + '/script>';
   window.addEventListener('themechange', function () {

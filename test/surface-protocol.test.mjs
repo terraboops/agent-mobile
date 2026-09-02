@@ -135,6 +135,23 @@ check('publish after remove_widget reports ok:false',
   fb.some((m) => m.ok === false && m.key === 'w_ok'),
   `got ${JSON.stringify(fb)}`);
 
+// 8. a publish in the SAME batch as add_widget must reach the widget. The frame
+//    is still parsing its srcdoc when the data event fires; the host must queue
+//    it, not post into the void. Verified by the frame's own echo of its text.
+await clearFeedback();
+const ECHO_TYPE = 'window.render=function(p){document.getElementById("root").textContent="props:"+(p&&p.title||"");};'
+                + 'window.onData=function(d){document.getElementById("root").textContent="data:"+(d&&d.now);};';
+await page.evaluate(() => { window.__echo = []; window.addEventListener('message', (e) => { if (e.data && e.data.type === 'vmroot') window.__echo.push(e.data.text); }); });
+await ops([
+  { op: 'register_widget_type', name: 'proto_echo', code: ECHO_TYPE },
+  { op: 'add_widget', key: 'w_race', type: 'proto_echo', props: { title: 'T' } },
+  { op: 'publish', key: 'w_race', data: { now: 42 } },
+]);
+await page.waitForTimeout(400);
+const echo = await page.evaluate(() => window.__echo);
+check('publish in the same batch as add_widget reaches the widget',
+  echo.some((t) => /data:42/.test(t)), `frame echoed ${JSON.stringify(echo)}`);
+
 await browser.close();
 server.close();
 
