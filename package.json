@@ -12,7 +12,8 @@
     "surface-live": "node test/surface-live.test.mjs",
     "frames": "node test/frames.test.mjs",
     "surface-assets": "node test/surface-assets.test.mjs",
-    "surface-protocol": "node test/surface-protocol.test.mjs"
+    "surface-protocol": "node test/surface-protocol.test.mjs",
+    "surface-chunks": "node test/surface-chunks.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

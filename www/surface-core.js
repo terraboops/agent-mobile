@@ -26,7 +26,11 @@ export function createSurface({ capacity = 100 * 1024 * 1024 } = {}) {
   const emits = [];
 
   // accumulate an in-flight multi-chunk asset
-  let pending = {}; // name -> { mime, chunks: [], bytes }
+  let pending = {}; // name -> { mime, chunks: [], bytes, seq }
+  // Names whose upload was aborted. Without a seq the final chunk of the dead
+  // upload is indistinguishable from a fresh single-chunk register, so the name
+  // stays poisoned until the agent explicitly restarts (seq:0 or unregister).
+  const poisoned = new Set();
 
   function emit(ev) { emits.push(ev); }
 
@@ -108,18 +112,40 @@ export function createSurface({ capacity = 100 * 1024 * 1024 } = {}) {
     apply(op) {
       switch (op.op) {
         case 'register_asset': {
-          const { name, mime, b64, append } = op;
-          // Re-registering a COMPLETE asset replaces it: give its bytes back first, so a
-          // long session that refreshes a library doesn't consume the cap twice.
-          if (!pending[name] && assets[name]) { usage -= assets[name].size || 0; delete assets[name]; }
-          if (!pending[name]) pending[name] = { mime: mime || 'application/octet-stream', chunks: [], bytes: 0 };
+          const { name, mime, b64, append, seq } = op;
           const bytes = base64Bytes(b64);
-          if ((usage + bytes) > capacity) {
-            emit({ event: 'render_result', ok: false, error: `storage cap exceeded (${usage}+${bytes}>${capacity})`, key: name });
+          const abort = (error) => {
+            // A failed chunk poisons the whole upload: drop what arrived so a later
+            // chunk can never complete an asset with a hole in it.
+            if (pending[name]) { usage = Math.max(0, usage - pending[name].bytes); delete pending[name]; }
+            poisoned.add(name);
+            emit({ event: 'render_result', ok: false, error, key: name });
+          };
+          if (poisoned.has(name)) {
+            if (seq === 0) poisoned.delete(name);
+            else { emit({ event: 'render_result', ok: false, error: `register_asset ${name}: a previous chunked upload was aborted; restart it with seq:0 (or unregister_asset ${name} first)`, key: name }); break; }
+          }
+          if (!bytes) { abort(`register_asset ${name}: empty payload (b64 missing)`); break; }
+          const inflight = pending[name];
+          // Optional per-chunk sequence: the transport is ordered, but a sidecar retry
+          // after a dropped ack must not splice a duplicate or skip a chunk.
+          if (typeof seq === 'number') {
+            const want = inflight ? inflight.seq + 1 : 0;
+            if (seq !== want) { abort(`register_asset ${name}: chunk seq ${seq} arrived, expected ${want} (upload aborted; resend from seq 0)`); break; }
+          }
+          // Re-registering a COMPLETE asset replaces it. Judge the cap with the old
+          // bytes credited back — but only actually free them once the new upload is
+          // accepted, so a rejected replacement leaves the good asset in place.
+          const replacing = !inflight && assets[name] ? (assets[name].size || 0) : 0;
+          if ((usage - replacing + bytes) > capacity) {
+            abort(`storage cap exceeded (${usage - replacing}+${bytes}>${capacity})`);
             break;
           }
+          if (replacing) { usage -= replacing; delete assets[name]; }
+          if (!pending[name]) pending[name] = { mime: mime || 'application/octet-stream', chunks: [], bytes: 0, seq: -1 };
           pending[name].chunks.push(b64);
           pending[name].bytes += bytes;
+          if (typeof seq === 'number') pending[name].seq = seq;
           usage += bytes;
           if (!append) finishAsset(name);
           break;
@@ -129,6 +155,7 @@ export function createSurface({ capacity = 100 * 1024 * 1024 } = {}) {
           const { name } = op;
           let freed = 0;
           if (pending[name]) { freed += pending[name].bytes; delete pending[name]; }
+          poisoned.delete(name);
           if (assets[name]) { freed += assets[name].size || 0; delete assets[name]; }
           usage = Math.max(0, usage - freed);
           emit({ event: 'asset_removed', name, freed, usage });
