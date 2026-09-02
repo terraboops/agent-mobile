@@ -70,7 +70,11 @@
   /* Matrix digital rain — a fixed, non-interactive canvas behind everything */
   #rain { position: fixed; inset: 0; z-index: 0; pointer-events: none; display: none; opacity: .85; }
   body[data-theme="matrix"] #rain { display: block; }
-  body > *:not(#rain) { position: relative; z-index: 1; }
+  /* Only the FLOW content needs lifting above the rain canvas. A blanket
+     `body > *:not(#rain)` rule has specificity (1,0,1) and silently overrode
+     position:fixed/sticky on the ID-selected chrome (boot overlay, ctrl bar,
+     header) — a shipped regression. Target only the two content columns. */
+  #ui, #surface { position: relative; z-index: 1; }
   /* Scanline veil (all themes, subtle; stronger on matrix/lcars) */
   body::after { content:''; position: fixed; inset: 0; z-index: 2; pointer-events: none;
      background: repeating-linear-gradient(180deg, var(--scan) 0 1px, transparent 1px 3px); opacity: .55; }
