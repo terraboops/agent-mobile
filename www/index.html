@@ -270,15 +270,21 @@
   /* Agent voice indicator — a floating "default example widget" shown while the
      agent is speaking. Sits above the content; NOT interactive with the mic.
      A few creative visual variants, switchable by tapping it. */
-  #agentSpeech { position: fixed; top: 14px; left: 0; right: 0; z-index: 45;
-                 display: none; justify-content: center; pointer-events: none; }
+  /* Sits on the prompt line of the header rail, right side — BELOW the 92px band the
+     unforgeable native badge floats in (top:14px collided with it on device). */
+  #agentSpeech { position: fixed; top: 96px; right: 16px; left: auto; z-index: 45;
+                 display: none; justify-content: flex-end; pointer-events: none; }
+  @media (orientation: landscape) and (max-height: 500px) { #agentSpeech { top: 54px; } }
   #agentSpeech.show { display: flex; }
   #agentSpeech .speech-widget { pointer-events: auto; cursor: pointer; width: 88px; height: 28px;
                  display: flex; align-items: center; justify-content: center; gap: 4px;
                  background: rgba(17,24,35,.82); backdrop-filter: blur(8px); border: 1px solid var(--hairline);
                  border-radius: var(--r-pill); padding: 6px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.45), var(--glow); }
   /* v1 — equalizer bars */
-  #agentSpeech .sp-speech.bars .spbar { width: 4px; border-radius: 3px;
+  /* Bars are inline <span>s: without display:block their width/height are ignored
+     and the pill renders EMPTY. */
+  #agentSpeech .sp-speech.bars { display: flex; align-items: center; gap: 3px; height: 18px; }
+  #agentSpeech .sp-speech.bars .spbar { display: block; height: 6px; width: 4px; border-radius: 3px;
                  background: linear-gradient(var(--accent), var(--accent-2));
                  animation: spbar .9s infinite ease-in-out; }
   #agentSpeech .sp-speech.bars .spbar:nth-child(1){ animation-delay:-.1s; } .spbar:nth-child(2){ animation-delay:-.35s; }
