@@ -105,6 +105,33 @@ registerWidgetType('avatar', function (el, props) {
 The host passes an isolated tile element per widget key. Registered assets are available to
 tile code by name; the host loads them lazily on first use.
 
+### Delivery guarantees (verified by `npm run surface-protocol` / `surface-chunks`)
+
+- **Ordering within a batch.** Ops in one `__surface__` array apply in order, and
+  messages to a widget's frame are queued until the frame has loaded, then
+  flushed in order: initial `props` (→ `render`), then `data` (→ `onData`),
+  then anything published meanwhile. `add_widget` + `publish` in one batch is
+  the normal pattern and is guaranteed to land.
+- **Chunked assets fail closed.** `register_asset` with `append:true` carries
+  optional `seq` (0,1,2,…). A chunk that exceeds the cap, arrives out of order,
+  duplicates a seq, or has an empty `b64` **aborts the whole upload**: its bytes
+  are freed and the name is blocked until the agent restarts with `seq:0` or
+  `unregister_asset`s it. Re-registering a complete asset is judged with the old
+  bytes credited back and only replaces it once accepted.
+- **Every failure is reported.** Unknown keys, unknown types, missing assets,
+  throwing widget code, aborted uploads: each produces `render_result ok:false`
+  with an actionable `error` naming the key. Nothing is dropped silently.
+
+### What the frame receives from the host
+
+- **Theme tokens** as CSS variables on `:root` — `--surface --ink --muted
+  --accent --accent-2 --hairline --mono` — set at creation and updated live via a
+  `vmtheme` message on every theme change. Widgets must draw from these, never a
+  hard-coded palette (see `widgets/` for the pattern).
+- **Content sizing.** A shared runner reports the root's content height to the
+  host (`vmsize`) after each render/data and on DOM mutation; the host sizes the
+  tile 64–640px. A widget that fills 100% height keeps the 320px default.
+
 ## Trust boundary
 
 - The channel is **AEAD-authenticated** (ChaCha20-Poly1305); only the session-key holder can
