@@ -14,7 +14,8 @@
     "surface-assets": "node test/surface-assets.test.mjs",
     "surface-protocol": "node test/surface-protocol.test.mjs",
     "surface-chunks": "node test/surface-chunks.test.mjs",
-    "surface-integration": "node test-surface-integration.mjs"
+    "surface-integration": "node test-surface-integration.mjs",
+    "e2e-voice": "node test/e2e-voice.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
