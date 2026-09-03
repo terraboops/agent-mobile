@@ -79,7 +79,7 @@ import { createSurface } from './surface-core.js';
       + 't=r?r.innerText:"";}catch(err){ok=false;t=String(err&&err.message||err);}'
       + 'try{window.parent.postMessage({type:ok?"vmroot":"vimer",text:t},"*");}catch(_){}'
       + 'if(window.__vmReport)setTimeout(window.__vmReport,0);});})();<' + '/script>'
-      + (label ? '<div style="position:absolute;top:6px;right:10px;color:#8b949e;font-size:11px">' + esc(label) + '</div>' : '');
+      + (label ? '<div style="position:absolute;top:6px;right:10px;color:var(--muted,#8b949e);font:12px var(--mono,monospace)">' + esc(label) + '</div>' : '');
   }
 
   // Messages for a frame that has not finished loading are QUEUED and flushed on

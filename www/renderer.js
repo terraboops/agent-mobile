@@ -66,6 +66,9 @@
           vizzes.push({ code: runner, data: { svg: svg }, label: c.label || '' });
           h += '<div class="viz"><iframe class="vizframe" sandbox="allow-scripts"></iframe></div>';
         }
+        // An unknown type used to render NOTHING: the agent believed it drew a
+        // component while the screen showed a gap. Make the mistake visible.
+        else h += '<div class="vizerr">[render] unknown component type "' + esc(String(c.t)) + '" (known: text, list, image, title, chart, viz, svg)</div>';
       });
     }
     // Image is ONE declarative component (src is a data: URI over the channel;
@@ -117,14 +120,18 @@
     const isHtml = s => /^\s*</.test(s || '') || /<script[\s>]/i.test(s || '');
     const frames = window.__vizFrames = [];          // index -> { frame, label }
     window.__vizStatus = {};                         // index -> 'ok' | 'error: ...' (render feedback)
+    // Snapshot the frames BEFORE the loop: replacing one (blocked script) shifted
+    // the live NodeList, so every viz after it was never wired and stayed blank.
+    const frameEls = Array.prototype.slice.call(ui.querySelectorAll('.vizframe'));
     vizzes.forEach(function (v, i) {
-      const fr = ui.querySelectorAll('.vizframe')[i];
+      const fr = frameEls[i];
       if (!fr) return;
       if (hasExternal(v.code)) {
         // The sandbox is egress-free: an external/CDN script can never load, so the
         // viz would silently render blank. Warn so the cause is visible, not hidden.
         const warn = document.createElement('div');
-        warn.style.cssText = 'padding:10px;font-size:12px;color:#f0883e;height:100%;box-sizing:border-box';
+        warn.className = 'vizerr';
+        if (fr.parentNode) fr.parentNode.style.height = 'auto';
         warn.textContent = '[viz] external/CDN script blocked (egress-free). The agent must inline the library source into the component instead.';
         fr.replaceWith(warn);
         return;
@@ -141,7 +148,7 @@
         + '<script>window.addEventListener("message",function(e){var m=e.data;if(!m||m.type!=="vmdata")return;'
         + 'try{if(window.onData&&window.__vizInit)window.onData(m.payload);else{(window.render||function(){throw new Error("viz code defines no window.render")})(m.payload);window.__vizInit=true;}'
         + 'parent.postMessage({type:"vmok",i:' + i + '},"*");if(window.__vmReport)setTimeout(window.__vmReport,0);}catch(err){try{parent.postMessage({type:"vimer",i:' + i + ',s:String(err&&err.message||err)},"*");}catch(_){}}});<\/script>'
-        + (v.label ? '<div style="position:absolute;top:6px;right:10px;color:#8b949e;font-size:11px">' + esc(v.label) + '</div>' : ''));
+        + (v.label ? '<div style="position:absolute;top:6px;right:10px;color:var(--muted,#8b949e);font:12px var(--mono,monospace)">' + esc(v.label) + '</div>' : ''));
       frames[i] = { frame: fr, label: v.label };
       fr.onload = function () { try { fr.contentWindow.postMessage({ type: 'vmdata', payload: v.data }, '*'); } catch (e) {} };
     });
@@ -205,6 +212,7 @@
         err.className = 'vizerr';
         err.textContent = '[viz' + (entry.label ? ' ' + entry.label : '') + '] ' + d.s;
         box.appendChild(err);
+        box.classList.add('err');   // collapse: the frame drew nothing useful
       }
     } catch (_) {}
     try { window.__agent.send(JSON.stringify({ type: 'render_result', key: 'viz:' + d.i, ok: false, error: String(d.s) })); } catch (_) {}
@@ -222,7 +230,7 @@
         try {
           const el = document.getElementById('ui');
           if (el) el.insertAdjacentHTML('beforeend',
-            '<div style="color:#e06c75;padding:6px 10px;font:12px/1.4 monospace">[render error] ' + String(e && e.message || e) + '</div>');
+            '<div class="vizerr">[render error] ' + String(e && e.message || e) + '</div>');
         } catch (_) {}
       }
     }

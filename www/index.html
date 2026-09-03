@@ -317,6 +317,8 @@
   .viz { width: 100%; height: 320px; margin: 12px 0; border: 1px solid var(--hairline); transition: height .2s ease;
          border-radius: var(--r); overflow: hidden; }
   .viz iframe { width: 100%; height: 100%; border: 0; background: var(--surface); }
+  .viz.err { height: auto; }
+  .viz.err iframe { height: 96px; opacity: .5; }
   /* Session bootstrap: shown on open; choices are native-ish UI outside #ui. */
   #boot { position: fixed; inset: 0; z-index: 50; background: rgba(11,15,20,.94); backdrop-filter: blur(6px);
           display: flex; align-items: center; justify-content: center; padding: 24px; }
