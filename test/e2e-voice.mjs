@@ -14,7 +14,8 @@ import { createRequire } from 'node:module';
 const require = createRequire('/Users/terra/.hermes/plugins/agentmob/sidecar/index.mjs');
 const OpusScript = require('opusscript');
 
-const UTT = process.argv[2] || 'What is two plus two? Answer in one short sentence.';
+const NEW = process.argv.includes('--new');
+const UTT = process.argv.filter((a) => !a.startsWith('--'))[2] || 'What is two plus two? Answer in one short sentence.';
 const RATE = 24000, FRAME = 480; // sidecar uplink decoder: 24k mono, 20ms
 const dir = mkdtempSync(join(tmpdir(), 'e2e-'));
 execFileSync('say', ['-v', 'Samantha', '-o', join(dir, 'u.aiff'), UTT]);
@@ -41,7 +42,10 @@ s._onFrame = function (raw) {
     events.push(d);
     const kind = d && d.type;
     if (kind === 'text') console.log(`  ← text: ${JSON.stringify(d.text).slice(0, 200)}`);
-    else if (kind === 'render') console.log(`  ← render: ${JSON.stringify(d.ui || d).slice(0, 240)}`);
+    else if (kind === 'render') { console.log(`  ← render: ${JSON.stringify(d.ui || d).slice(0, 160)}`);
+      const comps = ((d.ui || d).components || []); comps.forEach((c) => { if (c.t === 'chart') { const o = c.options || {}; const bad = [];
+        if (o.colors) bad.push('colors'); if (o.chart && (o.chart.background || o.chart.foreColor)) bad.push('chart.background/foreColor'); if (o.grid && o.grid.borderColor) bad.push('grid.borderColor'); if (o.theme) bad.push('theme');
+        console.log(`     chart: type=${o.chart && o.chart.type} points=${(o.series && o.series[0] && o.series[0].data || []).length} hard-coded colours: ${bad.length ? bad.join(', ') : 'NONE (themed by the surface)'}`); } }); }
     else if (kind === 'surface') console.log(`  ← surface ops: ${(d.ops || []).map(o => o.op).join(',')}`);
     else if (kind === 'status') { if (d.heard || d.working !== undefined || d.speaking !== undefined) console.log(`  ← status: ${JSON.stringify(d).slice(0, 160)}`); }
     else console.log(`  ← ${kind}: ${JSON.stringify(d).slice(0, 160)}`);
@@ -51,7 +55,9 @@ s._onFrame = function (raw) {
 };
 await s.connect();
 console.log('handshake OK — AEAD channel up');
-// NOTE: a plain cmd string is a TYPED TURN to the agent (not an echo) — don't send one here.
+// NOTE: a plain cmd string is a TYPED TURN to the agent (not an echo).
+// --new sends '/new' first: the adapter rotates the session, reloading skills.
+if (NEW) { console.log('sending /new (session reset, skills reload)…'); s.cmd('/new', { timeoutMs: 30000 }).catch(() => {}); await new Promise((r) => setTimeout(r, 8000)); events.length = 0; audioFrames = 0; }
 
 const enc = new OpusScript(RATE, 1);
 let seq = 1; const t0 = Date.now();
