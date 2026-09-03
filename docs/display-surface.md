@@ -90,20 +90,28 @@ The rest of the screen is the webview (the agent's surface).
 
 ## Widget runtime contract
 
-Each registered widget type is a JS module exposing `render(el, props)` returning a cleanup
-(or a subscription handle):
-```js
-registerWidgetType('avatar', function (el, props) {
-  el.innerHTML = '<img class="avat">';
-  return { onData: function (data) { /* update in place */ } };
-});
-```
-- `add_widget` → `render(el, props)`.
-- `publish` → calls the instance's `onData(data)` (no full re-render).
-- `remove_widget` → calls `onDestroy()` and drops the tile.
+A widget type's `code` runs inside a fresh, opaque-origin sandboxed iframe
+(`sandbox="allow-scripts"`, no same-origin): it can never reach the bridge, mic,
+Stop, identity badge, or the network. The host talks to it only by `postMessage`.
+The code defines two globals and draws into `#root`:
 
-The host passes an isolated tile element per widget key. Registered assets are available to
-tile code by name; the host loads them lazily on first use.
+```js
+(function () {
+  var root = document.getElementById('root');
+  window.render = function (props) { /* initial draw */ root.textContent = props.title; };
+  window.onData = function (data)  { /* update in place — no re-render */ };
+})();
+```
+
+- `add_widget` → the frame loads, then `render(props)`.
+- `publish` → `onData(data)` on the same frame (no peer repaints).
+- `update_widget` → `render(props)` again with the new props.
+- `remove_widget` → the frame is torn down (any ApexCharts instance destroyed).
+- `assets` named on `register_widget_type` are inlined into the frame ahead of the
+  code as `<script>`/`<style>` — the sandbox is egress-free, so nothing can be
+  fetched at runtime.
+
+Ready-made types that follow this contract live in `widgets/`.
 
 ### Delivery guarantees (verified by `npm run surface-protocol` / `surface-chunks`)
 
