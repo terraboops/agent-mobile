@@ -160,6 +160,20 @@ await snap('18-widgets-matrix', (W) => {
 await page.waitForTimeout(500); await snap('18-widgets-matrix', null);
 await snap('19-widgets-lcars', () => { document.body.dataset.theme='lcars'; });
 
+// Error surfaces: the agent's mistakes must be VISIBLE, themed, and readable.
+await page.reload(); await page.waitForTimeout(400);
+await snap('20-errors-matrix', () => {
+  document.getElementById('boot').style.display='none'; document.body.dataset.theme='matrix';
+  const ui={title:'When the agent gets it wrong',components:[
+    {t:'text',text:'Each line below is a mistake the agent can make; none may vanish silently.'},
+    {t:'svg',svg:'<div />'},
+    {t:'viz',code:'<script src="https://cdn.example.com/lib.js"></script>'},
+    {t:'viz',code:'window.render=function(){ throw new Error("widget blew up"); };'},
+    {t:'gauge',value:42}]};
+  (window.__agent.onMessage||[]).forEach(fn=>{try{fn({type:'render',ui});}catch(_){}});
+});
+await page.waitForTimeout(500); await snap('20-errors-matrix', null);
+
 writeFileSync(join(OUT,'findings.json'), JSON.stringify({errors, results}, null, 2));
 await browser.close(); server.close();
 // summary
