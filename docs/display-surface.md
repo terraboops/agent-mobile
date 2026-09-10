@@ -162,6 +162,26 @@ with `unknown_client` before any reply or channel exists.
 stray word does not disable the allowlist, it locks out the phone too. `npm run pairing`
 covers each of those mistakes and asserts they fail closed.
 
+### Voice media (H3) — verified without a device
+
+`npm run e2e-webrtc` is a fake phone that negotiates **real WebRTC** with the running
+sidecar and drives the media path both ways: it offers an audio m-line over the AEAD
+cmd channel (`{cmd:'webrtc', sdp_type:'offer', sdp}`), applies the sidecar's answer,
+waits for ICE/DTLS to reach `connected`, streams opus RTP on its mic track, and counts
+the RTP the agent's TTS sends back on the downlink track.
+
+This closes a real blind spot. `e2e-voice` never negotiates WebRTC at all, so the
+sidecar has no peer, `webrtc.ready` stays false, and the downlink quietly falls back to
+the WebSocket — which is why the media path went unexercised for so long. The WebRTC
+harness asserts that fallback is **unused** (`ws audio frames: 0`) and the sidecar log
+line reads `→ phone pcm … via WebRTC` rather than `via UDP (webrtc ready=false)`.
+
+Note the opus payload type is **negotiated, not fixed**: Android libwebrtc offers 111,
+werift offers 96. Anything that hard-codes a PT will work against one and not the other.
+
+What this does NOT cover: Android's own libwebrtc (ICE behaviour over the Tailscale
+userspace TUN, AudioTrack pacing, mic permissions). Those still need the device.
+
 ## Trust boundary
 
 - The channel is **AEAD-authenticated** (ChaCha20-Poly1305); only the session-key holder can

@@ -16,7 +16,8 @@
     "surface-chunks": "node test/surface-chunks.test.mjs",
     "surface-integration": "node test-surface-integration.mjs",
     "e2e-voice": "node test/e2e-voice.mjs",
-    "pairing": "node test/pairing.test.mjs"
+    "pairing": "node test/pairing.test.mjs",
+    "e2e-webrtc": "node test/e2e-webrtc.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
