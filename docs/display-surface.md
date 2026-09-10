@@ -140,6 +140,28 @@ Ready-made types that follow this contract live in `widgets/`.
   host (`vmsize`) after each render/data and on DOM mutation; the host sizes the
   tile 64–640px. A widget that fills 100% height keeps the 320px default.
 
+### Pinning the phone (leaving PAIRING MODE)
+
+The sidecar ships with `AGENTMOB_ALLOWED_CLIENTS` unset, which is **pairing mode**:
+`serverHandshake` gets no `allow` gate and accepts any client that can speak v2.
+That is right for first pairing and wrong to leave running — anything that reaches
+the port gets a live channel (mic uplink, surface ops).
+
+To pin, take the id from the sidecar's own log line at first connect:
+
+```
+[sidecar] PAIRING: client 42c55608 identity=MCowBQYD...=  — add to AGENTMOB_ALLOWED_CLIENTS to pin
+```
+
+then set `AGENTMOB_ALLOWED_CLIENTS=42c55608` (short id or base64 SPKI, comma-separated
+for several devices) and restart the gateway. The banner then reads `[allowlist 1]`
+instead of `[PAIRING MODE — accepting any client]`, and an unpinned client is refused
+with `unknown_client` before any reply or channel exists.
+
+**Copy the id verbatim.** The gate is exact-match: a case change, a truncation or a
+stray word does not disable the allowlist, it locks out the phone too. `npm run pairing`
+covers each of those mistakes and asserts they fail closed.
+
 ## Trust boundary
 
 - The channel is **AEAD-authenticated** (ChaCha20-Poly1305); only the session-key holder can
