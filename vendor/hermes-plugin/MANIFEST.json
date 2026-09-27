@@ -1,0 +1,34 @@
+{
+  "generated": "2026-09-27T10:13:52.985Z",
+  "source": "/Users/terra/.hermes/plugins/agentmob",
+  "files": {
+    "adapter.py": {
+      "sha256": "f24256ab5ada67e53e05bcd6df0fcfb64e366c6d4763e58ec1ab029021b511dc",
+      "bytes": 81832
+    },
+    "__init__.py": {
+      "sha256": "17a23aab6055d3708d25cebcac852285ff98cdf5c4c6a0906f23e86660ca7de9",
+      "bytes": 102
+    },
+    "sidecar/index.mjs": {
+      "sha256": "bc976c6f53bf1b99261628106dd9766f2486cc6b8ba30513c004727fe14bec72",
+      "bytes": 46290
+    },
+    "sidecar/webrtc-media.mjs": {
+      "sha256": "ccdf571a97ab398722e2cacea2ed850eb48413cf2d4beda41d1c62a4533a3edd",
+      "bytes": 5712
+    },
+    "sidecar/package.json": {
+      "sha256": "60c80b8add14c79f8b17d2f76572c3c106d837643b4a482dc4f8011c8c91cbc5",
+      "bytes": 97
+    },
+    "tests/test_adapter_dispatch.py": {
+      "sha256": "81b9f8b96ac57897ed273e410ceef702d4f449ce935effe25545897791e3d59a",
+      "bytes": 3150
+    },
+    "tests/test_adapter_surface_visibility.py": {
+      "sha256": "9bf5eef9c7ea8410d23f1287ebb4d3ab5163afa4ef5976eb15dd0e7efeab44e0",
+      "bytes": 1606
+    }
+  }
+}

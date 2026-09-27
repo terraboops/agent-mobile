@@ -357,6 +357,37 @@ processes alone.
 Both halves are load-bearing, verified by disabling each: without the watchdog the SIGKILL case
 fails (2 assertions); without the adapter's tracking the SIGTERM case fails too (4).
 
+### Drift: the plugin is gitignored, so it gets hashed instead
+
+`~/.hermes/plugins/agentmob` is gitignored, so every fix made there lives on exactly one Mac.
+A restore of that directory from a backup silently reverts all of it — the sidecar reaper, the
+parent-death watchdog, both port guards, the ICE deadline, the downlink truncation logging, the
+respawn escalation — and nothing would say so. It would present as the old bugs quietly coming
+back, which is the hardest kind of regression to attribute.
+
+`vendor/hermes-plugin/` holds a copy of the plugin source, and `npm run plugin-drift` hashes the
+installed files against it, failing with a NAMED diff — which file, both hashes, and the first
+differing lines:
+
+    FAIL adapter.py: installed matches vendored
+      DRIFT: installed 7f5225943bce != vendored f24256ab5ada (81741B vs 81832B)
+        -340: start_new_session=True,
+        +340: )
+
+**Nothing is ever written into the plugin directory.** This is a comparison, not an installer;
+whether to install from the vendored copies is a separate decision. `AGENTMOB_PLUGIN_DIR` points
+the check at another tree, which is how the red test runs against a deliberately reverted COPY
+without touching the real installation.
+
+`npm run vendor-refresh` records an intentional plugin change (installed -> repo, one direction
+only). Without a sanctioned way to update, the only way to silence the check would be to ignore
+it, which is how a check stops meaning anything.
+
+**`sidecar/.identity.json` is never vendored.** It holds the sidecar's persistent server
+keypair, private key included, and the phone PINS that public key on first pairing — it is both
+a secret and live state. The check asserts its absence from `vendor/` rather than relying on
+the copy list being right.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:
