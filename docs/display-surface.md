@@ -274,6 +274,33 @@ stays connected, a real `e2e-webrtc` run (ICE connected) produces zero such line
 session verdict, since a session that handshakes and then quietly serves voice over WebSocket
 looks healthy in every other field.
 
+### Port conflicts — both listeners fail by name
+
+Both of the sidecar's listeners once died on an unhandled `error` event with a raw stack, while
+the adapter respawned them every 3 seconds — a log full of identical stack traces saying nothing
+about the cause, at the worst possible moment.
+
+The trigger is real, not hypothetical: **stopping the gateway does not stop the sidecar.**
+`launchctl bootout gui/$(id -u)/ai.hermes.gateway` leaves the node process orphaned and still
+listening on 8123, so the next start collides with it. This was found by doing exactly that.
+
+The two ports get different treatment, because they mean different things:
+
+| port | var | on conflict |
+|---|---|---|
+| ws 8123 | `AGENTMOB_PORT` | IS the service — cannot continue. Logs a named FATAL and exits **69** (EX_UNAVAILABLE); the adapter's respawn is the retry, so it self-heals the moment the orphan goes. Other socket errors exit **71**. |
+| ctl 8790 | `AGENTMOB_SIDECAR_PORT` | OPTIONAL — keeps serving the phone without the ctl channel. |
+
+To clear an orphan by hand:
+
+    lsof -nP -iTCP:8123 -sTCP:LISTEN
+    pkill -f agentmob/sidecar/index.mjs
+
+`npm run port-in-use` holds each port with a real listener and starts the real sidecar against
+it (13 assertions). It asserts on the ABSENCE of a raw unhandled error as well as the presence
+of the named message — verified red without the guard: 5 assertions fail, including
+`exit 1` instead of 69.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:
