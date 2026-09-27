@@ -260,8 +260,17 @@ full 60 seconds with no further state at all. `failed` never arrives, and `close
 when the phone disconnects — by which time every reply has already gone out over the fallback.
 A state-triggered warning would therefore have stayed silent for the entire broken session.
 
-Verified both directions: it fires against a peer with only an unroutable candidate, and a real
-`e2e-webrtc` run (ICE connected) produces zero such lines. `device-watch` surfaces it as the
+It reports on the DEADLINE only. An earlier version also reported on the ICE state reaching
+`closed`/`failed`, which cries wolf: that transition is indistinguishable from an ordinary
+disconnect — the phone backgrounding, or a diagnostic probe hanging up — so every run of
+`ice-candidates` planted a false ICE FAILED in the log. An alert that fires on its own tooling
+teaches everyone to ignore it. The deadline asks the honest question instead: *is ICE still not
+up while the client is still here?* Only a real failure answers yes. The handler also skips any
+connection that has already gone away, since it never had a chance to finish.
+
+Verified in all three directions: it fires against a peer with only an unroutable candidate that
+stays connected, a real `e2e-webrtc` run (ICE connected) produces zero such lines, and a run of
+`ice-candidates` now leaves the count unchanged (4 before, 4 after). `device-watch` surfaces it as the
 session verdict, since a session that handshakes and then quietly serves voice over WebSocket
 looks healthy in every other field.
 
