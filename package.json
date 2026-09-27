@@ -45,7 +45,8 @@
     "adb-discover": "node test/adb-discover.test.mjs",
     "flush-live": "~/.hermes/hermes-agent/venv/bin/python test/flush-live.test.py",
     "plugin-drift-soundness": "node test/plugin-drift-soundness.test.mjs",
-    "adapter-fields": "~/.hermes/hermes-agent/venv/bin/python test/adapter-fields.test.py"
+    "adapter-fields": "~/.hermes/hermes-agent/venv/bin/python test/adapter-fields.test.py",
+    "device-stages": "node test/device-stages.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

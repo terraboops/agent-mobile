@@ -81,9 +81,28 @@ const adb = (args, opts = {}) => {
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 };
 
-/* Read the gateway log from a byte offset, so each stage only sees what it caused. */
-const logSize = () => { try { return readFileSync(GLOG).length; } catch { return 0; } };
-const logSince = (off) => { try { return readFileSync(GLOG, 'utf8').slice(off); } catch { return ''; } };
+/* Timestamps, NOT byte offsets. gateway.log rotates at 5MB; a rotation mid-run leaves an
+ * offset pointing into a file that no longer exists, slice() returns '', and EVERY log-based
+ * stage here — handshake, identity, opus PT, speaking, the cut-short proof — reports "blocked"
+ * on a perfectly working phone. The same bug bit e2e-interrupt, where it reported a healthy
+ * sidecar as broken three times before I read the raw log. Local time, not toISOString(): the
+ * log stamps local, and UTC here sits hours in the future and matches nothing. */
+const logSize = () => {
+  const d = new Date(Date.now() - 2000);
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} `
+       + `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+};
+const logSince = (stamp) => {
+  let text = '';
+  for (const f of [GLOG + '.1', GLOG]) {
+    try { text += readFileSync(f, 'utf8'); } catch { /* rotated away or absent */ }
+  }
+  return text.split('\n').filter((l) => {
+    const m = l.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
+    return m && m[1] >= stamp;
+  }).join('\n');
+};
 const waitForLog = async (off, re, ms) => {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -299,38 +318,87 @@ if (!DRY && serial) {
     stage('mic tap point from MainActivity constants', 'built',
       `(${tapX},${tapY}) — ${MIC_SIZE}dp button, gap ${MIC_GAP}dp, density ${dens}, nav ${navPx}px`);
 
+    /* The trigger must make the agent SPEAK to the phone.
+     *
+     * `hermes send -t agentmob` does not work and — worse — EXITS 0 while failing:
+     *   "No live adapter for platform 'agentmob'. ... the platform plugin must register a
+     *    standalone_sender_fn on its PlatformEntry."
+     * Checking only the exit status reported this stage as VERIFIED for a command that did
+     * nothing, after which the speaking and mute stages blocked with "no reply audio" and the
+     * run looked like the PHONE had failed. Verified by running it: exit 0, zero sidecar
+     * pushes. So the output is inspected, not just the status. */
     const off2 = logSize();
     const hs2 = spawnSync(join(homedir(), '.hermes/hermes-agent/venv/bin/hermes'),
       ['send', '-t', 'agentmob', TRIGGER], { encoding: 'utf8', timeout: 60000 });
-    stage('trigger a spoken reply', hs2.status === 0 ? 'verified' : 'blocked',
-      hs2.status === 0 ? 'hermes send -t agentmob' : (hs2.stderr || '').trim().slice(0, 160));
+    const hsOut = `${hs2.stdout || ''}${hs2.stderr || ''}`;
+    const triggerFailed = hs2.status !== 0 || /No live adapter|must register a standalone_sender_fn|error/i.test(hsOut);
+    stage('trigger a spoken reply', triggerFailed ? 'blocked' : 'verified',
+      triggerFailed
+        ? `hermes send did not reach the platform (exit ${hs2.status}): `
+          + `${hsOut.trim().slice(0, 150)} — a typed turn over a second AEAD client is the `
+          + `working alternative (see test/e2e-interrupt.mjs)`
+        : 'hermes send -t agentmob');
+    if (triggerFailed) {
+      stage('speaking pill', 'blocked', 'no trigger, so nothing was spoken');
+      stage('mute mid-sentence (issue #1)', 'blocked', 'no trigger, so nothing was playing');
+    }
 
     /* Wait until the sidecar is actually pushing audio, then grab the pill and cut it off. */
-    const speaking = await waitForLog(off2, /\[sidecar\] → phone pcm /, 90000);
+    const speaking = triggerFailed
+      ? false
+      : await waitForLog(off2, /\[sidecar\] → phone pcm /, 90000);
     if (!speaking) {
-      stage('speaking pill', 'blocked', 'no reply audio within 90s');
-      stage('mute mid-sentence (issue #1)', 'blocked', 'nothing was playing to interrupt');
+      if (!triggerFailed) {
+        stage('speaking pill', 'blocked', 'no reply audio within 90s');
+        stage('mute mid-sentence (issue #1)', 'blocked', 'nothing was playing to interrupt');
+      }
     } else {
       await sleep(1200);   // let the pill render and a little audio play
       stage('screenshot: speaking pill', shot('04-speaking.png') ? 'verified' : 'blocked',
         '04-speaking.png — pill should clear the native identity badge');
 
+      /* TWO DIFFERENT CONTROLS, and they were being conflated.
+       *
+       * The native mic button calls plugin.nativeToggleMic() -> AudioManager.setMicrophoneMute.
+       * It mutes the MICROPHONE. It does not touch the agent's reply, so it produces NO
+       * truncation — the reply keeps playing, correctly. This stage used to tap the mic and
+       * then wait for a `cut short` line, which a healthy phone would never produce: it would
+       * have reported issue #1 as broken on a device where the mute worked perfectly.
+       *
+       * Truncation comes from the INTERRUPT the Stop control sends ({"cmd":"interrupt"}), which
+       * is a separate button. So each is now checked against what it actually does. */
       const off3 = logSize();
       adb(['-s', serial, 'shell', 'input', 'tap', String(tapX), String(tapY)]);
       stage('tapped the native mic mid-sentence', 'built', `(${tapX},${tapY})`);
+      await sleep(1500);
       shot('05-after-mute.png');
 
-      /* The proof: a truncated playback records how far it got. A screenshot of a pressed
-       * button would not show whether the audio actually stopped. */
-      const cut = await waitForLog(off3, /\[sidecar\] → phone pcm .*\[cut short after (\d+)\/(\d+) frames: ([^\]]+)\]/, 30000);
+      /* What the MIC tap must actually change: the device's mic-mute state. */
+      const micMuted = sh('dumpsys audio | grep -i "mic.*mute\|mMicMute" | head -3');
+      stage('mute mid-sentence: the device reports the mic muted (issue #1)',
+        /true/i.test(micMuted) ? 'verified' : 'blocked',
+        micMuted ? micMuted.replace(/\s+/g, ' ').slice(0, 140)
+                 : 'dumpsys audio reported no mic-mute state');
+      stage('mute mid-sentence: the reply KEPT playing (muting the mic must not stop it)',
+        'built', 'compare 04-speaking.png and 05-after-mute.png — the pill should still be lit');
+
+      /* The interrupt is the control that truncates. Tap Stop, which the web layer renders at
+       * the right of #ctrlbar: its centre sits one third of the bar's width in from the right
+       * edge, on the same centreline as the mic (ctrlbar-geometry pins that to within 1dp). */
+      const stopX = Math.round(W - (66 * dens));
+      const off4 = logSize();
+      adb(['-s', serial, 'shell', 'input', 'tap', String(stopX), String(tapY)]);
+      stage('tapped Stop mid-sentence', 'built', `(${stopX},${tapY})`);
+      const cut = await waitForLog(off4, /\[sidecar\] → phone pcm .*\[cut short after (\d+)\/(\d+) frames: ([^\]]+)\]/, 30000);
       if (cut) {
-        stage('mute mid-sentence actually stopped the audio (issue #1)', 'verified',
+        stage('Stop actually stopped the audio', 'verified',
           `cut at ${cut[1]}/${cut[2]} frames — ${cut[3]}`);
       } else {
-        stage('mute mid-sentence (issue #1)', 'blocked',
+        stage('Stop actually stopped the audio', 'blocked',
           'no truncation logged within 30s — the reply may have finished first; '
           + 'retry with a longer --say');
       }
+      shot('06-after-stop.png');
     }
   }
 }
