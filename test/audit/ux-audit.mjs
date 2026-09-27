@@ -179,7 +179,35 @@ await browser.close(); server.close();
 // summary
 const all=[]; for(const [st,r] of Object.entries(results)) r.issues.forEach(i=>all.push({state:st,...i}));
 const by=(k)=>all.reduce((m,i)=>(m[i[k]]=(m[i[k]]||0)+1,m),{});
-console.log('states:',Object.keys(results).length,'| page errors:',errors.length);
+
+// Console/page errors were COUNTED and printed and nothing more — so a brand-new runtime
+// error still left the summary reading "issues by severity: {}", i.e. clean. A number nobody
+// asserts on is not a check. Everything not on this allowlist is now a finding.
+//
+// The one intentional entry: `webrtc` is a FIREFOX-only CSP directive, deliberately present in
+// the page's policy. Chromium does not know it and says so on every load. Keeping the
+// allowlist an exact-match list (not a fuzzy filter) means a DIFFERENT CSP complaint still
+// surfaces instead of being absorbed by a loose pattern.
+const BENIGN_ERRORS = [
+  "console: Unrecognized Content-Security-Policy directive 'webrtc'.",
+];
+const unexpected = errors.filter((e) => !BENIGN_ERRORS.includes(String(e).trim()));
+const benignCount = errors.length - unexpected.length;
+
+console.log('states:',Object.keys(results).length,'| page errors:',errors.length,
+            `(${benignCount} expected, ${unexpected.length} UNEXPECTED)`);
 console.log('issues by severity:',JSON.stringify(by('sev')));
 console.log('issues by category:',JSON.stringify(by('cat')));
 console.log('stats(boot):',JSON.stringify(results['01-boot-matrix'].stats));
+
+if (unexpected.length) {
+  const seen = new Map();
+  for (const e of unexpected) seen.set(String(e).trim(), (seen.get(String(e).trim())||0)+1);
+  console.log('\nUNEXPECTED page errors:');
+  for (const [e,n] of seen) console.log(`  ${n}x ${e}`);
+}
+// Exit non-zero on anything real, so a run cannot be mistaken for a pass at a glance.
+const bad = all.length + unexpected.length;
+console.log(bad ? `\nFAIL: ${all.length} issue(s), ${unexpected.length} unexpected page error(s)`
+                : '\nALL PASS');
+process.exit(bad ? 1 : 0);
