@@ -182,6 +182,42 @@ werift offers 96. Anything that hard-codes a PT will work against one and not th
 What this does NOT cover: Android's own libwebrtc (ICE behaviour over the Tailscale
 userspace TUN, AudioTrack pacing, mic permissions). Those still need the device.
 
+### Watching for the real device — `npm run device-watch`
+
+adb needs Wireless debugging switched on at the phone, which needs Terra at the phone. The
+handshake does not: the phone dials **out** to the sidecar, so a real connection leaves a
+trail in `~/.hermes/logs/gateway.log` whether or not anyone is watching. Leave `device-watch`
+running, open the app, and it writes `test/audit/out/device-watch.json`.
+
+It tells a real device from the harness by the negotiated opus PT above — **111 means Android
+libwebrtc, 96 means werift** — so it cannot mistake my own fake phone for on-device proof. It
+also captures the `PAIRING: client <id> identity=<b64>` line, which is the **live** phone
+identity and the only safe input to `AGENTMOB_ALLOWED_CLIENTS`. Pinning a stale id locks the
+phone out, and the phone is the way back in.
+
+`npm run device-watch-test` drives the classifier against synthetic logs before any of that is
+trusted.
+
+#### Local sidecar fix this depends on (NOT in this repo)
+
+`~/.hermes/plugins/agentmob/sidecar/index.mjs` is gitignored, so this change lives only on the
+host and is recorded here instead. In `handleBridgeMessage`, the reply-playback `finish()` logs
+the one line that says which transport served the downlink:
+
+    → phone pcm <bytes>b -> <n> opus packets via WebRTC|UDP|WS
+
+Every early return skipped it. `sendW` bails out on `tok.cancelled || !webrtc.connected`, and
+the raw path on `tok.cancelled`, so any playback cut short by a barge-in, the app backgrounding,
+an ICE drop or a disconnect logged **nothing at all** — losing the transport record for exactly
+the cases worth inspecting. `finish(note)` is now idempotent (a `logged` flag) and is called on
+those paths too, appending e.g.
+
+    [cut short after 119/148 frames: peer gone (ICE drop/disconnect)]
+
+This is why the historical log looked so sparse: the only two `via WebRTC` lines ever recorded
+were the two sends that happened to run to completion. If the sidecar is ever restored from a
+backup, reapply this or `device-watch` will under-report the downlink transport.
+
 ## Trust boundary
 
 - The channel is **AEAD-authenticated** (ChaCha20-Poly1305); only the session-key holder can
