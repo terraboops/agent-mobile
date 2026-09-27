@@ -31,7 +31,8 @@
     "orphan-reap": "~/.hermes/hermes-agent/venv/bin/python test/orphan-reap.test.py",
     "respawn-escalation": "~/.hermes/hermes-agent/venv/bin/python test/respawn-escalation.test.py",
     "vendor-refresh": "node test/vendor-refresh.mjs",
-    "plugin-drift": "node test/plugin-drift.test.mjs"
+    "plugin-drift": "node test/plugin-drift.test.mjs",
+    "bridge-recovery": "~/.hermes/hermes-agent/venv/bin/python test/bridge-recovery.test.py"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

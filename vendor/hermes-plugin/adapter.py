@@ -103,6 +103,11 @@ _RESPAWN_WINDOW_MAX = int(os.getenv("AGENTMOB_RESPAWN_WINDOW_MAX", "6"))
 # crash a week is ~1 per 6h, nowhere near 12, so this stays quiet for ordinary operation.
 _RESPAWN_SLOW_WINDOW_S = float(os.getenv("AGENTMOB_RESPAWN_SLOW_WINDOW_S", "21600"))   # 6h
 _RESPAWN_SLOW_MAX = int(os.getenv("AGENTMOB_RESPAWN_SLOW_MAX", "12"))
+# Loopback bridge reconnect policy. Fast at first — this is a local socket and a drop is
+# usually momentary — then backing off so a persistently refused port cannot spin.
+_BRIDGE_BASE_S = float(os.getenv("AGENTMOB_BRIDGE_BASE_S", "0.25"))
+_BRIDGE_MAX_S = float(os.getenv("AGENTMOB_BRIDGE_MAX_S", "5"))
+_BRIDGE_ESCALATE_AFTER = int(os.getenv("AGENTMOB_BRIDGE_ESCALATE_AFTER", "8"))
 
 _LIVE_SIDECARS: set = set()
 _REAPER_INSTALLED = False
@@ -546,28 +551,66 @@ class AgentMobAdapter(BasePlatformAdapter):
             logger.warning("agentmob: auto-home skipped (non-fatal): %s", e)
 
     async def _connect_bridge(self):
+        """Hold the loopback control bridge to the sidecar, reconnecting for as long as the
+        sidecar is alive.
+
+        This used to give up. `except Exception: logger.debug(...); return` made ANY unexpected
+        error terminal, at debug level, so it was invisible too — and nothing re-created the
+        bridge while the sidecar kept running, since only a sidecar RESPAWN builds a new one.
+        The result was the adapter sitting on a live sidecar it could not talk to: no audio
+        events in, no pushes out, and the phone simply silent. Announcing that (AGENTMOB TASK
+        FAILED) was an improvement but not a fix — visible and still broken is not recovery.
+
+        A clean EOF also re-looped with no delay, which could spin against a socket that kept
+        closing immediately.
+        """
+        attempt = 0
         while True:
+            # The sidecar owns the bridge's lifetime: _run_sidecar starts a fresh bridge with
+            # each spawn, so exiting here when it is gone avoids two bridges racing.
+            if self._proc is None or self._proc.returncode is not None:
+                logger.info("agentmob: bridge stopping — sidecar is not running "
+                            "(a new bridge starts with the next sidecar)")
+                return
             try:
                 r, w = await asyncio.open_connection("127.0.0.1", self._sidecar_port)
                 w.write((self._token + "\n").encode("utf-8"))
                 await w.drain()
                 self._reader, self._writer = r, w
                 self._connected = True
-                logger.info("agentmob: loopback bridge connected")
-                await self._consume_inbound()
-            except (ConnectionRefusedError, OSError):
-                if self._proc is not None and self._proc.returncode is None:
-                    await asyncio.sleep(1)
+                if attempt:
+                    logger.warning("agentmob: loopback bridge RECONNECTED after %d attempt(s)",
+                                   attempt)
                 else:
-                    return
+                    logger.info("agentmob: loopback bridge connected")
+                attempt = 0
+                await self._consume_inbound()
+                # Returning from _consume_inbound means the socket went away under us while
+                # the sidecar is still alive. That is the case worth recovering from.
+                logger.warning("agentmob: loopback bridge lost while the sidecar is running "
+                               "— reconnecting")
             except asyncio.CancelledError:
                 self._connected = False
                 return
+            except (ConnectionRefusedError, OSError) as e:
+                logger.warning("agentmob: bridge connect failed (%s) — retrying", e)
             except Exception as e:
-                logger.debug("agentmob: bridge: %s", e)
-                return
+                # Was a silent `return`. Unexpected does not mean unrecoverable, and the one
+                # thing it must not do is quietly stop.
+                logger.warning("agentmob: bridge error %s: %s — retrying",
+                               type(e).__name__, e)
             finally:
                 self._connected = False
+
+            attempt += 1
+            delay = min(_BRIDGE_BASE_S * (2 ** (attempt - 1)), _BRIDGE_MAX_S)
+            if attempt == _BRIDGE_ESCALATE_AFTER:
+                logger.error(
+                    "AGENTMOB BRIDGE DOWN: %d failed reconnects to the sidecar ctl port %s. "
+                    "The sidecar is running but the adapter cannot talk to it, so the phone "
+                    "gets no replies. Still retrying every %.1fs.",
+                    attempt, self._sidecar_port, delay)
+            await asyncio.sleep(delay)
 
     async def _consume_inbound(self):
         assert self._reader
@@ -587,7 +630,11 @@ class AgentMobAdapter(BasePlatformAdapter):
                     continue
                 await self._handle_sidecar_event(evt)
             except asyncio.CancelledError:
-                break
+                # RE-RAISE, do not break. Swallowing it here hid the cancellation from
+                # _connect_bridge, which would then treat it as an ordinary socket loss and
+                # reconnect forever — the task could never be stopped and shutdown hung. That
+                # only became visible once the bridge stopped giving up on errors.
+                raise
             except Exception as e:
                 logger.debug("agentmob: inbound: %s", e)
                 break

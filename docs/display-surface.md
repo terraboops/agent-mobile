@@ -427,6 +427,40 @@ keypair, private key included, and the phone PINS that public key on first pairi
 a secret and live state. The check asserts its absence from `vendor/` rather than relying on
 the copy list being right.
 
+### The loopback bridge heals itself
+
+The adapter talks to the sidecar over a loopback control socket. If that socket dies while the
+sidecar keeps running, the adapter is deaf and mute — no audio events in, no pushes out — and
+the phone simply goes silent.
+
+A closed socket was already survivable: `_consume_inbound` returns on EOF and the loop
+reconnects (measured ~22ms even before this change). What was NOT survivable was an unexpected
+exception: `except Exception: logger.debug(...); return` ended the bridge permanently, at debug
+level so nothing visible said so, and only a sidecar RESPAWN would ever build a new one.
+Supervising the task made that death visible — but visible and still broken is not recovery.
+
+Now the bridge retries for as long as the sidecar is alive, with backoff
+(`AGENTMOB_BRIDGE_BASE_S` 0.25s to `AGENTMOB_BRIDGE_MAX_S` 5s, reset on a successful connect),
+logging losses at WARNING rather than debug and escalating after
+`AGENTMOB_BRIDGE_ESCALATE_AFTER` (8):
+
+    AGENTMOB BRIDGE DOWN: 8 failed reconnects to the sidecar ctl port 8790. The sidecar is
+    running but the adapter cannot talk to it, so the phone gets no replies.
+
+It still exits when the sidecar is gone, because `_run_sidecar` starts a fresh bridge with each
+spawn and two bridges racing would be worse.
+
+**`_consume_inbound` now re-raises `CancelledError` instead of breaking.** Swallowing it hid the
+cancellation from `_connect_bridge`, which treated it as an ordinary socket loss and reconnected
+forever — the task could never be stopped and shutdown hung. That only became visible once the
+bridge stopped giving up on errors.
+
+`npm run bridge-recovery` runs a REAL sidecar on throwaway ports, breaks the bridge mid-run and
+measures the recovery: ~110ms for a closed socket, ~219ms after an injected unexpected
+exception, twice in a row, with the sidecar's pid unchanged throughout and traffic (write +
+drain) resuming. 20 assertions. Verified red against the original bridge: 4 fail, the decisive
+one being *"an UNEXPECTED exception is not terminal for the bridge — bridge died permanently"*.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:
