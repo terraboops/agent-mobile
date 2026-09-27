@@ -44,7 +44,8 @@
     "e2e-interrupt": "node test/e2e-interrupt.mjs",
     "adb-discover": "node test/adb-discover.test.mjs",
     "flush-live": "~/.hermes/hermes-agent/venv/bin/python test/flush-live.test.py",
-    "plugin-drift-soundness": "node test/plugin-drift-soundness.test.mjs"
+    "plugin-drift-soundness": "node test/plugin-drift-soundness.test.mjs",
+    "adapter-fields": "~/.hermes/hermes-agent/venv/bin/python test/adapter-fields.test.py"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
