@@ -718,6 +718,14 @@ class AgentMobAdapter(BasePlatformAdapter):
             # Device->agent sight of the surface (registered types + widget keys),
             # so agents push to existing keys instead of re-registering/re-adding.
             self._surface_state = evt.get("state") or {}
+        else:
+            # Previously fell through in silence. A sidecar that starts emitting a new event
+            # type would have it dropped with nothing anywhere saying so — the adapter and the
+            # sidecar are versioned separately (the sidecar is not even in this repo), so this
+            # is a realistic way for the two to drift apart unnoticed.
+            logger.warning("agentmob: unhandled sidecar event type %r (keys: %s) — dropped. "
+                           "The sidecar may be newer than this adapter.",
+                           etype, ",".join(sorted(evt.keys()))[:120])
 
     def _push_status(self, **kw) -> None:
         """Push a status message to the phone's live status strip (the webview merges
@@ -787,30 +795,65 @@ class AgentMobAdapter(BasePlatformAdapter):
         self._turn_started = time.monotonic()
         # 'working' indicator: the agent loop is now processing a phone input.
         self._push_status(working=True)
-        # ...and if this turn runs long, say so once instead of leaving dead air.
-        self._arm_long_turn_ack()
-        # Render feedback + current surface state -> agent context (see helper).
-        text = self._augment_agent_text(text)
-        source = self.build_source()
-        event = MessageEvent(
-            text=text,
-            message_type=MessageType.TEXT,
-            source=source,
-            user_id=source.user_id,
-            user_name=source.user_name,
-            message_id=message_id,
-        )
-        # Leak guard: handle_message() returns immediately (the agent turn runs in a
-        # background task and replies later via send() -> _release_turn_after_reply).
-        # So we do NOT release here. Instead arm a timeout that force-ends the turn if
-        # no reply ever arrives (agent error / empty / tool-only turn) — otherwise the
-        # take-lock leaks and every later phone turn is deferred forever (the deadlock).
-        self._arm_turn_timeout()
+        # DELIVERY BOUNDARY.
+        #
+        # This utterance is the user's actual speech: dropping it means they spoke, the phone
+        # heard them, and nothing ever answered. Worth retrying — but ONLY when we can prove
+        # the agent never received it. handle_message() hands the turn to Hermes and returns
+        # immediately, so once we are inside it we cannot tell whether the turn was accepted
+        # before the failure. Retrying there risks the agent answering twice, and a
+        # double-answer is worse than a drop: the user hears two replies to one question and
+        # cannot tell which is current.
+        #
+        # So the flag flips on the LAST line before the call. False means the failure happened
+        # while we were still preparing — provably pre-delivery, safe to retry. True means
+        # delivery is UNCERTAIN, and uncertain is treated as delivered.
+        delivery_uncertain = False
         try:
+            # Preparation lives INSIDE the try on purpose. It used to sit above it, which made
+            # the pre-delivery branch unreachable: anything that raised here escaped
+            # dispatch_text entirely, so the utterance was neither retried nor reported. Every
+            # line up to the flag is provably before the agent could have seen anything.
+            #
+            # ...if this turn runs long, say so once instead of leaving dead air.
+            self._arm_long_turn_ack()
+            # Render feedback + current surface state -> agent context (see helper).
+            text = self._augment_agent_text(text)
+            source = self.build_source()
+            event = MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=source,
+                user_id=source.user_id,
+                user_name=source.user_name,
+                message_id=message_id,
+            )
+            # Leak guard: handle_message() returns immediately (the agent turn runs in a
+            # background task and replies later via send() -> _release_turn_after_reply).
+            # So we do NOT release here. Instead arm a timeout that force-ends the turn if
+            # no reply ever arrives (agent error / empty / tool-only turn) — otherwise the
+            # take-lock leaks and every later phone turn is deferred forever (the deadlock).
+            self._arm_turn_timeout()
+
+            delivery_uncertain = True
             await self.handle_message(event)
         except Exception as e:
-            logger.error("agentmob: dispatch failed: %s", e)
-            self._end_turn_now()   # don't leave the lock stuck on a dispatch error
+            self._end_turn_now()   # never leave the take-lock stuck on a dispatch error
+            if delivery_uncertain:
+                logger.error(
+                    "agentmob: dispatch failed INSIDE handle_message (%s: %s) — NOT retrying. "
+                    "The agent may already have accepted this turn; a double answer is worse "
+                    "than a dropped one. The utterance is lost: %r",
+                    type(e).__name__, e, text[:120])
+            else:
+                logger.warning(
+                    "agentmob: dispatch failed BEFORE delivery (%s: %s) — retrying once, the "
+                    "agent provably never saw it", type(e).__name__, e)
+                try:
+                    await self.dispatch_text(text, message_id, force=True)
+                except Exception as e2:
+                    logger.error("agentmob: pre-delivery retry also failed (%s: %s) — "
+                                 "utterance lost: %r", type(e2).__name__, e2, text[:120])
 
     # ── STT (faster-whisper) ─────────────────────────────────────────────
 

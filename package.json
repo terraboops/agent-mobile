@@ -33,7 +33,8 @@
     "vendor-refresh": "node test/vendor-refresh.mjs",
     "plugin-drift": "node test/plugin-drift.test.mjs",
     "bridge-recovery": "~/.hermes/hermes-agent/venv/bin/python test/bridge-recovery.test.py",
-    "inbound-resilience": "~/.hermes/hermes-agent/venv/bin/python test/inbound-resilience.test.py"
+    "inbound-resilience": "~/.hermes/hermes-agent/venv/bin/python test/inbound-resilience.test.py",
+    "dispatch-delivery": "~/.hermes/hermes-agent/venv/bin/python test/dispatch-delivery.test.py"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

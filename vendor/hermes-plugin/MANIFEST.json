@@ -1,10 +1,10 @@
 {
-  "generated": "2026-09-27T12:57:58.922Z",
+  "generated": "2026-09-27T13:32:52.934Z",
   "source": "/Users/terra/.hermes/plugins/agentmob",
   "files": {
     "adapter.py": {
-      "sha256": "71c624143164c8e323594d2458803e4573467465af98aaeda72ff12dbc10408f",
-      "bytes": 92744
+      "sha256": "0faa837806acb02b2351374c96db22bf6533d641550135ebb107a4fdc2c76571",
+      "bytes": 95638
     },
     "__init__.py": {
       "sha256": "17a23aab6055d3708d25cebcac852285ff98cdf5c4c6a0906f23e86660ca7de9",

@@ -480,6 +480,35 @@ exception, twice in a row, with the sidecar's pid unchanged throughout and traff
 drain) resuming. 20 assertions. Verified red against the original bridge: 4 fail, the decisive
 one being *"an UNEXPECTED exception is not terminal for the bridge — bridge died permanently"*.
 
+### The delivery boundary: retry only what provably never arrived
+
+`dispatch_text` carries the user's actual speech. Dropping it means they spoke, the phone heard
+them, and nothing ever answered — worth retrying. But `handle_message()` hands the turn to
+Hermes and returns immediately, so a failure raised from INSIDE it leaves delivery **uncertain**,
+and retrying there risks the agent answering twice. A double answer is worse than a drop: the
+user hears two replies to one question and cannot tell which is current.
+
+The boundary is explicit in the code, not implied. `delivery_uncertain` flips on the last line
+before the call:
+
+- **False** — the failure happened while still preparing. Provably pre-delivery: retried once,
+  logged at WARNING.
+- **True** — delivery is unknown, and unknown is treated as delivered. Never retried, logged at
+  ERROR with the lost utterance so it is not merely gone.
+
+All preparation lives INSIDE the try for that reason. It used to sit above it, which made the
+pre-delivery branch unreachable — anything raising there escaped `dispatch_text` entirely, so
+the utterance was neither retried nor reported. The test caught that.
+
+An unknown sidecar `event type` is also no longer dropped in silence: the adapter and sidecar
+are versioned separately (the sidecar is not even in this repo), so a sidecar emitting something
+new is a realistic way for the two to drift apart unnoticed.
+
+`npm run dispatch-delivery` — 20 assertions, including that the two sides of the boundary behave
+DIFFERENTLY (a version retrying both, or neither, would pass a sloppier test) and that
+`_handle_sidecar_event` contains no try/except that could eat `_consume_inbound`'s warning.
+Verified red: 9 fail, among them *"uncertain and pre-delivery were treated the same"*.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:
