@@ -315,5 +315,134 @@ ok("connect_bridge: a CANCELLED task is not reported as a failure",
    not any("AGENTMOB TASK FAILED" in m for m in cap5.at(logging.ERROR)))
 logger.removeHandler(cap5)
 
+
+# ---- 6. the SPEECH PATH: a raising task must not read as "nothing to say" ------------------
+# These were bare create_task. On the speech path a swallowed exception is indistinguishable
+# from the agent simply having nothing to say: the phone just goes quiet. Driven through the
+# REAL call site (_schedule_speak schedules _flush_speak), not through the helper directly.
+print("\n--- 6. speech-path tasks surface their failures ---")
+cap6 = Capture()
+logger.addHandler(cap6)
+
+
+def speech_adapter():
+    a = object.__new__(mod.AgentMobAdapter)
+    a._pending_speak = ""
+    a._speak_due = None
+    a._speak_gen = 0
+    return a
+
+
+async def _drive_speak():
+    a = speech_adapter()
+
+    async def _boom():
+        raise RuntimeError("canary: TTS backend exploded")
+
+    a._flush_speak = _boom
+    await a._schedule_speak("say something out loud")
+    await asyncio.sleep(0.4)
+    return a
+
+adapter6 = asyncio.run(_drive_speak())
+errors6 = cap6.at(logging.ERROR)
+
+ok("speech path: a failing _flush_speak surfaces at ERROR",
+   any("AGENTMOB TASK FAILED" in m for m in errors6), f"{len(errors6)} error(s)")
+ok("speech path: the log names flush_speak specifically",
+   any("flush_speak" in m for m in errors6), "; ".join(errors6[:1]))
+ok("speech path: the original exception is carried",
+   any("canary: TTS backend exploded" in m for m in errors6))
+ok("speech path: it was actually scheduled through the real call site",
+   adapter6._speak_due is not None)
+cap6.records.clear()
+
+
+# A cancelled speech task is ordinary (a newer reply supersedes an older one) and must stay
+# quiet, or every barge-in would log an error and the alarm would mean nothing.
+async def _drive_cancel():
+    a = speech_adapter()
+
+    async def _slow():
+        await asyncio.sleep(10)
+
+    a._flush_speak = _slow
+    await a._schedule_speak("first reply")
+    await asyncio.sleep(0.1)
+    a._speak_due.cancel()
+    await asyncio.sleep(0.2)
+
+asyncio.run(_drive_cancel())
+ok("speech path: a CANCELLED speak task logs nothing (barge-in is normal)",
+   not any("AGENTMOB TASK FAILED" in m for m in cap6.at(logging.ERROR)),
+   "; ".join(cap6.at(logging.ERROR)[:1]))
+logger.removeHandler(cap6)
+
+# Every speech-path scheduler must be supervised, not just the one driven above.
+src = open(os.path.expanduser("~/.hermes/plugins/agentmob/adapter.py")).read()
+import re as _re
+bare = [ln.strip() for ln in src.split("\n")
+        if "asyncio.create_task(" in ln and not ln.strip().startswith("#")
+        and '"""' not in ln]
+ok("no bare asyncio.create_task remains on any path", not bare,
+   " | ".join(bare[:4]))
+for name in ("turn_timeout_watch", "long_turn_ack", "dispatch_text",
+             "flush_speak", "clear_speaking_after"):
+    ok(f"speech path: {name} is supervised", f'"{name}"' in src)
+
+# ---- 7. SLOW death: dying every couple of minutes must still be caught ---------------------
+# The fast window has a blind spot by construction — a restart every ~2 minutes is 5 per 600s,
+# one under the threshold, so it would never fire. Reloaded with its own config so the FAST
+# tier cannot fire at all and only the slow tier can.
+print("\n--- 7. slow-tempo crash loop (fast window cannot see it) ---")
+os.environ.update({
+    "AGENTMOB_RESPAWN_WINDOW_S": "0.05",     # fast window effectively off
+    "AGENTMOB_RESPAWN_WINDOW_MAX": "999",
+    "AGENTMOB_RESPAWN_SLOW_WINDOW_S": "30",
+    "AGENTMOB_RESPAWN_SLOW_MAX": "4",
+})
+slow_spec = importlib.util.spec_from_file_location("agentmob_adapter_slow", ADAPTER)
+smod = importlib.util.module_from_spec(slow_spec)
+slow_spec.loader.exec_module(smod)
+
+ok("slow tier: the fast window is disabled for this scenario",
+   smod._RESPAWN_WINDOW_MAX == 999 and smod._RESPAWN_SLOW_MAX == 4)
+
+cap7 = Capture()
+slogger = logging.getLogger(smod.logger.name)
+slogger.addHandler(cap7)
+
+slow_sh = "/tmp/agentmob-slow.sh"
+with open(slow_sh, "w") as f:
+    f.write("#!/bin/sh\nsleep 0.8\nexit 5\n")     # healthy uptime every time
+os.chmod(slow_sh, 0o755)
+
+a7 = object.__new__(smod.AgentMobAdapter)
+for k, v in {"_proc": None, "_connected": False, "_dispatcher": None, "_supervisor": None,
+             "_writer": None, "_port": 8875, "_bind": "127.0.0.1", "_sidecar_port": 8876,
+             "_token": "t", "_node_bin": slow_sh, "_allowed_clients": "", "_ice": "",
+             "_sidecar_fails": 0, "_sidecar_wedged": False, "_sidecar_flapping": False,
+             "_flap_reports": 0}.items():
+    setattr(a7, k, v)
+import collections as _c
+a7._sidecar_stderr = _c.deque(maxlen=6)
+a7._restart_times = _c.deque()
+a7._pump_stderr = lambda: asyncio.sleep(0)
+a7._connect_bridge = lambda: asyncio.sleep(0)
+
+asyncio.run(run_loop(a7, 6.0))
+errors7 = cap7.at(logging.ERROR)
+ok("slow tier: the FAST window never fired (it cannot see this tempo)",
+   not any("in the last 0s" in m for m in errors7))
+ok("slow tier: FLAPPING still fires on the slow window",
+   any("AGENTMOB SIDECAR FLAPPING" in m for m in errors7),
+   f"{len(errors7)} error(s): " + "; ".join(errors7[:1]))
+ok("slow tier: it reports the slow window length",
+   any("in the last 30s" in m for m in errors7), "; ".join(errors7[:1]))
+ok("slow tier: the fast-failure counter stayed clear (uptime was healthy)",
+   a7._sidecar_fails == 0, f"fails={a7._sidecar_fails}")
+slogger.removeHandler(cap7)
+os.unlink(slow_sh)
+
 print(f"\n{PASS} passed, {len(FAILS)} failed")
 sys.exit(1 if FAILS else 0)

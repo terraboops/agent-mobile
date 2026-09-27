@@ -97,6 +97,12 @@ _RESPAWN_ESCALATE_EVERY = int(os.getenv("AGENTMOB_RESPAWN_ESCALATE_EVERY", "10")
 # so one genuine crash — or a handful over days — never trips it.
 _RESPAWN_WINDOW_S = float(os.getenv("AGENTMOB_RESPAWN_WINDOW_S", "600"))
 _RESPAWN_WINDOW_MAX = int(os.getenv("AGENTMOB_RESPAWN_WINDOW_MAX", "6"))
+# A SLOW tier, because the fast window has a blind spot: a sidecar dying every ~2 minutes is
+# 5 restarts per 600s, one under the threshold, so it would never fire. That is not a boundary
+# worth defending — it is the same "degrades into silence" bug at a slower tempo. One genuine
+# crash a week is ~1 per 6h, nowhere near 12, so this stays quiet for ordinary operation.
+_RESPAWN_SLOW_WINDOW_S = float(os.getenv("AGENTMOB_RESPAWN_SLOW_WINDOW_S", "21600"))   # 6h
+_RESPAWN_SLOW_MAX = int(os.getenv("AGENTMOB_RESPAWN_SLOW_MAX", "12"))
 
 _LIVE_SIDECARS: set = set()
 _REAPER_INSTALLED = False
@@ -403,11 +409,15 @@ class AgentMobAdapter(BasePlatformAdapter):
                     now_m = time.monotonic()
                     if not cancelled:
                         self._restart_times.append(now_m)
-                    while self._restart_times and now_m - self._restart_times[0] > _RESPAWN_WINDOW_S:
+                    while self._restart_times and now_m - self._restart_times[0] > _RESPAWN_SLOW_WINDOW_S:
                         self._restart_times.popleft()
-                    in_window = len(self._restart_times)
-                    flapping = in_window >= _RESPAWN_WINDOW_MAX
-                    if not flapping and self._sidecar_flapping and in_window <= 1:
+                    in_window = sum(1 for t in self._restart_times
+                                    if now_m - t <= _RESPAWN_WINDOW_S)
+                    in_slow = len(self._restart_times)
+                    fast_flap = in_window >= _RESPAWN_WINDOW_MAX
+                    slow_flap = in_slow >= _RESPAWN_SLOW_MAX
+                    flapping = fast_flap or slow_flap
+                    if not flapping and self._sidecar_flapping and in_slow <= 1:
                         logger.info("agentmob: sidecar restart rate back to normal")
                         self._sidecar_flapping = False
                         self._flap_reports = 0
@@ -454,19 +464,21 @@ class AgentMobAdapter(BasePlatformAdapter):
                     # Backing off here is the point: without it the loop keeps restarting at
                     # whatever period the crash happens to have.
                     if flapping and not cancelled:
-                        over = in_window - _RESPAWN_WINDOW_MAX + 1
+                        over = (in_window - _RESPAWN_WINDOW_MAX + 1) if fast_flap else 1
                         flap_delay = min(_RESPAWN_BASE_S * (2 ** over), _RESPAWN_MAX_S)
                         delay = max(delay, flap_delay)
                         first = not self._sidecar_flapping
                         self._sidecar_flapping = True
                         if first or self._flap_reports % _RESPAWN_ESCALATE_EVERY == 0:
                             tail = " | ".join(self._sidecar_stderr) or "(no stderr captured)"
+                            n, win = ((in_window, _RESPAWN_WINDOW_S) if fast_flap
+                                      else (in_slow, _RESPAWN_SLOW_WINDOW_S))
                             logger.error(
                                 "AGENTMOB SIDECAR FLAPPING: %d restarts in the last %.0fs "
                                 "(last ran %.1fs, rc=%s). It starts but will not stay up, so "
                                 "the phone link keeps dropping. Backing off to %.0fs. "
                                 "Last sidecar output: %s",
-                                in_window, _RESPAWN_WINDOW_S, uptime, rc, delay, tail)
+                                n, win, uptime, rc, delay, tail)
                         self._flap_reports += 1
                     if cancelled:
                         delay = _RESPAWN_BASE_S
@@ -1032,7 +1044,9 @@ class AgentMobAdapter(BasePlatformAdapter):
                 logger.warning("agentmob: turn produced no reply in %.0fs — force-ending (was the deadlock)",
                                self._TURN_LOCK_MAX_S)
                 self._end_turn_now()
-        self._turn_timeout_task = asyncio.create_task(_watch(started))
+        # Speech path. A swallowed exception here is indistinguishable from the agent simply
+        # having nothing to say — the phone just goes quiet — so these are supervised too.
+        self._turn_timeout_task = _supervise_task(_watch(started), "turn_timeout_watch")
 
     def _end_turn_now(self):
         """Force-end the current turn: clear 'working' and release the take-lock
@@ -1065,7 +1079,7 @@ class AgentMobAdapter(BasePlatformAdapter):
             logger.info("agentmob: long turn (>%.0fs) — speaking progress ack", self._LONG_TURN_ACK_S)
             await self._speak(self._LONG_TURN_ACK_TEXT)
 
-        self._long_ack_task = asyncio.create_task(_ack(self._speak_gen))
+        self._long_ack_task = _supervise_task(_ack(self._speak_gen), "long_turn_ack")
 
     def _cancel_long_turn_ack(self):
         t = getattr(self, "_long_ack_task", None)
@@ -1087,7 +1101,7 @@ class AgentMobAdapter(BasePlatformAdapter):
             d = self._deferred
             self._deferred = None
             logger.info("agentmob: flushing %d deferred chars as one follow-up turn", len(d))
-            asyncio.create_task(self.dispatch_text(d, force=True))
+            _supervise_task(self.dispatch_text(d, force=True), "dispatch_text")
 
     async def _schedule_speak(self, text: str):
         # Hermes can deliver ONE reply as several send() calls (e.g. the body
@@ -1112,7 +1126,7 @@ class AgentMobAdapter(BasePlatformAdapter):
             self._pending_speak = cut
         logger.info("agentmob: speak scheduled (total now %d chars)", len(self._pending_speak))
         if self._speak_due is None or self._speak_due.done():
-            self._speak_due = asyncio.create_task(self._flush_speak())
+            self._speak_due = _supervise_task(self._flush_speak(), "flush_speak")
 
     async def _flush_speak(self):
         await asyncio.sleep(1.5)  # settle window: collapses close streamed sends
@@ -1198,7 +1212,7 @@ class AgentMobAdapter(BasePlatformAdapter):
                 # this reply (drive it from the phone's 'speaking' status).
                 dur = len(pcm) / 2 / 24000
                 self._push_status(speaking=True)
-                asyncio.create_task(self._clear_speaking_after(dur))
+                _supervise_task(self._clear_speaking_after(dur), "clear_speaking_after")
         except Exception as e:
             logger.error("agentmob: TTS failed: %s", e)
 

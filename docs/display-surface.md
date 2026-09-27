@@ -361,16 +361,32 @@ happens to have. The two alarms are deliberately distinct — WEDGED means "cann
 FLAPPING means "cannot stay up", and calling the second one WEDGED would be the wrong
 diagnosis. The window is sized so one genuine crash, or a handful over days, never fires it.
 
-**Unsupervised tasks.** `_connect_bridge` and friends were created with a bare
-`asyncio.create_task`, which parks any exception inside the task object and nowhere else: a
-failing bridge left the adapter holding a live sidecar it could not talk to, with an empty log.
-`_supervise_task` attaches a done-callback that logs `AGENTMOB TASK FAILED: <name> raised ...`.
-Cancellation is normal shutdown and stays quiet.
+There is a **slow tier** as well, because the fast window has a blind spot by construction: a
+sidecar dying every ~2 minutes is 5 restarts per 600s — one under the threshold — so it would
+never fire. `AGENTMOB_RESPAWN_SLOW_MAX` (12) over `AGENTMOB_RESPAWN_SLOW_WINDOW_S` (6h) catches
+that tempo. One genuine crash a week is ~1 per 6h, nowhere near 12, so ordinary operation stays
+quiet.
 
-`npm run respawn-escalation` covers all of it (35 assertions, timings compressed via
+**Unsupervised tasks.** Every `asyncio.create_task` in the adapter was bare, which parks any
+exception inside the task object and nowhere else. Two flavours of damage:
+
+- `_connect_bridge` failing left the adapter holding a live sidecar it could not talk to, with
+  an empty log.
+- On the **speech path** (`flush_speak`, `dispatch_text`, `turn_timeout_watch`,
+  `long_turn_ack`, `clear_speaking_after`) a swallowed exception is indistinguishable from the
+  agent simply having nothing to say — the phone just goes quiet, and nothing anywhere
+  disagrees.
+
+`_supervise_task` attaches a done-callback logging `AGENTMOB TASK FAILED: <name> raised ...`.
+Cancellation stays quiet: on the speech path a cancelled task is a barge-in superseding an older
+reply, and logging that as an error would make the alarm meaningless.
+
+`npm run respawn-escalation` covers all of it (51 assertions, timings compressed via
 `AGENTMOB_RESPAWN_*`): the instant-death wedge, the stay-up-then-die flap, a failing bridge
-task, and the discrimination case — a single genuine crash must fire NOTHING, or the rate
-window is just a wider net. Verified red without the changes: 10 assertions fail.
+task, the speech-path tasks driven through their REAL call site, the slow tier reloaded with
+its own config so only it can fire, and the discrimination case — a single genuine crash must
+fire NOTHING, or the rate window is just a wider net. Verified red without the changes:
+11 assertions fail.
 
 `npm run orphan-reap` drives the REAL adapter against a throwaway port (8871/8872 — never 8123,
 and the live gateway is never touched) through all three shutdown paths: `disconnect()`, SIGTERM
