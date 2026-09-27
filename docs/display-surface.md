@@ -530,6 +530,30 @@ their answer instead of *"(I did not catch that.)"*.
 Cleanup also runs from an outer `finally`, covering the task being cancelled while queued on the
 STT lock — the window where a capture had no owner at all.
 
+**A broken install is not a hiccup.** `_transcribe` imports `mlx_whisper` inside the function, so
+a missing or broken install surfaced as an ImportError on the first UTTERANCE rather than at
+startup — and once STT gained the retry above, it retried an import that could never succeed,
+spending the delay and then giving the user the same *"(I did not catch that.)"* it gives for a
+one-off glitch. Same message, same timing, completely different problem: one resolves itself,
+the other never will, and the user repeating themselves is wasted effort.
+
+`ImportError`/`ModuleNotFoundError` (and a missing capture file) now raise `SttUnavailable`,
+which skips the retry entirely and tells all three audiences something true — the retry loop
+(don't), the log (`AGENTMOB STT UNAVAILABLE`, with the cause and that retrying cannot help), and
+the user (*"Speech recognition isn't working on the host… It won't work until that's fixed."*).
+
+`check_requirements()` also probes at startup with `find_spec`, so a missing backend is known
+before anyone speaks. `find_spec` rather than a real import: `mlx_whisper` is heavy, and
+importing it at startup would cost seconds and memory for something a session may never use. A
+module that imports and then explodes is still caught at the first utterance, where it now fails
+fast too.
+
+`npm run stt-failfast` — 21 assertions. The load-bearing one is that permanent and transient are
+told APART: a version failing fast on EVERYTHING would pass the permanent cases while silently
+destroying the transient retry, a regression in the opposite direction. Verified red: **8 fail**,
+including *"permanent tried 2x, transient tried 2x — they must differ"* and the 0.6s of retry
+delay spent on an impossible import.
+
 `npm run transcribe-capture` — 20 assertions, checking the DIRECTORY rather than just the file,
 counting transcribe calls for the retry, and covering the conservative cases (non-empty dir kept,
 foreign dir never touched, double-discard harmless). Verified red: **11 fail**, including

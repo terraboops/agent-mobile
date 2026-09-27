@@ -35,7 +35,8 @@
     "bridge-recovery": "~/.hermes/hermes-agent/venv/bin/python test/bridge-recovery.test.py",
     "inbound-resilience": "~/.hermes/hermes-agent/venv/bin/python test/inbound-resilience.test.py",
     "dispatch-delivery": "~/.hermes/hermes-agent/venv/bin/python test/dispatch-delivery.test.py",
-    "transcribe-capture": "~/.hermes/hermes-agent/venv/bin/python test/transcribe-capture.test.py"
+    "transcribe-capture": "~/.hermes/hermes-agent/venv/bin/python test/transcribe-capture.test.py",
+    "stt-failfast": "~/.hermes/hermes-agent/venv/bin/python test/stt-failfast.test.py"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

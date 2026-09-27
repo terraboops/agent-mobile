@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import importlib.util
 import collections
 import signal
 import time
@@ -25,6 +26,7 @@ import mimetypes
 import os
 import re
 import shutil
+import sys
 import tempfile
 import secrets
 from pathlib import Path
@@ -73,7 +75,55 @@ def check_requirements() -> bool:
     node = shutil.which("node")
     if not node or not _SIDECAR_INDEX.is_file():
         return False
+    stt_available()          # probe now, so a missing STT is known before anyone speaks
     return True
+
+
+class SttUnavailable(RuntimeError):
+    """STT cannot work at all — as distinct from a transcription that merely failed once.
+
+    The difference matters to three audiences: the retry loop (do not), the log (name the real
+    cause), and the user (stop repeating yourself, the host is broken).
+    """
+
+
+# ── Speech-to-text availability ──────────────────────────────────────────
+#
+# _transcribe imports mlx_whisper INSIDE the function, so a missing or broken install used to
+# surface as an ImportError on the first UTTERANCE rather than at startup — and once STT gained
+# a retry, it retried an import that could never succeed, spending the retry delay before
+# telling the user it had not caught that. A broken install and a transient hiccup produced the
+# same message and the same delay.
+#
+# They are different problems: one resolves itself, the other never will. These are the failures
+# that RETRYING CANNOT FIX, so they fail fast with their own name.
+_STT_PERMANENT_ERRORS = (ImportError, ModuleNotFoundError)
+_stt_probe: Optional[bool] = None
+
+
+def stt_available() -> bool:
+    """Is the STT backend importable? Probed once, cheaply.
+
+    Uses find_spec rather than importing: mlx_whisper is heavy and importing it at startup would
+    cost seconds and memory for something most sessions use later or not at all. This catches
+    "not installed"; a module that imports and then explodes is caught at the first utterance
+    instead, where it also now fails fast.
+    """
+    global _stt_probe
+    if _stt_probe is not None:
+        return _stt_probe
+    try:
+        _stt_probe = importlib.util.find_spec("mlx_whisper") is not None
+    except Exception as e:
+        logger.warning("agentmob: could not probe for mlx_whisper (%s: %s)", type(e).__name__, e)
+        _stt_probe = False
+    if not _stt_probe:
+        logger.error(
+            "AGENTMOB STT UNAVAILABLE: mlx_whisper is not importable, so nothing spoken to the "
+            "phone can be transcribed. Voice input will fail on every utterance and retrying "
+            "cannot help. Install it in the gateway's environment "
+            "(%s -m pip install mlx-whisper).", sys.executable)
+    return _stt_probe
 
 
 # ── Sidecar reaping ──────────────────────────────────────────────────────
@@ -961,6 +1011,19 @@ class AgentMobAdapter(BasePlatformAdapter):
         for attempt in range(1, _STT_ATTEMPTS + 1):
             try:
                 return await asyncio.to_thread(self._transcribe, wav_path)
+            except _STT_PERMANENT_ERRORS as e:
+                # Retrying an import that cannot succeed just spends the delay and then tells
+                # the user the same unhelpful thing. Fail fast, and say what is actually wrong.
+                global _stt_probe
+                _stt_probe = False
+                raise SttUnavailable(
+                    f"the STT backend is not usable ({type(e).__name__}: {e}). This will fail "
+                    f"for every utterance until it is installed or repaired; retrying cannot "
+                    f"help.") from e
+            except FileNotFoundError as e:
+                # The capture itself is gone — a retry reads the same missing file.
+                raise SttUnavailable(
+                    f"the capture is missing ({e}); nothing to transcribe.") from e
             except Exception as e:
                 last = e
                 if attempt >= _STT_ATTEMPTS:
@@ -976,6 +1039,15 @@ class AgentMobAdapter(BasePlatformAdapter):
             async with self._stt_lock:
                 try:
                     text, degraded = await self._stt_with_retry(wav_path)
+                except SttUnavailable as e:
+                    # Permanent: do not dress it up as a mishearing. The user should know the
+                    # host cannot transcribe at all, or they will keep repeating themselves.
+                    logger.error("AGENTMOB STT UNAVAILABLE: %s", e)
+                    self._send_to_sidecar({"type": "reply", "d": {"type": "text",
+                                          "text": "(Speech recognition isn't working on the "
+                                                  "host, so I couldn't hear that. It won't "
+                                                  "work until that's fixed.)"}})
+                    return
                 except Exception as e:
                     logger.error("agentmob: STT failed after %d attempt(s): %s: %s",
                                  _STT_ATTEMPTS, type(e).__name__, e)
