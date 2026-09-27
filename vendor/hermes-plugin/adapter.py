@@ -108,6 +108,9 @@ _RESPAWN_SLOW_MAX = int(os.getenv("AGENTMOB_RESPAWN_SLOW_MAX", "12"))
 _BRIDGE_BASE_S = float(os.getenv("AGENTMOB_BRIDGE_BASE_S", "0.25"))
 _BRIDGE_MAX_S = float(os.getenv("AGENTMOB_BRIDGE_MAX_S", "5"))
 _BRIDGE_ESCALATE_AFTER = int(os.getenv("AGENTMOB_BRIDGE_ESCALATE_AFTER", "8"))
+# Consecutive inbound events whose handler raised before saying so at ERROR. Reset by one
+# success, so an occasional bad event stays a WARNING.
+_INBOUND_ERROR_ESCALATE = int(os.getenv("AGENTMOB_INBOUND_ERROR_ESCALATE", "5"))
 
 _LIVE_SIDECARS: set = set()
 _REAPER_INSTALLED = False
@@ -613,31 +616,66 @@ class AgentMobAdapter(BasePlatformAdapter):
             await asyncio.sleep(delay)
 
     async def _consume_inbound(self):
+        """Read NDJSON events from the sidecar until the socket goes away.
+
+        A FAILING HANDLER IS NOT A BROKEN SOCKET. This used to catch everything in one block
+        and `break` at debug level, so an event the handler choked on tore down a perfectly
+        healthy connection. _connect_bridge then reconnected, read the same kind of event,
+        choked again — connect, read, throw, reconnect, forever, with the cause recorded only
+        at debug. The log showed bridge churn and nothing about why.
+
+        So the two failures are separated: a socket error ends the read loop (the bridge
+        reconnects, which is right), while a handler error is logged and the loop CONTINUES to
+        the next event. One poisonous event cannot cost the connection, and a handler failing
+        on everything escalates instead of hiding.
+        """
         assert self._reader
+        handler_errors = 0
         while True:
+            # --- read from the socket; a failure here genuinely means reconnect -------------
             try:
                 if self._writer is None or self._writer.is_closing():
                     break
                 line = await self._reader.readline()
                 if not line:
                     break
-                text = line.decode("utf-8", "replace").strip()
-                if not text:
-                    continue
-                try:
-                    evt = json.loads(text)
-                except ValueError:
-                    continue
-                await self._handle_sidecar_event(evt)
             except asyncio.CancelledError:
-                # RE-RAISE, do not break. Swallowing it here hid the cancellation from
-                # _connect_bridge, which would then treat it as an ordinary socket loss and
-                # reconnect forever — the task could never be stopped and shutdown hung. That
-                # only became visible once the bridge stopped giving up on errors.
+                # RE-RAISE, do not break. Swallowing it hid the cancellation from
+                # _connect_bridge, which treated it as an ordinary socket loss and reconnected
+                # forever — the task could never be stopped and shutdown hung.
                 raise
             except Exception as e:
-                logger.debug("agentmob: inbound: %s", e)
+                logger.warning("agentmob: bridge read failed (%s: %s) — reconnecting",
+                               type(e).__name__, e)
                 break
+
+            text = line.decode("utf-8", "replace").strip()
+            if not text:
+                continue
+            try:
+                evt = json.loads(text)
+            except ValueError:
+                logger.debug("agentmob: inbound: dropping non-JSON line (%d bytes)", len(text))
+                continue
+
+            # --- handle the event; a failure here must NOT close the socket ----------------
+            try:
+                await self._handle_sidecar_event(evt)
+                handler_errors = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                handler_errors += 1
+                logger.warning("agentmob: inbound handler failed on a %r event (%s: %s) — "
+                               "skipping it and continuing to read",
+                               (evt or {}).get("type"), type(e).__name__, e)
+                if handler_errors == _INBOUND_ERROR_ESCALATE:
+                    logger.error(
+                        "AGENTMOB INBOUND HANDLER FAILING: %d consecutive events raised, the "
+                        "latest a %r (%s: %s). Nothing from the phone is being processed. The "
+                        "bridge is healthy — this is a handler bug, not a connection problem.",
+                        handler_errors, (evt or {}).get("type"), type(e).__name__, e)
+                continue
 
     async def _handle_sidecar_event(self, evt: dict):
         etype = evt.get("type")

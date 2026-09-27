@@ -450,7 +450,26 @@ logging losses at WARNING rather than debug and escalating after
 It still exits when the sidecar is gone, because `_run_sidecar` starts a fresh bridge with each
 spawn and two bridges racing would be worse.
 
-**`_consume_inbound` now re-raises `CancelledError` instead of breaking.** Swallowing it hid the
+**A failing handler is not a broken socket.** `_consume_inbound` used to wrap the socket read
+and the event handler in ONE try block and `break` at debug level, so an event the handler
+choked on tore down a perfectly healthy connection: reconnect, read the same kind of event,
+choke again — connect, read, throw, reconnect, forever, with the cause recorded only at debug.
+The log showed bridge churn and nothing about why. The two are now separated: a socket error
+ends the read loop (reconnecting, which is right), while a handler error is logged at WARNING
+naming the event type and the loop CONTINUES to the next event. After
+`AGENTMOB_INBOUND_ERROR_ESCALATE` (5) consecutive failures it escalates, and one success resets
+the counter so an occasional bad event stays a warning:
+
+    AGENTMOB INBOUND HANDLER FAILING: 5 consecutive events raised, the latest a 'audio'
+    (KeyError: 'path'). Nothing from the phone is being processed. The bridge is healthy —
+    this is a handler bug, not a connection problem.
+
+`npm run inbound-resilience` drives the real `_consume_inbound` against a stand-in ctl server
+(the real sidecar emits nothing without a phone) and counts ACCEPTED CONNECTIONS, which is what
+separates the behaviours: 15 assertions. Verified red: the old code reconnected **6 times for 6
+bad events** with zero warnings, i.e. the socket paying for a handler bug, invisibly.
+
+**`_consume_inbound` also re-raises `CancelledError` instead of breaking.** Swallowing it hid the
 cancellation from `_connect_bridge`, which treated it as an ordinary socket loss and reconnected
 forever — the task could never be stopped and shutdown hung. That only became visible once the
 bridge stopped giving up on errors.
