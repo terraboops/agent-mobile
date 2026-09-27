@@ -83,12 +83,16 @@ ok('offline message says toggle wireless debugging', /OFFLINE/.test(mOffline) &&
 ok('authorizing message is its own state', /AUTHORIZING/.test(mAuthing), mAuthing);
 ok('other state is named verbatim', /no permissions/.test(mOther), mOther);
 ok('no-device message suggests enabling wireless debugging', /Wireless debugging/i.test(mNone), mNone);
+ok('no-device message does NOT ask for a port (it is discovered now)',
+   !/--connect|IP address & Port/i.test(mNone), mNone);
 
 /* The distinction that matters tonight: phone off the tailnet vs port shut. */
 ok('off-tailnet message says the phone is not reachable, not "no device"',
   /NOT REACHABLE on the tailnet/.test(mOffTailnet) && /last seen 2h ago/.test(mOffTailnet), mOffTailnet);
 ok('on-tailnet-but-closed says wireless debugging is OFF',
   /IS reachable/.test(mOnTailnet) && /Wireless debugging is OFF/.test(mOnTailnet), mOnTailnet);
+ok('on-tailnet-but-closed names the toggle as the ONLY human step',
+  /ONLY step/.test(mOnTailnet) && /discovered/.test(mOnTailnet), mOnTailnet);
 ok('the two network cases do not share a message', mOffTailnet !== mOnTailnet);
 
 /* No two states may produce the same words — that is what "distinguishable" means. */

@@ -27,7 +27,7 @@
  * repeated "Allow debugging?" prompts on the phone.
  *
  * Usage:
- *   npm run device-verify                          # wait for any authorised device
+ *   npm run device-verify                          # discovers the endpoint itself
  *   npm run device-verify -- --connect 100.x.x.x:40123
  *   npm run device-verify -- --wait 7200           # arm for two hours
  *   npm run device-verify -- --dry                 # exercise the logic with no device
@@ -39,6 +39,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyDevices, stateLabel, describeBlocked, connectErrorOf } from './lib/adb-state.mjs';
+import { discover, scanPorts, DEFAULT_SCAN_RANGES } from './lib/adb-discover.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'test/audit/out/device');
@@ -54,6 +55,10 @@ const flag = (n, d = null) => { const i = argv.indexOf(n); return i >= 0 ? (argv
  * the 1800s device wait. --dry-run still works when node is invoked directly. */
 const DRY = argv.includes('--dry') || argv.includes('--dry-run');
 const CONNECT = flag('--connect', process.env.AGENTMOB_ADB_TARGET);
+/* The phone's tailnet address. Only the HOST is needed — the port is discovered. */
+const PHONE_HOST = String(flag('--host', process.env.AGENTMOB_PHONE_HOST
+  || '100.112.255.69'));
+const DISCOVER_EVERY_MS = Number(flag('--discover-every', 120000));
 const WAIT_S = Number(flag('--wait', 1800));
 const TRIGGER = String(flag('--say', 'Device check. Counting: one, two, three, four, five, '
   + 'six, seven, eight, nine, ten. That is the end of the test sentence.'));
@@ -166,9 +171,29 @@ if (DRY) {
   let tailnet = { checked: false };
   let lastLabel = null;
   let lastBeat = 0;
+  /* Wireless debugging picks a RANDOM port, and it changes every time the toggle is cycled.
+   * Waiting on a hand-supplied host:port means the run only ever completes if someone reads a
+   * number off a screen — and a stale number fails quietly, so the wait just looks patient.
+   * Discover it instead: mDNS when the phone is local, a bounded scan when it is remote. */
+  let target = CONNECT;
+  let lastDiscover = 0;
   while (Date.now() < deadline) {
-    if (CONNECT) {
-      const r = adb(['connect', String(CONNECT)], { timeout: 15000 });
+    if (!target && Date.now() - lastDiscover > DISCOVER_EVERY_MS) {
+      lastDiscover = Date.now();
+      const found = await discover({
+        host: PHONE_HOST,
+        runMdns: async () => adb(['mdns', 'services'], { timeout: 20000 }).stdout,
+        scan: (h, ranges) => scanPorts(h, ranges, { concurrency: 500, timeoutMs: 2000 }),
+        log: (m) => console.log(`  [discover] ${m}`),
+      });
+      if (found.endpoint) {
+        target = found.endpoint;
+        stage('wireless-debugging endpoint discovered', 'verified',
+          `${target} (via ${found.via}) — no port was supplied by hand`);
+      }
+    }
+    if (target) {
+      const r = adb(['connect', String(target)], { timeout: 15000 });
       connectError = connectErrorOf(r.stdout, r.stderr);
     }
     classified = classifyDevices(adb(['devices', '-l']).stdout);
@@ -179,7 +204,7 @@ if (DRY) {
     const label = stateLabel(classified, { connectError });
     const now = Date.now();
     if (label !== lastLabel || now - lastBeat > 60000) {
-      if (label !== lastLabel && CONNECT && /^none/.test(label)) tailnet = tailnetProbe(CONNECT);
+      if (label !== lastLabel && /^none/.test(label)) tailnet = tailnetProbe(target || PHONE_HOST);
       const secs = Math.round((now - t0) / 1000);
       console.log(`  [${secs}s] ${describeBlocked({ classified, connectTarget: CONNECT, connectError, tailnet, waitedS: secs })}`);
       lastLabel = label; lastBeat = now;
@@ -187,9 +212,9 @@ if (DRY) {
     await sleep(5000);
   }
   if (!serial) {
-    if (CONNECT && !tailnet.checked) tailnet = tailnetProbe(CONNECT);
+    if (!tailnet.checked) tailnet = tailnetProbe(target || PHONE_HOST);
     stage('device authorised', 'blocked',
-      describeBlocked({ classified, connectTarget: CONNECT, connectError, tailnet,
+      describeBlocked({ classified, connectTarget: target || PHONE_HOST, connectError, tailnet,
                         waitedS: Math.round((Date.now() - t0) / 1000) }));
     finish(1);
   }

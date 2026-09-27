@@ -99,13 +99,14 @@ export function describeBlocked({ classified, connectTarget, connectError, tailn
       return `no device${waited}: the phone IS reachable on the tailnet but nothing is `
         + `listening on ${connectTarget}`
         + (connectError ? ` (${connectError})` : '')
-        + ` — Wireless debugging is OFF. Enable Settings > System > Developer options > `
-        + `Wireless debugging and re-run with its "IP address & Port".`;
+        + ` — Wireless debugging is OFF. Turn it on: Settings > System > Developer options > `
+        + `Wireless debugging. That is the ONLY step needed — the port is discovered here, so `
+        + `nothing has to be read off the screen.`;
     }
     return `no device${waited} (adb connect ${connectTarget}${connectError ? `: ${connectError}` : ''}).`;
   }
-  return `no device${waited}. Plug in USB, or enable Settings > System > Developer options > `
-    + `Wireless debugging and re-run with --connect <ip:port>.`;
+  return `no device${waited}. Plug in USB, or turn on Settings > System > Developer options > `
+    + `Wireless debugging — the port is discovered, so it does not need to be supplied.`;
 }
 
 /** Tidy adb connect's own message so it can be shown inline. */

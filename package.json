@@ -41,7 +41,8 @@
     "outbound-queue": "~/.hermes/hermes-agent/venv/bin/python test/outbound-queue.test.py",
     "sidecar-wire": "node test/sidecar-wire.test.mjs",
     "sidecar-inbound": "node test/sidecar-inbound.test.mjs",
-    "e2e-interrupt": "node test/e2e-interrupt.mjs"
+    "e2e-interrupt": "node test/e2e-interrupt.mjs",
+    "adb-discover": "node test/adb-discover.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
