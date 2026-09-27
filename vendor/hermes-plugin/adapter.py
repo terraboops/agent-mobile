@@ -342,6 +342,7 @@ class AgentMobAdapter(BasePlatformAdapter):
         self._sidecar_wedged = False
         self._sidecar_stderr = collections.deque(maxlen=6)
         self._outbound_q = collections.deque(maxlen=_OUTBOUND_QUEUE_MAX)
+        self._undelivered: list = []         # losses to confess to the agent next turn
         self._tts_dead: set = set()          # engines proven missing; never retried
         self._tts_unavail_notified = False   # so the "text only" notice is said once
         self._restart_times = collections.deque()   # monotonic stamps, pruned to the window
@@ -838,6 +839,38 @@ class AgentMobAdapter(BasePlatformAdapter):
         """
         self._send_to_sidecar({"type": "push", "d": {"type": "status", **kw}})
 
+    @staticmethod
+    def _describe_payload(payload: dict) -> str:
+        """A short, honest description of what was lost — enough for the agent to act on."""
+        d = payload.get("d") if isinstance(payload.get("d"), dict) else {}
+        inner = str(d.get("type") or payload.get("type") or "?")
+        if inner == "text":
+            t = str(d.get("text") or "")
+            return f"text {t[:80]!r}" + ("…" if len(t) > 80 else "")
+        if inner == "render":
+            ui = d.get("ui") or {}
+            comps = [c.get("t") for c in (ui.get("components") or []) if isinstance(c, dict)]
+            return f"render ({', '.join(str(c) for c in comps) or 'empty'})"
+        if inner == "surface":
+            ops = sorted({str(o.get("op")) for o in (d.get("ops") or []) if isinstance(o, dict)})
+            return f"surface ops ({', '.join(ops) or 'none'})"
+        return inner
+
+    def _note_undelivered(self, payload: dict, why: str) -> None:
+        """Tell the AGENT that something it sent never reached the phone.
+
+        send() reports success for a QUEUED message, because it will arrive — but if the bridge
+        never comes back it ages out instead, and by then the turn is long closed. The agent
+        believes it answered and the user saw nothing, which is the same lie as an outright
+        drop, just deferred. It cannot be undone retroactively, so it is handed to the agent on
+        its NEXT turn through the same channel that already reports render outcomes, where it
+        can say the thing again.
+        """
+        desc = self._describe_payload(payload)
+        self._undelivered.append(f"{desc} ({why})")
+        logger.error("AGENTMOB UNDELIVERED: %s — %s. The phone never received it; the agent "
+                     "will be told on its next turn.", desc, why)
+
     def _drain_surface_feedback(self) -> list:
         out, self._surface_feedback = self._surface_feedback, []
         return out
@@ -850,6 +883,9 @@ class AgentMobAdapter(BasePlatformAdapter):
         on the phone, so it pushes to EXISTING widgets instead of re-registering or
         re-adding, and corrects any widget that failed to render.
         """
+        if self._undelivered:
+            lost, self._undelivered = self._undelivered, []
+            text = (text + "\n" + " ".join(f"[undelivered {x}]" for x in lost)).strip()
         fb = self._drain_surface_feedback()
         if fb:
             note = " ".join(
@@ -1480,6 +1516,8 @@ class AgentMobAdapter(BasePlatformAdapter):
                 return SEND_QUEUED
             logger.warning("agentmob: bridge closed — dropped %r (time-sensitive, not "
                            "worth delivering late)", kind)
+            if kind not in _OUTBOUND_EPHEMERAL_INNER and kind != "pcm":
+                self._note_undelivered(payload, "bridge closed and it is not queueable")
             return SEND_DROPPED
         try:
             self._writer.write((json.dumps(payload) + "\n").encode("utf-8"))
@@ -1505,6 +1543,9 @@ class AgentMobAdapter(BasePlatformAdapter):
         for when, payload in held:
             if now - when > _OUTBOUND_MAX_AGE_S:
                 stale += 1
+                self._note_undelivered(
+                    payload, f"queued {now - when:.0f}s waiting for the bridge, past the "
+                             f"{_OUTBOUND_MAX_AGE_S:.0f}s limit")
                 continue
             if self._writer is None or self._writer.is_closing():
                 self._outbound_q.append((when, payload))   # bridge went again mid-flush

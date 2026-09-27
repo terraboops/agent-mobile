@@ -87,6 +87,7 @@ def make_adapter():
     a = object.__new__(mod.AgentMobAdapter)
     a._writer = None
     a._outbound_q = __import__("collections").deque(maxlen=mod._OUTBOUND_QUEUE_MAX)
+    a._undelivered = []
     return a
 
 
@@ -341,6 +342,65 @@ async def queued_reply():
 res12 = asyncio.run(queued_reply())
 ok("caller: a QUEUED reply still reports success (deferred is not lost)",
    res12.success is True, f"success={res12.success}")
+
+
+# ---- 10. a message that ages out must not stay a silent lie -------------------------------
+# send() reports success for a QUEUED message because it will arrive. If the bridge never comes
+# back it ages out instead, and by then the turn is closed and the agent believes it answered.
+# That cannot be undone retroactively, so the agent is told on its NEXT turn.
+cap13 = Capture()
+logger.addHandler(cap13)
+
+a13 = make_adapter()
+a13._undelivered = []
+a13._writer = None
+a13._send_to_sidecar({"type": "push", "d": {"type": "text", "text": "the answer you asked for"}})
+a13._outbound_q[0] = (time.monotonic() - 999.0, a13._outbound_q[0][1])
+a13._writer = FakeWriter()
+a13._flush_outbound()
+logger.removeHandler(cap13)
+
+ok("expired: nothing was delivered late", a13._writer.buf == [], str(a13._writer.types()))
+ok("expired: the loss is recorded for the agent", len(a13._undelivered) == 1,
+   str(a13._undelivered))
+ok("expired: the record says WHAT was lost, not just that something was",
+   "the answer you asked for" in (a13._undelivered[0] if a13._undelivered else ""),
+   str(a13._undelivered))
+ok("expired: logged with a greppable marker",
+   any("AGENTMOB UNDELIVERED" in m for m in cap13.at(logging.ERROR)),
+   "; ".join(cap13.at(logging.ERROR)[:1]))
+
+# the agent actually receives it on its next turn
+a13._surface_feedback = []
+a13._surface_state = {}
+a13._drain_surface_feedback = lambda: []
+augmented = mod.AgentMobAdapter._augment_agent_text(a13, "what did you say?")
+ok("expired: the agent is told on its next turn", "[undelivered" in augmented, augmented)
+ok("expired: the note carries the lost text so the agent can repeat it",
+   "the answer you asked for" in augmented, augmented)
+ok("expired: the confession is drained, not repeated for ever",
+   "[undelivered" not in mod.AgentMobAdapter._augment_agent_text(a13, "and now?"))
+
+# a render loss is described usefully, not as an opaque blob
+a14 = make_adapter()
+a14._undelivered = []
+a14._writer = None
+a14._send_to_sidecar({"type": "push", "d": {"type": "render",
+                                            "ui": {"components": [{"t": "chart"}, {"t": "text"}]}}})
+a14._outbound_q[0] = (time.monotonic() - 999.0, a14._outbound_q[0][1])
+a14._writer = FakeWriter()
+a14._flush_outbound()
+ok("expired: a lost render names its components",
+   a14._undelivered and "chart" in a14._undelivered[0], str(a14._undelivered))
+
+# an ephemeral drop is NOT confessed — the agent does not need to re-send a blinking light
+a15 = make_adapter()
+a15._undelivered = []
+a15._writer = None
+a15._send_to_sidecar({"type": "push", "d": {"type": "status", "working": True}})
+a15._send_to_sidecar({"type": "pcm", "pcm_b64": "AAAA"})
+ok("expired: dropped status/pcm are NOT reported to the agent as losses",
+   a15._undelivered == [], str(a15._undelivered))
 
 print(f"\n{PASS} passed, {len(FAILS)} failed")
 sys.exit(1 if FAILS else 0)

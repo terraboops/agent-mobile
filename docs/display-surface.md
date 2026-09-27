@@ -640,6 +640,24 @@ A **queued** message still reports success: it will arrive, and reporting failur
 own lie. Only `SEND_DROPPED` is a loss, and each of the three now logs a greppable marker
 (`AGENTMOB REPLY LOST`, `RENDER LOST`, `SURFACE LOST`) and returns `success=False`.
 
+#### When "it will arrive" turns out to be false
+
+Reporting success for a queued message is only honest while the bridge comes back. If it never
+does, the message ages out after `AGENTMOB_OUTBOUND_MAX_AGE_S` — and by then the turn is long
+closed, the agent believes it answered, and the user saw nothing. That is the same lie as an
+outright drop, deferred by thirty seconds.
+
+It cannot be undone retroactively, so the agent is **told on its next turn** through the channel
+that already reports render outcomes:
+
+    what did you say?
+    [undelivered text 'the answer you asked for' (queued 31s waiting for the bridge, past the 30s limit)]
+
+The note names what was lost — the text, or a render's component types — so the agent can say it
+again rather than merely knowing something went missing. `AGENTMOB UNDELIVERED` marks it in the
+log. Ephemeral drops (`status`, `pcm`) are deliberately **not** confessed: the agent has no
+reason to re-send a blinking light.
+
 `npm run outbound-queue` — 34 assertions. Verified red: 14 fail for the queue itself, and 9 more
 for the caller classification.
 
