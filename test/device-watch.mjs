@@ -46,7 +46,7 @@ if (!existsSync(LOG)) {
 /* One connection attempt's worth of facts. */
 const sessions = [];
 let cur = null;
-const newSession = (ts) => { cur = { start: ts, clientId: null, identity: null, confirmed: false,
+const newSession = (ts) => { cur = { start: ts, clientId: null, identity: null, confirmed: false, iceFailed: null,
   opusPT: null, stack: null, iceStates: [], downlink: [], rejects: [], turns: 0, end: null }; return cur; };
 
 const RX = [
@@ -65,6 +65,12 @@ const RX = [
     cur.stack = STACKS[cur.opusPT] || `unrecognised stack (opus PT ${cur.opusPT})`;
   }],
   [/\[sidecar\] webrtc st (\S+)/, (m) => { if (cur && cur.iceStates.at(-1) !== m[1]) cur.iceStates.push(m[1]); }],
+  /* The sidecar's explicit give-up line. Worth surfacing on its own: a session that handshakes
+   * and then silently serves voice over the WS fallback looks healthy in every other field. */
+  [/\[sidecar\] webrtc ICE FAILED \(never reached connected\) — (.+)$/, (m) => {
+    const t = cur || sessions.at(-1);
+    if (t) t.iceFailed = m[1].trim();
+  }],
   /* The trailing "[cut short after i/n frames: why]" is the sidecar recording a truncated
    * playback (barge-in, app backgrounded, ICE drop). Keep it: a reply that only half-arrived
    * is a materially different observation from a clean one, and it used to log nothing. */
@@ -102,6 +108,7 @@ const historyCount = sessions.length;
 const verdict = (s) => {
   if (!s.confirmed && s.rejects.length) return 'REJECTED';
   if (!s.confirmed) return 'INCOMPLETE (no handshake confirm)';
+  if (s.iceFailed) return 'ICE FAILED — voice fell back to WS/UDP';
   if (s.opusPT === 111) return 'REAL DEVICE — Android libwebrtc';
   if (s.opusPT === 96) return 'harness (werift fake phone)';
   if (s.opusPT == null) return 'connected, no WebRTC negotiated (WS/UDP path only)';
@@ -116,6 +123,7 @@ function render(list, heading) {
     console.log(`  ${s.start || '?'}  ${verdict(s)}`);
     console.log(`     client=${s.clientId || '?'} identity=${s.identity || '?'}`);
     console.log(`     opusPT=${s.opusPT ?? '-'}  ice=[${s.iceStates.join('>') || '-'}]  downlink via ${via} (${pkts} pkts)`);
+    if (s.iceFailed) console.log(`     ICE FAILED: ${s.iceFailed}`);
     if (s.rejects.length) console.log(`     rejects: ${JSON.stringify(s.rejects)}`);
   }
 }

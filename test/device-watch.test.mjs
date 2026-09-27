@@ -137,6 +137,28 @@ function run(name, lines) {
   ok('two: identity reported is the device one', report.livePhoneIdentity.clientId === 'bbbbbbbb');
 }
 
+/* ---- 5b. ICE gave up: handshake fine, voice silently on the WS fallback ------------------ */
+{
+  const t = '2026-09-27 00:05:';
+  const { report, stdout } = run('icefail', [
+    L(t + '01', 'phone connected'),
+    L(t + '02', 'handshake confirmed 42c55608'),
+    L(t + '03', 'webrtc answer sent opusPT=111'),
+    L(t + '04', 'webrtc st connecting'),
+    L(t + '20', 'webrtc st closed'),
+    L(t + '20', 'webrtc ICE FAILED (never reached connected) — voice falls back to WS/UDP. ice=stun:stun.l.google.com:19302 tailnet-ice=none'),
+    L(t + '25', '→ phone pcm 88704b -> 92 opus packets via WS (webrtc ready=false)'),
+  ]);
+  const s = report.sessions.at(-1);
+  ok('icefail: the give-up line is captured', !!s.iceFailed, String(s.iceFailed));
+  ok('icefail: verdict says ICE FAILED, not a healthy session',
+    /ICE FAILED/.test(stdout), 'verdict not surfaced');
+  ok('icefail: the diagnosis keeps the ice config', /tailnet-ice=none/.test(s.iceFailed || ''));
+  ok('icefail: downlink recorded as the WS fallback', s.downlink[0]?.via === 'WS');
+  /* Still a real device: it is a reachability failure, not an identity question. */
+  ok('icefail: still counted as a real-device session', report.realDeviceSessions === 1);
+}
+
 /* ---- 6. a truncated playback: logged AFTER the disconnect that truncated it -------------- */
 {
   const t = '2026-09-26 21:45:';

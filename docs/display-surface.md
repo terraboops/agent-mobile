@@ -244,6 +244,27 @@ the default and no relay is deployed** — adding one is a spend decision, not a
 reading its startup line (19 assertions), including that the credential appears nowhere in
 stderr. Note the ctl port var is `AGENTMOB_SIDECAR_PORT`, **not** `AGENTMOB_CTL_PORT`.
 
+### The silent fallback now announces itself
+
+When ICE does not come up, the sidecar used to say nothing: replies simply started carrying a
+`via WS (webrtc ready=false)` suffix. Noticing that required reading the transport on every
+reply line — which is exactly how H3 stayed broken unnoticed for weeks, and how a remote-ICE
+failure would hide in the same way. The sidecar now logs, once per connection:
+
+    webrtc ICE FAILED (never reached connected) — voice falls back to WS/UDP. ice=... tailnet-ice=...
+
+It fires on a **deadline** (`AGENTMOB_ICE_DEADLINE_MS`, default 20s after the answer is sent),
+not on an ICE state transition. That distinction was measured, not assumed: an offer carrying
+only an unroutable candidate (192.0.2.1, RFC 5737) left the peer sitting at `connecting` for a
+full 60 seconds with no further state at all. `failed` never arrives, and `closed` only lands
+when the phone disconnects — by which time every reply has already gone out over the fallback.
+A state-triggered warning would therefore have stayed silent for the entire broken session.
+
+Verified both directions: it fires against a peer with only an unroutable candidate, and a real
+`e2e-webrtc` run (ICE connected) produces zero such lines. `device-watch` surfaces it as the
+session verdict, since a session that handshakes and then quietly serves voice over WebSocket
+looks healthy in every other field.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:
