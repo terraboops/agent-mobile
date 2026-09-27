@@ -37,7 +37,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let out = '';
 const proc = spawn(process.execPath, [SIDECAR], {
   env: { ...process.env, AGENTMOB_PORT: String(WS_PORT), AGENTMOB_BIND: '127.0.0.1',
-         AGENTMOB_SIDECAR_PORT: String(CTL_PORT), AGENTMOB_RX_FAIL_ESCALATE: '3' },
+         AGENTMOB_SIDECAR_PORT: String(CTL_PORT) },   // RX_FAIL_ESCALATE left at its default (5)
   stdio: ['ignore', 'ignore', 'pipe'],
 });
 proc.stderr.on('data', (d) => { out += d.toString('utf8'); });
@@ -157,16 +157,58 @@ const sessionIntact = () =>
   ok('after all of it: STILL the same session', sessionIntact());
 }
 
+/* ---- 6b. RX HANDLER WEDGED, driven for REAL -----------------------------------------------
+ * Five CONSECUTIVE handler throws. Nothing is faked: a truncated audio frame makes handleAudio
+ * genuinely throw ("Attempt to access memory outside buffer bounds") while the frame itself is
+ * correctly sealed and authenticated, so it reaches the handler the way a real corrupted
+ * capture would. Consecutive matters — any successful frame resets the counter — so these go
+ * out back to back with nothing in between.
+ *
+ * The threshold is the shipped default (5), not a compressed one: an escalation that only
+ * fires under test-only config is not an escalation. */
+{
+  const beforeWedge = (out.match(/RX HANDLER WEDGED/g) || []).length;
+  for (let i = 0; i < 6; i++) {
+    s.ws.send(pack(T.audio, s.channel.send(Buffer.from([0x01, 0x02]), T.audio)), { binary: true });
+    await sleep(150);
+  }
+  await sleep(1200);
+
+  const failLines = (out.match(/rx handler FAILED on type 1/g) || []).length;
+  ok('wedge: every malformed frame really made the handler throw', failLines >= 5,
+    `${failLines} handler failures — the frames were handled cleanly instead of throwing`);
+  ok('wedge: the failures were counted consecutively',
+    /rx handler FAILED on type 1[^\n]*\(5 in a row\)/.test(out),
+    (out.match(/rx handler FAILED[^\n]*/g) || []).slice(-1)[0] || '');
+  ok('wedge: RX HANDLER WEDGED fired at the SHIPPED threshold',
+    (out.match(/RX HANDLER WEDGED/g) || []).length > beforeWedge,
+    'the escalation never fired — it is unreachable as shipped');
+  const wedgeLine = (out.match(/RX HANDLER WEDGED[^\n]*/) || [])[0] || '';
+  ok('wedge: it names the client', /failed to process/.test(wedgeLine), wedgeLine);
+  ok('wedge: it says the channel is healthy and this is a handler bug',
+    /handler bug, not a link problem/.test(wedgeLine), wedgeLine);
+  if (wedgeLine) console.log(`  observed: ${wedgeLine.replace(/^\[sidecar\] /, '').slice(0, 120)}`);
+
+  /* And the whole point: five handler failures in a row must STILL not cost the session. */
+  ok('wedge: the channel survived all five failures', sessionIntact(),
+    'the escalation came at the cost of the session, which defeats it');
+
+  /* A good frame must clear the counter, or the next single failure would re-escalate. */
+  const r2 = await s.cmd({ cmd: 'webrtc', sdp_type: 'candidate', candidate: null },
+    { timeoutMs: 3000 }).catch(() => null);
+  s.ws.send(pack(T.audio, s.channel.send(Buffer.from([0x03, 0x04]), T.audio)), { binary: true });
+  await sleep(600);
+  const tail = (out.match(/rx handler FAILED[^\n]*/g) || []).slice(-1)[0] || '';
+  ok('wedge: a later failure starts counting from one again',
+    /\(1 in a row\)/.test(tail), tail);
+}
+
 /* ---- 7. repeated handler failures escalate rather than repeating one line ------------------ */
 {
-  const escalated = /RX HANDLER WEDGED/.test(out);
-  // Not asserted as required: these payloads are handled cleanly rather than throwing, which is
-  // the correct outcome. Report what actually happened instead of pretending to force it.
-  console.log(`  note  RX HANDLER WEDGED escalation ${escalated ? 'fired' : 'did not fire'} `
-    + `(no payload here made a handler throw — the loop handled them all)`);
-  ok('the escalation exists in the sidecar for when a handler does throw',
-    /RX HANDLER WEDGED/.test(
-      (await import('node:fs')).readFileSync(SIDECAR, 'utf8')));
+  // Previously this only asserted the STRING existed in the source, because nothing here made a
+  // handler throw. Section 6b now drives it for real, so that placeholder is gone.
+  ok('the escalation fired from real handler throws, not from a source grep',
+    /RX HANDLER WEDGED/.test(out));
 }
 
 try { proc.kill('SIGKILL'); } catch {}
