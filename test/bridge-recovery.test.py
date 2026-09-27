@@ -101,6 +101,9 @@ async def main():
     a._sidecar_port = CTL_PORT
     a._token = "dev"
     a._reader = a._writer = None
+    # _connect_bridge flushes this on every successful connect; a hand-built adapter
+    # must carry it or the bridge raises AttributeError and retries for ever.
+    a._outbound_q = __import__('collections').deque(maxlen=32)
     a._connected = False
     a._handle_sidecar_event = lambda evt: asyncio.sleep(0)
 
