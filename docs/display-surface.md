@@ -422,6 +422,23 @@ without touching the real installation.
 only). Without a sanctioned way to update, the only way to silence the check would be to ignore
 it, which is how a check stops meaning anything.
 
+**Sameness is not soundness.** Hashing proves the two trees agree; it says nothing about whether
+either one runs. A vendored file that is corrupt matches its own hash perfectly, so a restore
+from it would reinstate something broken and every hash check would pass the whole way through —
+the check that guards everything else being only half a check. Every vendored copy is therefore
+also syntax-checked: `node --check` for `.mjs`, `py_compile` for `.py` (under the *gateway's own*
+interpreter, not whatever `python3` resolves to), `JSON.parse` for `.json`.
+
+`npm run plugin-drift-soundness` proves it on the hard case: installed and vendored are
+BYTE-IDENTICAL with a correct manifest, so nothing about sameness is wrong, and only parsing
+catches it. It asserts the hash checks still pass in that run, which is what isolates soundness
+as the thing being tested.
+
+**Known limit, recorded rather than fixed:** syntax checking catches MALFORMED files, not
+semantically empty ones. `wire.mjs` opens with a long comment block, so a copy truncated inside
+it is perfectly valid JavaScript containing nothing — and would pass. The test asserts that
+explicitly, so if the limit ever changes the note stops being true and fails.
+
 **`sidecar/.identity.json` is never vendored.** It holds the sidecar's persistent server
 keypair, private key included, and the phone PINS that public key on first pairing — it is both
 a secret and live state. The check asserts its absence from `vendor/` rather than relying on

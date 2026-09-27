@@ -20,7 +20,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { PLUGIN_DIR, VENDOR_DIR, FILES, isForbidden } from './lib/vendor-files.mjs';
+import { PLUGIN_DIR, VENDOR_DIR, FILES, isForbidden, syntaxCheck } from './lib/vendor-files.mjs';
 
 let pass = 0; const fails = [];
 const ok = (name, cond, detail = '') => {
@@ -99,6 +99,19 @@ for (const [rel, rec] of Object.entries(manifest.files)) {
       + namedDiff(vendored.toString('utf8'), installed.toString('utf8')) + '\n'
       + `If the INSTALLED copy is correct:  npm run vendor-refresh\n`
       + `If it was reverted (restore from backup), reapply from ${vendoredPath}.`);
+}
+
+/* ---- soundness: the vendored copies must actually PARSE -----------------------------------
+ * Hashes prove sameness. A vendored file that is corrupt matches its own hash perfectly, so a
+ * restore from it would reinstate something broken and every check above would still pass.
+ * This is the difference between "the two trees agree" and "either tree works". */
+for (const rel of Object.keys(manifest.files)) {
+  const vendored = join(VENDOR_DIR, rel);
+  if (!existsSync(vendored)) continue;
+  const r = await syntaxCheck(vendored);
+  ok(`${rel}: the vendored copy parses`, r.ok,
+    r.ok ? '' : `SYNTAX ERROR in the vendored copy — restoring from it would install a broken `
+      + `plugin, and the hashes would match the whole way.\n  ${r.error}`);
 }
 
 console.log(`\n${pass} passed, ${fails.length} failed`);

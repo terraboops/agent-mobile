@@ -43,7 +43,8 @@
     "sidecar-inbound": "node test/sidecar-inbound.test.mjs",
     "e2e-interrupt": "node test/e2e-interrupt.mjs",
     "adb-discover": "node test/adb-discover.test.mjs",
-    "flush-live": "~/.hermes/hermes-agent/venv/bin/python test/flush-live.test.py"
+    "flush-live": "~/.hermes/hermes-agent/venv/bin/python test/flush-live.test.py",
+    "plugin-drift-soundness": "node test/plugin-drift-soundness.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
