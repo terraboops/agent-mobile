@@ -115,14 +115,23 @@ const ok = (name, cond, detail = '') => {
  * VERIFIED for a command that did nothing; the later stages then blocked with "no reply audio"
  * and the run looked like the phone had failed. Confirmed by running it: exit 0, zero pushes. */
 {
-  ok('the trigger inspects OUTPUT, not just the exit status',
-    /No live adapter\|/.test(SRC) || /No live adapter/.test(SRC),
-    'only hs2.status is checked, so a silent failure reads as success');
+  /* These two originally asserted the INTERMEDIATE fix — inspecting `hermes send`'s output
+   * instead of only its exit status. That path is gone entirely now, replaced by the AEAD
+   * typed turn, so checking for its artifacts would fail forever against strictly better code.
+   * Assert the property that actually matters: the dead path is not used, and a trigger
+   * failure is reported from the trigger's own result. */
+  ok('the dead `hermes send` path is gone, not merely guarded',
+    !/\['send', '-t', 'agentmob'/.test(SRC) && !/hs2\.status/.test(SRC),
+    'the shell-out survives somewhere in the file');
+  ok('the trigger reports failure from its own result, not an exit code',
+    /const triggerFailed = !trig\.ok/.test(SRC),
+    'nothing distinguishes a trigger that silently did nothing');
   ok('a failed trigger blocks the stages that depend on it',
     /if \(triggerFailed\)[\s\S]{0,200}?no trigger, so nothing was spoken/.test(SRC),
     'the speaking and mute stages would block with a misleading reason');
-  ok('the failure message points at the working alternative',
-    /typed turn over a second AEAD client/.test(SRC));
+  ok('the reason why hermes send cannot be used is recorded where the stage lives',
+    /standalone_sender_fn/.test(SRC),
+    'the next person will try it again and hit exit 0 with no explanation');
 
   /* The exact shape of the real failure, as observed. */
   const realFailure = "hermes send: No live adapter for platform 'agentmob'. Is the gateway "
