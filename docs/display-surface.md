@@ -661,6 +661,31 @@ reason to re-send a blinking light.
 `npm run outbound-queue` — 34 assertions. Verified red: 14 fail for the queue itself, and 9 more
 for the caller classification.
 
+### The sidecar had the same swallow
+
+Every write to a phone socket was `try { ws.send(...) } catch {}` — the adapter's outbound bug,
+one process over. `sidecar/wire.mjs` is now the only place the sidecar writes to a phone, and it
+separates two failures the bare catch had merged:
+
+| | meaning | logging |
+|---|---|---|
+| socket not `OPEN` | the phone is gone or mid-disconnect | expected and **frequent** (status runs several times a second while speaking), so rate-limited: the first drop and every 50th, with a running count |
+| `send()` threw | the socket looked usable and the write failed anyway | never routine — logged every time, naming the underlying error |
+
+The rate limit is the point. Logging every closed-socket status would bury the log and get
+ignored, which is the same outcome as silence by a different route; silencing them is the bug
+being fixed. Both have to be observable without either drowning the other.
+
+A lost **ack** is never quieted. A missing status is a missing indicator, but a lost ack leaves
+the PHONE waiting on a reply that will never arrive — it sits through its timeout unable to tell
+a slow host from a dead one, while the sidecar, which knows exactly what happened, says nothing.
+
+`npm run sidecar-wire` — 30 assertions, covering both failure modes, the rate limiting (first
+drop always reported, periodic after, accurate count), and that `index.mjs` actually routes
+through the helper rather than merely shipping it. Verified red: 4 integration assertions fail
+against the original. The unit assertions stay green there because the helper is new code — the
+integration ones are what prove it is wired in.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:

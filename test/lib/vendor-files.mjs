@@ -30,6 +30,7 @@ export const FILES = [
   '__init__.py',
   'sidecar/index.mjs',
   'sidecar/webrtc-media.mjs',
+  'sidecar/wire.mjs',
   'sidecar/package.json',
   'tests/test_adapter_dispatch.py',
   'tests/test_adapter_surface_visibility.py',

@@ -56,6 +56,7 @@ import { fileURLToPath } from 'node:url';
 import { pack, unpack, T, unpackAudio } from '/Users/terra/Developer/agent-mobile/transport/wsframes.js';
 import { UdpMedia } from '/Users/terra/Developer/agent-mobile/transport/udp-media.js';
 import { createWebRtcSignal } from './webrtc-media.mjs';
+import { sendFrame, wsState } from './wire.mjs';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const OpusScript = require('opusscript'); // wasm libopus: raw packet decode (no compiler/native)
@@ -506,7 +507,18 @@ async function handleWebrtc(conn, i, w) {
         iceAdditionalHostAddresses: ICE_HOST_ADDRS.length ? ICE_HOST_ADDRS : undefined }
     );
   }
-  const ack = (d) => { try { conn.ws.send(pack(T.cmd, conn.channel.send(Buffer.from(JSON.stringify({ i, d })), T.cmd))); } catch {} };
+  // A lost ack is worse than a lost status: the PHONE is waiting on this reply and will sit
+  // through its timeout with no idea whether the host is slow, broken, or gone. Never quiet.
+  const ack = (d) => {
+    let frame;
+    try {
+      frame = pack(T.cmd, conn.channel.send(Buffer.from(JSON.stringify({ i, d })), T.cmd));
+    } catch (e) {
+      log(`ack i=${i} encrypt FAILED: ${(e && e.message) || e}`);
+      return false;
+    }
+    return sendFrame(conn, frame, `ack i=${i}`, log);
+  };
   try {
     if (w.sdp_type === 'offer' && w.sdp) {
       const ans = await conn.webrtc.handleOffer(w.sdp);
@@ -557,9 +569,20 @@ function decodeSpeech(conn, op) {
 // signals live here (heartbeat, mic level); semantic ones (heard/working) come
 // from the adapter over the same `push` channel.
 function pushStatus(conn, d) {
+  // quietWhenClosed: status runs several times a second while speaking, so a disconnected
+  // phone would otherwise fill the log. The first drop and every 50th are still reported —
+  // the point is that a dead socket never looks like a healthy one, not that it is silent.
+  let frame;
   try {
-    conn.ws.send(pack(T.cmd, conn.channel.send(Buffer.from(JSON.stringify({ i: -1, d: Object.assign({ type: 'status' }, d) })), T.cmd)));
-  } catch (_) { /* phone may be mid-disconnect */ }
+    frame = pack(T.cmd, conn.channel.send(
+      Buffer.from(JSON.stringify({ i: -1, d: Object.assign({ type: 'status' }, d) })), T.cmd));
+  } catch (e) {
+    // Encrypting failed — that is the channel, not the socket, and it is never routine.
+    log(`status encrypt FAILED: ${(e && e.message) || e}`);
+    return false;
+  }
+  return sendFrame(conn, frame, `status ${Object.keys(d || {}).join(',') || '(empty)'}`, log,
+                   { quietWhenClosed: true });
 }
 const _lvlTs = new Map();
 function maybeLevel(conn, mean) {
