@@ -151,6 +151,20 @@ const ok = (name, cond, detail = '') => {
     /report\.some\(\(r\) => r\.status === 'failed'\)/.test(SRC));
 }
 
+/* ---- STAGE 1, which I had not read because I had RUN it many times --------------------- */
+{
+  ok('the tailscale binary is resolved, not hard-coded',
+    /AGENTMOB_TAILSCALE/.test(SRC) && /opt\/homebrew\/bin\/tailscale/.test(SRC),
+    'a single absolute path means ENOENT elsewhere, swallowed by the try, and the '
+    + '"off the network" vs "port shut" distinction silently disappears');
+  ok('a missing tailscale binary is announced, not swallowed',
+    /no tailscale binary found/.test(SRC),
+    'the probe would degrade to a correct-but-useless message with nothing saying why');
+  ok('a failed screenshot records WHY',
+    /lastShotError/.test(SRC),
+    'a bare return false made a permission prompt and a dead device look identical');
+}
+
 console.log(`\n${pass} passed, ${fails.length} failed`);
 if (fails.length) process.exit(1);
 console.log('ALL PASS');

@@ -40,6 +40,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyDevices, stateLabel, describeBlocked, connectErrorOf } from './lib/adb-state.mjs';
 import { discover, scanPorts, DEFAULT_SCAN_RANGES } from './lib/adb-discover.mjs';
+import { typedTurn } from './lib/aead-trigger.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'test/audit/out/device');
@@ -160,12 +161,34 @@ console.log(`adb: ${ADB}${DRY ? '   (DRY RUN — no device will be touched)' : '
  * this loop lie: an `unauthorized` device means the phone is showing an "Allow wireless
  * debugging?" dialog waiting for a tap — the one failure a person next to the phone fixes in
  * two seconds — and it was being reported as if nothing were plugged in at all. */
-const TS_BIN = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
+/* Resolved, not assumed. A hard-coded path means that on a Mac where Tailscale lives anywhere
+ * else the spawn throws ENOENT, the try below swallows it, and the "phone is off the network"
+ * vs "the port is shut" distinction — the entire reason this probe exists — silently collapses
+ * into the generic message. It degrades to a correct-but-useless answer, which is the quietest
+ * kind of wrong. */
+const TS_BIN = (() => {
+  const candidates = [
+    process.env.AGENTMOB_TAILSCALE,
+    '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
+    '/opt/homebrew/bin/tailscale',
+    '/usr/local/bin/tailscale',
+    '/usr/bin/tailscale',
+  ].filter(Boolean);
+  for (const c of candidates) { if (existsSync(c)) return c; }
+  return null;
+})();
 
 /** Is the phone even on the tailnet? Separates "not on the network" from "port is shut". */
 function tailnetProbe(target) {
   const host = String(target || '').split(':')[0];
   if (!/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)) return { checked: false };
+  if (!TS_BIN) {
+    // Say so rather than degrade in silence: without this the run cannot tell a sleeping phone
+    // from one with the toggle off, and the operator is sent after the wrong thing.
+    console.log('  [discover] no tailscale binary found — set AGENTMOB_TAILSCALE to keep the '
+      + '"off the network" vs "port shut" distinction');
+    return { checked: false, noBinary: true };
+  }
   try {
     const r = spawnSync(TS_BIN, ['ping', '-c', '1', '--timeout', '3s', host],
       { encoding: 'utf8', timeout: 15000 });
@@ -241,11 +264,19 @@ if (DRY) {
 }
 
 const sh = (cmd) => adb(['-s', serial, 'shell', cmd]).stdout.trim();
+let lastShotError = null;
 const shot = (name) => {
   if (DRY) return false;
   const r = spawnSync(ADB, ['-s', serial, 'exec-out', 'screencap', '-p'],
     { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0 || !r.stdout || r.stdout.length < 1000) return false;
+  if (r.status !== 0 || !r.stdout || r.stdout.length < 1000) {
+    // Was a bare `return false`, so a failed screenshot reported only the filename and the run
+    // learned nothing about why — a permission prompt and a dead device looked identical.
+    lastShotError = (r.stderr && r.stderr.toString().trim().slice(0, 120))
+      || `screencap returned ${r.status} and ${r.stdout ? r.stdout.length : 0} bytes`;
+    return false;
+  }
+  lastShotError = null;
   writeFileSync(join(OUT, name), r.stdout);
   return true;
 };
@@ -272,7 +303,8 @@ if (!DRY && serial) {
   await sleep(6000);
   const alive = sh(`pidof ${PKG} || true`);
   stage('app launched', alive ? 'verified' : 'failed', alive ? `pid ${alive}` : 'no process');
-  stage('screenshot: boot', shot('01-boot.png') ? 'verified' : 'blocked', '01-boot.png');
+  stage('screenshot: boot', shot('01-boot.png') ? 'verified' : 'blocked',
+    lastShotError ? `01-boot.png — ${lastShotError}` : '01-boot.png');
 
   /* ---- 4. handshake ------------------------------------------------------------------------
    * opus PT 111 = Android libwebrtc. werift (the test harness) offers 96, so this is how the
@@ -320,24 +352,22 @@ if (!DRY && serial) {
 
     /* The trigger must make the agent SPEAK to the phone.
      *
-     * `hermes send -t agentmob` does not work and — worse — EXITS 0 while failing:
-     *   "No live adapter for platform 'agentmob'. ... the platform plugin must register a
-     *    standalone_sender_fn on its PlatformEntry."
-     * Checking only the exit status reported this stage as VERIFIED for a command that did
-     * nothing, after which the speaking and mute stages blocked with "no reply audio" and the
-     * run looked like the PHONE had failed. Verified by running it: exit 0, zero sidecar
-     * pushes. So the output is inspected, not just the status. */
+     * NOT `hermes send -t agentmob`: it cannot reach the platform out-of-process — "No live
+     * adapter for platform 'agentmob' ... must register a standalone_sender_fn" — and it EXITS
+     * 0 while failing, so checking the status reported this stage VERIFIED for a command that
+     * did nothing. Confirmed by running it: exit 0, zero sidecar pushes.
+     *
+     * A typed turn over a second AEAD connection is the route that works, and it is the same
+     * one the app's text path uses. ORDERING MATTERS: the sidecar sends reply audio to
+     * conns[0], the FIRST connection, not whoever asked. The trigger therefore connects AFTER
+     * the phone (which attached at stage 3) and disconnects once the turn is in, leaving the
+     * handset as the only connection and so the unambiguous target. */
     const off2 = logSize();
-    const hs2 = spawnSync(join(homedir(), '.hermes/hermes-agent/venv/bin/hermes'),
-      ['send', '-t', 'agentmob', TRIGGER], { encoding: 'utf8', timeout: 60000 });
-    const hsOut = `${hs2.stdout || ''}${hs2.stderr || ''}`;
-    const triggerFailed = hs2.status !== 0 || /No live adapter|must register a standalone_sender_fn|error/i.test(hsOut);
-    stage('trigger a spoken reply', triggerFailed ? 'blocked' : 'verified',
-      triggerFailed
-        ? `hermes send did not reach the platform (exit ${hs2.status}): `
-          + `${hsOut.trim().slice(0, 150)} — a typed turn over a second AEAD client is the `
-          + `working alternative (see test/e2e-interrupt.mjs)`
-        : 'hermes send -t agentmob');
+    const trig = await typedTurn({ text: TRIGGER });
+    const triggerFailed = !trig.ok;
+    stage('trigger a spoken reply (typed turn over AEAD)',
+      triggerFailed ? 'blocked' : 'verified',
+      triggerFailed ? String(trig.error) : 'sent, then disconnected so the phone is conns[0]');
     if (triggerFailed) {
       stage('speaking pill', 'blocked', 'no trigger, so nothing was spoken');
       stage('mute mid-sentence (issue #1)', 'blocked', 'no trigger, so nothing was playing');
