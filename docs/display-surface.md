@@ -179,8 +179,49 @@ line reads `→ phone pcm … via WebRTC` rather than `via UDP (webrtc ready=fal
 Note the opus payload type is **negotiated, not fixed**: Android libwebrtc offers 111,
 werift offers 96. Anything that hard-codes a PT will work against one and not the other.
 
-What this does NOT cover: Android's own libwebrtc (ICE behaviour over the Tailscale
-userspace TUN, AudioTrack pacing, mic permissions). Those still need the device.
+### H3 on the real device — it already worked (Aug 13–28)
+
+Running `device-watch` over the archived logs settles what the harness could not. Between
+**2026-08-13 and 2026-08-28 the real Pixel connected 57 times**, negotiating WebRTC with
+**opus PT 111** (Android libwebrtc — werift offers 96, so these cannot be the harness). ICE
+reached `connected` in the large majority, and the downlink logged **155 sends via WebRTC**
+against 26 via UDP.
+
+So Android libwebrtc, AudioTrack pacing and mic permissions are **not** unverified — the
+August history is the evidence. What remains device-gated is much narrower: the bottom-bar
+layout fix, widget tiles in the real WebView, and whether ICE still connects now that the
+phone is **remote** (see below). The phone has not connected since 2026-08-28.
+
+All 57 sessions carry **one** stable identity, `client_id=42c55608` — the persistent
+`IdentityStore` keypair (app-private `SharedPreferences`, private key wrapped by
+`AndroidKeyStore`). It survives an in-place update (`install -r`) and is regenerated only by
+an uninstall/reinstall, which wipes both the prefs and the KeyStore alias. Run `device-watch`
+for the full base64 SPKI.
+
+### ICE reachability — `npm run ice-candidates`
+
+`e2e-webrtc` connects over loopback, so it proves the media path and nothing about
+reachability. This asks the live sidecar for an answer and reports what it offers to connect
+on. Currently:
+
+    host   udp  192.168.10.55    <- the Mac's LAN
+    srflx  udp  129.222.139.201  <- public IP via STUN
+    tailnet: NO      TURN relay: none configured
+
+That LAN host candidate is almost certainly why August worked: the phone was on the same home
+Wi-Fi. It does nothing for a **remote** phone, which can only reach this Mac at its tailnet
+address — and the tailnet lives on a point-to-point `utun`, which ICE enumeration skips. With
+no tailnet candidate and no TURN relay, a remote phone can only connect if the STUN srflx pair
+is mutually reachable. When `tailscale ping` reports *"direct connection not established"* for
+the phone, Tailscale has already failed to punch the same NAT, and WebRTC has no DERP to fall
+back on.
+
+Expected symptom: handshake fine, ICE never reaches `connected`, downlink silently falls back
+to the WebSocket (`webrtc ready=false`). Levers: `AGENTMOB_ICE` to add a TURN relay, or bind so
+the tailnet address is gathered.
+
+What still genuinely needs the device: AudioTrack behaviour under the new bottom-bar layout,
+widget tiles in the real WebView, and a remote-network ICE run.
 
 ### Watching for the real device — `npm run device-watch`
 
