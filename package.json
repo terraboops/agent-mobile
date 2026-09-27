@@ -47,7 +47,8 @@
     "plugin-drift-soundness": "node test/plugin-drift-soundness.test.mjs",
     "adapter-fields": "~/.hermes/hermes-agent/venv/bin/python test/adapter-fields.test.py",
     "device-stages": "node test/device-stages.test.mjs",
-    "aead-trigger": "node test/aead-trigger.test.mjs"
+    "aead-trigger": "node test/aead-trigger.test.mjs",
+    "apk-installable": "node test/apk-installable.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
