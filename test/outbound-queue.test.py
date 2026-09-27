@@ -88,6 +88,10 @@ def make_adapter():
     a._writer = None
     a._outbound_q = __import__("collections").deque(maxlen=mod._OUTBOUND_QUEUE_MAX)
     a._undelivered = []
+    # _send_to_sidecar gates on _connected as well as the socket, because a socket whose peer
+    # has died still reports is_closing() == False. Tests that hand it a live writer must say
+    # the bridge is up, or they are asserting against a bridge that is down.
+    a._connected = False
     return a
 
 
@@ -123,6 +127,7 @@ cap2 = Capture()
 logger.addHandler(cap2)
 w = FakeWriter()
 a._writer = w
+a._connected = True
 sent = a._flush_outbound()
 logger.removeHandler(cap2)
 
@@ -139,6 +144,7 @@ ok("flush: the reconnect delivery is announced",
 a2 = make_adapter()
 w2 = FakeWriter()
 a2._writer = w2
+a2._connected = True
 rc = a2._send_to_sidecar({"type": "reply", "d": {"type": "text", "text": "hello"}})
 ok("live: sent immediately", rc == mod.SEND_SENT and w2.types() == ["reply"],
    f"{rc} {w2.types()}")
@@ -156,6 +162,7 @@ if a4._outbound_q:
     a4._outbound_q[0] = (time.monotonic() - 5.0, a4._outbound_q[0][1])
 w4 = FakeWriter()
 a4._writer = w4
+a4._connected = True
 sent4 = a4._flush_outbound()
 logger.removeHandler(cap4)
 
@@ -181,6 +188,7 @@ cap6 = Capture()
 logger.addHandler(cap6)
 a6 = make_adapter()
 a6._writer = FakeWriter(explode=True)
+a6._connected = True
 rc6 = a6._send_to_sidecar({"type": "reply", "d": {"type": "text", "text": "important"}})
 logger.removeHandler(cap6)
 
@@ -207,6 +215,7 @@ class DiesAfterOne(FakeWriter):
 
 
 a7._writer = DiesAfterOne()
+a7._connected = True
 a7._flush_outbound()
 ok("mid-flush failure: the undelivered remainder is kept", len(a7._outbound_q) >= 2,
    f"{len(a7._outbound_q)} kept — the rest were lost")
@@ -357,6 +366,7 @@ a13._writer = None
 a13._send_to_sidecar({"type": "push", "d": {"type": "text", "text": "the answer you asked for"}})
 a13._outbound_q[0] = (time.monotonic() - 999.0, a13._outbound_q[0][1])
 a13._writer = FakeWriter()
+a13._connected = True
 a13._flush_outbound()
 logger.removeHandler(cap13)
 
@@ -389,6 +399,7 @@ a14._send_to_sidecar({"type": "push", "d": {"type": "render",
                                             "ui": {"components": [{"t": "chart"}, {"t": "text"}]}}})
 a14._outbound_q[0] = (time.monotonic() - 999.0, a14._outbound_q[0][1])
 a14._writer = FakeWriter()
+a14._connected = True
 a14._flush_outbound()
 ok("expired: a lost render names its components",
    a14._undelivered and "chart" in a14._undelivered[0], str(a14._undelivered))
