@@ -180,6 +180,11 @@ _STT_RETRY_S = float(os.getenv("AGENTMOB_STT_RETRY_S", "0.5"))
 _TTS_ATTEMPTS = int(os.getenv("AGENTMOB_TTS_ATTEMPTS", "2"))
 _TTS_RETRY_S = float(os.getenv("AGENTMOB_TTS_RETRY_S", "0.5"))
 _TTS_PERMANENT_ERRORS = (ImportError, ModuleNotFoundError, FileNotFoundError)
+# Outbound messages worth holding across a bridge reconnect. Text the user should see stays
+# true a second later; a status indicator or a chunk of speech does not.
+_OUTBOUND_DURABLE = frozenset({"reply", "push"})
+_OUTBOUND_QUEUE_MAX = int(os.getenv("AGENTMOB_OUTBOUND_QUEUE_MAX", "32"))
+_OUTBOUND_MAX_AGE_S = float(os.getenv("AGENTMOB_OUTBOUND_MAX_AGE_S", "30"))
 
 _LIVE_SIDECARS: set = set()
 _REAPER_INSTALLED = False
@@ -309,6 +314,7 @@ class AgentMobAdapter(BasePlatformAdapter):
         self._sidecar_fails = 0
         self._sidecar_wedged = False
         self._sidecar_stderr = collections.deque(maxlen=6)
+        self._outbound_q = collections.deque(maxlen=_OUTBOUND_QUEUE_MAX)
         self._tts_dead: set = set()          # engines proven missing; never retried
         self._tts_unavail_notified = False   # so the "text only" notice is said once
         self._restart_times = collections.deque()   # monotonic stamps, pruned to the window
@@ -658,6 +664,7 @@ class AgentMobAdapter(BasePlatformAdapter):
                 else:
                     logger.info("agentmob: loopback bridge connected")
                 attempt = 0
+                self._flush_outbound()
                 await self._consume_inbound()
                 # Returning from _consume_inbound means the socket went away under us while
                 # the sidecar is still alive. That is the case worth recovering from.
@@ -1410,15 +1417,72 @@ class AgentMobAdapter(BasePlatformAdapter):
                 logger.error("agentmob: TTS: %s", e)
 
     def _send_to_sidecar(self, payload: dict) -> bool:
+        """Send one NDJSON message to the sidecar, holding it briefly if the bridge is down.
+
+        This is the single road every outbound message takes — agent replies, the "heard you"
+        status, and every user-facing failure notice added elsewhere in this file. It used to
+        drop on a closed bridge and return False, and NOTHING checks that return value, so a
+        notice like "speech recognition isn't working" was silently lost whenever the bridge
+        happened to be mid-reconnect. Reconnects are fast (~110-220ms measured) but a reply
+        lands in that window sooner or later, and the failure is invisible from the call site.
+
+        So durable messages are QUEUED and flushed on reconnect, while time-sensitive ones are
+        still dropped on purpose:
+
+          queued  — reply / push: text the user should see. Still true a second later.
+          dropped — status / typing / pcm: a stale "working" indicator, or speech arriving
+                    after the moment it belonged to, is worse than nothing. Same reasoning as
+                    not retrying a TTS turn that already failed.
+        """
+        kind = str(payload.get("type") or "")
         if self._writer is None or self._writer.is_closing():
-            logger.warning("agentmob: outbound dropped (bridge closed)")
+            if kind in _OUTBOUND_DURABLE:
+                self._outbound_q.append((time.monotonic(), payload))
+                logger.warning("agentmob: bridge closed — queued %r for reconnect (%d held)",
+                               kind, len(self._outbound_q))
+            else:
+                logger.warning("agentmob: bridge closed — dropped %r (time-sensitive, not "
+                               "worth delivering late)", kind)
             return False
         try:
             self._writer.write((json.dumps(payload) + "\n").encode("utf-8"))
             return True
         except Exception as e:
-            logger.debug("agentmob: outbound: %s", e)
+            # Was debug. An outbound message failing to send is exactly as invisible as the
+            # bridge-closed case, and just as consequential.
+            logger.warning("agentmob: outbound %r failed to write (%s: %s)",
+                           kind, type(e).__name__, e)
+            if kind in _OUTBOUND_DURABLE:
+                self._outbound_q.append((time.monotonic(), payload))
             return False
+
+    def _flush_outbound(self) -> int:
+        """Deliver anything held while the bridge was down. Called on reconnect."""
+        if not self._outbound_q:
+            return 0
+        now = time.monotonic()
+        sent = stale = 0
+        held, self._outbound_q = list(self._outbound_q), collections.deque(
+            maxlen=_OUTBOUND_QUEUE_MAX)
+        for when, payload in held:
+            if now - when > _OUTBOUND_MAX_AGE_S:
+                stale += 1
+                continue
+            if self._writer is None or self._writer.is_closing():
+                self._outbound_q.append((when, payload))   # bridge went again mid-flush
+                continue
+            try:
+                self._writer.write((json.dumps(payload) + "\n").encode("utf-8"))
+                sent += 1
+            except Exception as e:
+                logger.warning("agentmob: flush failed (%s: %s)", type(e).__name__, e)
+                self._outbound_q.append((when, payload))
+        if sent or stale:
+            logger.warning("agentmob: bridge reconnect flushed %d queued message(s)"
+                           "%s", sent,
+                           f", discarded {stale} older than {_OUTBOUND_MAX_AGE_S:.0f}s"
+                           if stale else "")
+        return sent
 
     async def send_typing(self, chat_id):
         self._send_to_sidecar({"type": "typing"})

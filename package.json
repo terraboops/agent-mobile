@@ -37,7 +37,8 @@
     "dispatch-delivery": "~/.hermes/hermes-agent/venv/bin/python test/dispatch-delivery.test.py",
     "transcribe-capture": "~/.hermes/hermes-agent/venv/bin/python test/transcribe-capture.test.py",
     "stt-failfast": "~/.hermes/hermes-agent/venv/bin/python test/stt-failfast.test.py",
-    "tts-failfast": "~/.hermes/hermes-agent/venv/bin/python test/tts-failfast.test.py"
+    "tts-failfast": "~/.hermes/hermes-agent/venv/bin/python test/tts-failfast.test.py",
+    "outbound-queue": "~/.hermes/hermes-agent/venv/bin/python test/outbound-queue.test.py"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

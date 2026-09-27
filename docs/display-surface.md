@@ -589,6 +589,32 @@ actually happen.
 are told APART. Verified red: **13 fail**, including *"permanent tried 1x, transient tried 1x —
 they must differ"* and *"fell through instead of retrying — the retry is gone"*.
 
+### Outbound: "the user is told" had to become true
+
+`_send_to_sidecar` is the single road every outbound message takes — agent replies, the
+"heard you" status, and every user-facing failure notice added elsewhere in the adapter. It
+dropped on a closed bridge and returned `False`, and **nothing checks that return value**. So
+every "the user is told" guarantee written into the STT/TTS work above was quietly conditional
+on the bridge being up at that instant. Reconnects are fast (110–220ms measured) but a reply
+lands in that window sooner or later, and the loss is invisible from the call site.
+
+Durable messages are now queued and flushed on reconnect. Not everything, though — the
+selectivity is the point:
+
+| kind | on a closed bridge | why |
+|---|---|---|
+| `reply`, `push` | **queued**, flushed on reconnect | text the user should see is still true a second later |
+| `status`, `typing` | dropped | a stale "working" indicator is worse than none |
+| `pcm` | dropped | speech arriving after the moment it belonged to is worse than silence |
+
+That last row is the same reasoning as not retrying a TTS turn that already failed. The queue is
+bounded (`AGENTMOB_OUTBOUND_QUEUE_MAX` 32, newest kept) and messages older than
+`AGENTMOB_OUTBOUND_MAX_AGE_S` (30s) are discarded rather than delivered late. A write error is
+now logged at WARNING and the message retained — it used to be `debug`, the third instance of
+that swallow.
+
+`npm run outbound-queue` — 22 assertions. Verified red: **14 fail**.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:
