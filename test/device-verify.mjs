@@ -38,6 +38,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { classifyDevices, stateLabel, describeBlocked, connectErrorOf } from './lib/adb-state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'test/audit/out/device');
@@ -105,32 +106,66 @@ const finish = (code) => {
 if (!ADB) { stage('adb present', 'blocked', 'adb not found on PATH or in the Android SDK'); finish(2); }
 console.log(`adb: ${ADB}${DRY ? '   (DRY RUN — no device will be touched)' : ''}`);
 
-/* ---- 1. reach a device ------------------------------------------------------------------- */
-const authorised = () => {
-  const out = adb(['devices']).stdout;
-  return out.split('\n').slice(1)
-    .map((l) => l.trim().split(/\s+/))
-    .filter((p) => p[1] === 'device')
-    .map((p) => p[0]);
-};
+/* ---- 1. reach a device -------------------------------------------------------------------
+ * Every non-ready outcome is reported as ITSELF. Collapsing them into "no device" is what made
+ * this loop lie: an `unauthorized` device means the phone is showing an "Allow wireless
+ * debugging?" dialog waiting for a tap — the one failure a person next to the phone fixes in
+ * two seconds — and it was being reported as if nothing were plugged in at all. */
+const TS_BIN = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
+
+/** Is the phone even on the tailnet? Separates "not on the network" from "port is shut". */
+function tailnetProbe(target) {
+  const host = String(target || '').split(':')[0];
+  if (!/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)) return { checked: false };
+  try {
+    const r = spawnSync(TS_BIN, ['ping', '-c', '1', '--timeout', '3s', host],
+      { encoding: 'utf8', timeout: 15000 });
+    const out = `${r.stdout || ''}${r.stderr || ''}`;
+    if (/pong from/i.test(out)) return { checked: true, reachable: true, note: out.trim().split('\n')[0] };
+    const status = spawnSync(TS_BIN, ['status'], { encoding: 'utf8', timeout: 15000 }).stdout || '';
+    const row = status.split('\n').find((l) => l.includes(host)) || '';
+    const seen = (row.match(/last seen [^,]*/i) || [])[0];
+    return { checked: true, reachable: false, note: seen || 'no reply to tailscale ping' };
+  } catch { return { checked: false }; }
+}
 
 let serial = null;
 if (DRY) {
   stage('device authorised', 'blocked', 'dry run');
 } else {
-  const deadline = Date.now() + WAIT_S * 1000;
+  const t0 = Date.now();
+  const deadline = t0 + WAIT_S * 1000;
   console.log(`waiting up to ${WAIT_S}s for a device…`);
+  let classified = classifyDevices('');
+  let connectError = null;
+  let tailnet = { checked: false };
+  let lastLabel = null;
+  let lastBeat = 0;
   while (Date.now() < deadline) {
-    if (CONNECT) adb(['connect', String(CONNECT)], { timeout: 15000 });
-    const d = authorised();
-    if (d.length) { serial = d[0]; break; }
+    if (CONNECT) {
+      const r = adb(['connect', String(CONNECT)], { timeout: 15000 });
+      connectError = connectErrorOf(r.stdout, r.stderr);
+    }
+    classified = classifyDevices(adb(['devices', '-l']).stdout);
+    if (classified.ready.length) { serial = classified.ready[0]; break; }
+
+    /* Say something whenever the state CHANGES, and at least every 60s, so a long wait is
+     * never mistaken for a hang. Silence is the failure mode this whole pass is about. */
+    const label = stateLabel(classified, { connectError });
+    const now = Date.now();
+    if (label !== lastLabel || now - lastBeat > 60000) {
+      if (label !== lastLabel && CONNECT && /^none/.test(label)) tailnet = tailnetProbe(CONNECT);
+      const secs = Math.round((now - t0) / 1000);
+      console.log(`  [${secs}s] ${describeBlocked({ classified, connectTarget: CONNECT, connectError, tailnet, waitedS: secs })}`);
+      lastLabel = label; lastBeat = now;
+    }
     await sleep(5000);
   }
   if (!serial) {
+    if (CONNECT && !tailnet.checked) tailnet = tailnetProbe(CONNECT);
     stage('device authorised', 'blocked',
-      CONNECT ? `no device after ${WAIT_S}s (tried adb connect ${CONNECT})`
-              : `no device after ${WAIT_S}s. Enable Settings > System > Developer options > `
-                + `Wireless debugging, then re-run with --connect <ip:port>`);
+      describeBlocked({ classified, connectTarget: CONNECT, connectError, tailnet,
+                        waitedS: Math.round((Date.now() - t0) / 1000) }));
     finish(1);
   }
   stage('device authorised', 'verified', serial);
