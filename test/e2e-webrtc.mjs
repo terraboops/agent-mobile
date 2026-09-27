@@ -132,11 +132,19 @@ for (let off = 0; off + FRAME * 2 <= pcm.length; off += FRAME * 2) {
 ok(sent > 100, `streamed ${sent} opus RTP packets over SRTP (${(sent * 20 / 1000).toFixed(1)}s)`);
 
 // ---- 7. the agent must hear it and answer -----------------------------------
-console.log('  waiting for the agent (up to 120s)…');
-const heard = await waitFor(() => events.some((d) => d && d.type === 'status' && d.heard), 60000);
+// status.heard and the reply BOTH wait on the same whisper pass, so they must share one
+// budget. Giving 'heard' the smaller one made this assertion fail on a loaded host while the
+// pipeline was perfectly healthy: whisper once took 62s on a 3.3s clip, so the 60s 'heard'
+// wait expired ~2s before the transcript existed and the 120s reply wait then passed. A check
+// that can only ever fail spuriously is worse than no check, so both run off one deadline.
+const STAGE_MS = 180000;
+const deadline = Date.now() + STAGE_MS;
+const untilDeadline = () => Math.max(0, deadline - Date.now());
+console.log(`  waiting for the agent (up to ${STAGE_MS / 1000}s for transcript + reply)…`);
+const heard = await waitFor(() => events.some((d) => d && d.type === 'status' && d.heard), untilDeadline());
 ok(heard, 'sidecar transcribed the SRTP mic audio (status.heard)');
 const spoke = await waitFor(() => events.some((d) => d && d.type === 'text')
-  || events.some((d) => d && d.type === 'render'), 120000);
+  || events.some((d) => d && d.type === 'render'), untilDeadline());
 ok(spoke, 'agent produced a reply for the utterance');
 
 // ---- 8. downlink: TTS must arrive as RTP on our receiver, not the WS fallback -
