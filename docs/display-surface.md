@@ -509,6 +509,34 @@ DIFFERENTLY (a version retrying both, or neither, would pass a sloppier test) an
 `_handle_sidecar_event` contains no try/except that could eat `_consume_inbound`'s warning.
 Verified red: 9 fail, among them *"uncertain and pre-delivery were treated the same"*.
 
+### Captures: no leak, and a retry while the audio still exists
+
+`_transcribe_and_dispatch` carries a recorded utterance from disk to the agent. Two defects:
+
+**The temp directory leaked.** The sidecar does `mkdtemp('agentmob-')` per utterance and writes
+`u.wav` inside it; the adapter unlinked only the file. Every utterance therefore left an empty
+directory behind for ever — **19 had accumulated on this machine** before anyone looked.
+`_discard_capture` now removes both. It uses `rmdir`, not `rmtree`, on purpose: it refuses on a
+non-empty directory, so an unexpected sibling file is kept rather than quietly destroyed, and a
+name/location check keeps it from ever touching a directory the sidecar did not create.
+
+**A transient STT failure destroyed its own evidence.** The WAV was deleted in a `finally` the
+moment transcription returned or raised, so nothing could decide to try again. This is the one
+place a retry is both SAFE — nothing has reached the agent, the same pre-delivery rule
+`dispatch_text` follows, one step earlier — and nearly free, because the capture is right there.
+`AGENTMOB_STT_ATTEMPTS` (2) with `AGENTMOB_STT_RETRY_S` (0.5s); on a hiccup the user now gets
+their answer instead of *"(I did not catch that.)"*.
+
+Cleanup also runs from an outer `finally`, covering the task being cancelled while queued on the
+STT lock — the window where a capture had no owner at all.
+
+`npm run transcribe-capture` — 20 assertions, checking the DIRECTORY rather than just the file,
+counting transcribe calls for the retry, and covering the conservative cases (non-empty dir kept,
+foreign dir never touched, double-discard harmless). Verified red: **11 fail**, including
+*"one leaked dir per utterance, for ever"* and the user being told *"I did not catch that"* on a
+hiccup a retry would have fixed. Confirmed live: a real utterance through `e2e-webrtc` now leaves
+zero temp directories.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:

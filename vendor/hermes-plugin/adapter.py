@@ -25,6 +25,7 @@ import mimetypes
 import os
 import re
 import shutil
+import tempfile
 import secrets
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -111,6 +112,10 @@ _BRIDGE_ESCALATE_AFTER = int(os.getenv("AGENTMOB_BRIDGE_ESCALATE_AFTER", "8"))
 # Consecutive inbound events whose handler raised before saying so at ERROR. Reset by one
 # success, so an occasional bad event stays a WARNING.
 _INBOUND_ERROR_ESCALATE = int(os.getenv("AGENTMOB_INBOUND_ERROR_ESCALATE", "5"))
+# STT attempts per capture. Retrying is safe here because nothing has reached the agent yet,
+# and cheap because the audio is still on disk.
+_STT_ATTEMPTS = int(os.getenv("AGENTMOB_STT_ATTEMPTS", "2"))
+_STT_RETRY_S = float(os.getenv("AGENTMOB_STT_RETRY_S", "0.5"))
 
 _LIVE_SIDECARS: set = set()
 _REAPER_INSTALLED = False
@@ -920,49 +925,98 @@ class AgentMobAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("agentmob: /new reset failed: %s", e)
 
-    async def _transcribe_and_dispatch(self, wav_path: str, lossy: bool = False):
-        async with self._stt_lock:
+    def _discard_capture(self, wav_path: str) -> None:
+        """Delete a finished capture AND the throwaway directory the sidecar made for it.
+
+        The sidecar does mkdtemp() per utterance and puts u.wav inside it. This used to unlink
+        only the file, so every utterance left an empty directory behind for ever — 14 of them
+        had accumulated on this machine before anyone looked. rmdir (not rmtree) is deliberate:
+        it refuses on a non-empty directory, so an unexpected sibling file is kept rather than
+        quietly destroyed, and the name check keeps this from ever touching a directory the
+        sidecar did not create.
+        """
+        try:
+            Path(wav_path).unlink(missing_ok=True)
+        except Exception as e:
+            logger.debug("agentmob: could not remove capture %s: %s", wav_path, e)
+        try:
+            parent = Path(wav_path).parent
+            if parent.name.startswith("agentmob-") and parent.parent == Path(tempfile.gettempdir()):
+                parent.rmdir()
+        except OSError:
+            pass          # not empty, or already gone — both fine
+        except Exception as e:
+            logger.debug("agentmob: could not remove capture dir: %s", e)
+
+    async def _stt_with_retry(self, wav_path: str):
+        """Transcribe, retrying a transient failure while the audio is still on disk.
+
+        This is the same delivery rule dispatch_text follows, one step earlier: NOTHING has
+        reached the agent yet, so a retry here cannot produce a double answer. It is also the
+        one place a retry is nearly free, because the capture is sitting right there — which is
+        precisely what the old code threw away, deleting the WAV in a finally before anyone
+        could decide whether to try again.
+        """
+        last = None
+        for attempt in range(1, _STT_ATTEMPTS + 1):
             try:
-                text, degraded = await asyncio.to_thread(self._transcribe, wav_path)
+                return await asyncio.to_thread(self._transcribe, wav_path)
             except Exception as e:
-                logger.error("agentmob: STT failed: %s", e)
-                self._send_to_sidecar({"type": "reply", "d": {"type": "text",
-                                      "text": "(I did not catch that.)"}})
-                return
-            finally:
+                last = e
+                if attempt >= _STT_ATTEMPTS:
+                    break
+                logger.warning("agentmob: STT attempt %d/%d failed (%s: %s) — retrying; the "
+                               "agent has not seen anything yet, so this is provably "
+                               "pre-delivery", attempt, _STT_ATTEMPTS, type(e).__name__, e)
+                await asyncio.sleep(_STT_RETRY_S)
+        raise last
+
+    async def _transcribe_and_dispatch(self, wav_path: str, lossy: bool = False):
+        try:
+            async with self._stt_lock:
                 try:
-                    Path(wav_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
-        text = (text or "").strip()
-        if not text:
-            return
-        logger.info("agentmob: transcript %r", text[:160])  # backend log only, not shown on the phone
-        # Whisper HALLUCINATES on near-silence and room noise, emitting stock phrases
-        # ("Thank you.", "Bye.", "Thanks for watching!") or a stuttered word run. The
-        # agent then answers something the user never said — which reads as "it doesn't
-        # respond properly". Drop these instead of dispatching them.
-        if self._is_hallucinated_transcript(text):
-            logger.info("agentmob: dropped hallucinated transcript %r (whisper phantom on silence/noise)", text[:80])
-            self._push_status(working=False)
-            return
-        self._push_status(heard=True)  # status strip: "heard you" (voice-first: no chat echo)
-        # Hard rule: never guess a task from a broken capture. If the link dropped
-        # frames (lossy) or the transcript is genuinely garbled/low-confidence, HOLD
-        # and route the user to retype (Telegram) rather than dispatch corrupted
-        # fragments as if they were a clear request.
-        if lossy or degraded:
-            logger.warning("agentmob: degraded input (lossy=%s degraded=%s) — holding, not guessing task from %r",
-                           lossy, degraded, text)
-            self._push_status(working=False)
-            reply = ("The audio came through choppy, so I didn't guess what you meant. "
-                     "Say it again, or type it to me on Telegram.")
-            self._send_to_sidecar({"type": "push", "d": {"type": "text", "text": reply,
-                                                         "controls": self._default_controls()}})
-            if self._tts_voice and reply:
-                await self._schedule_speak(reply)
-            return
-        await self.dispatch_text(text)
+                    text, degraded = await self._stt_with_retry(wav_path)
+                except Exception as e:
+                    logger.error("agentmob: STT failed after %d attempt(s): %s: %s",
+                                 _STT_ATTEMPTS, type(e).__name__, e)
+                    self._send_to_sidecar({"type": "reply", "d": {"type": "text",
+                                          "text": "(I did not catch that.)"}})
+                    return
+                finally:
+                    self._discard_capture(wav_path)
+            text = (text or "").strip()
+            if not text:
+                return
+            logger.info("agentmob: transcript %r", text[:160])  # backend log only, not shown on the phone
+            # Whisper HALLUCINATES on near-silence and room noise, emitting stock phrases
+            # ("Thank you.", "Bye.", "Thanks for watching!") or a stuttered word run. The
+            # agent then answers something the user never said — which reads as "it doesn't
+            # respond properly". Drop these instead of dispatching them.
+            if self._is_hallucinated_transcript(text):
+                logger.info("agentmob: dropped hallucinated transcript %r (whisper phantom on silence/noise)", text[:80])
+                self._push_status(working=False)
+                return
+            self._push_status(heard=True)  # status strip: "heard you" (voice-first: no chat echo)
+            # Hard rule: never guess a task from a broken capture. If the link dropped
+            # frames (lossy) or the transcript is genuinely garbled/low-confidence, HOLD
+            # and route the user to retype (Telegram) rather than dispatch corrupted
+            # fragments as if they were a clear request.
+            if lossy or degraded:
+                logger.warning("agentmob: degraded input (lossy=%s degraded=%s) — holding, not guessing task from %r",
+                               lossy, degraded, text)
+                self._push_status(working=False)
+                reply = ("The audio came through choppy, so I didn't guess what you meant. "
+                         "Say it again, or type it to me on Telegram.")
+                self._send_to_sidecar({"type": "push", "d": {"type": "text", "text": reply,
+                                                             "controls": self._default_controls()}})
+                if self._tts_voice and reply:
+                    await self._schedule_speak(reply)
+                return
+            await self.dispatch_text(text)
+        finally:
+            # Also runs when the task is cancelled while queued on the STT lock — the window
+            # where the capture would otherwise be left behind with nobody to clean it up.
+            self._discard_capture(wav_path)
 
     def _transcribe(self, wav_path: str):
         # MLX-native STT: faster-whisper's Metal backend takes 8-10s per short
