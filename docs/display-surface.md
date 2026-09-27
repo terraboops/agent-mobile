@@ -217,8 +217,49 @@ the phone, Tailscale has already failed to punch the same NAT, and WebRTC has no
 back on.
 
 Expected symptom: handshake fine, ICE never reaches `connected`, downlink silently falls back
-to the WebSocket (`webrtc ready=false`). Levers: `AGENTMOB_ICE` to add a TURN relay, or bind so
-the tailnet address is gathered.
+to the WebSocket (`webrtc ready=false`).
+
+**Fixed (host-side).** The sidecar now gathers the tailnet address as an additional host
+candidate, so a remote phone gets a pair it can complete:
+
+    agent id 2f087c6f ws://0.0.0.0:8123 ... ice=stun:stun.l.google.com:19302 tailnet-ice=100.125.53.51
+
+    sidecar answer advertises 4 candidate(s):
+      host   udp  100.125.53.51:56201   <- TAILNET (phone-routable)
+      host   udp  192.168.10.55:58439
+      srflx  udp  129.222.139.201:62296
+      srflx  udp  129.222.139.201:11991
+
+Neither side enumerates it unaided — the Tailscale interface is a point-to-point `utun`, which
+ICE host enumeration skips, and Android libwebrtc has the same blind spot. But the phone CAN
+route 100.x through its own Tailscale, so advertising it is enough. Addresses are detected from
+100.64.0.0/10 (the CGNAT range Tailscale allocates from); `AGENTMOB_NO_TAILNET_ICE=1` opts out.
+
+`AGENTMOB_ICE` also accepts a TURN entry with **inline credentials**
+(`turn:user:pass@host:3478`), split into the `RTCIceServer` username/credential fields. The
+credential never reaches a log line or the `ice` list handed to the phone. **STUN-only remains
+the default and no relay is deployed** — adding one is a spend decision, not a code one.
+
+`npm run ice-config` pins this contract down by booting the real sidecar on spare ports and
+reading its startup line (19 assertions), including that the credential appears nowhere in
+stderr. Note the ctl port var is `AGENTMOB_SIDECAR_PORT`, **not** `AGENTMOB_CTL_PORT`.
+
+### Pinning the phone — one line, after a confirmed connection
+
+Client pinning is config-driven via `~/.hermes/config.yaml`:
+
+    platforms:
+      agentmob:
+        extra:
+          # allowed_clients: "42c55608"
+          # ice: "stun:...,turn:user:pass@relay.example:3478"
+
+The adapter reads `extra.allowed_clients` (falling back to `AGENTMOB_ALLOWED_CLIENTS`) and
+exports it to the sidecar **only when set**, so the default stays PAIRING MODE. It is left
+UNPINNED on purpose: a stale id locks the phone out and the phone is the way back in. The
+archives name `42c55608` across all 57 August sessions, but nothing has connected since
+2026-08-28, so confirm it first — run `device-watch`, open the app, and it prints the exact
+`AGENTMOB_ALLOWED_CLIENTS=<id>` to uncomment.
 
 What still genuinely needs the device: AudioTrack behaviour under the new bottom-bar layout,
 widget tiles in the real WebView, and a remote-network ICE run.
