@@ -158,7 +158,12 @@ if (historyOnly) { save(); process.exit(real().length ? 0 : 1); }
 /* ---- follow, so opening the app on the phone is enough ---------------------------------- */
 console.log(`\n--- following ${LOG} for up to ${timeoutSec}s — open the app on the Pixel now ---`);
 const before = sessions.length;
-const tail = spawn('tail', ['-0f', LOG]);
+/* -F, not -f: the gateway ROTATES this log on every restart, and -f follows the inode, so
+ * an armed watcher goes silently deaf the moment the gateway is kicked — which is exactly
+ * when a phone is most likely to reconnect. -F re-opens by name across rotation and
+ * truncation. Observed: a watcher armed before two restarts reported none of the
+ * handshakes that happened after them. */
+const tail = spawn('tail', ['-0F', LOG]);
 let buf = '';
 tail.stdout.on('data', (d) => {
   buf += d.toString('utf8');

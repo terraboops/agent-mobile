@@ -205,6 +205,41 @@ function run(name, lines) {
     `${report.sessions.length}`);
 }
 
+/* ---- 8. FOLLOW mode must survive log rotation -------------------------------------------
+ * The gateway rotates gateway.log on every restart. An armed watcher that follows the inode
+ * goes silently deaf at exactly the moment a phone is most likely to reconnect — observed for
+ * real: a watcher armed before two gateway restarts reported none of the handshakes after
+ * them. This drives the follow path (not --history) across a rotation. */
+{
+  const { spawn } = await import('node:child_process');
+  const { writeFileSync: wf, appendFileSync, renameSync } = await import('node:fs');
+  const log = join(tmp, 'rotate.log');
+  const out = join(tmp, 'rotate.json');
+  wf(log, '');
+  const child = spawn(process.execPath, [WATCH, '--timeout', '20'],
+    { env: { ...process.env, AGENTMOB_WATCH_LOG: log, AGENTMOB_WATCH_OUT: out }, encoding: 'utf8' });
+  let so = '';
+  child.stdout.on('data', (d) => { so += d.toString(); });
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  await wait(4000);
+  appendFileSync(log, L('2026-09-27 00:30:01', 'phone connected') + '\n');
+  appendFileSync(log, L('2026-09-27 00:30:02', 'handshake confirmed beforeRotate') + '\n');
+  await wait(2500);
+  renameSync(log, log + '.1'); wf(log, '');          // exactly what the gateway does
+  await wait(2500);
+  appendFileSync(log, L('2026-09-27 00:30:10', 'phone connected') + '\n');
+  appendFileSync(log, L('2026-09-27 00:30:11', 'handshake confirmed afterRotate') + '\n');
+  appendFileSync(log, L('2026-09-27 00:30:12', 'webrtc answer sent opusPT=111') + '\n');
+  await new Promise((r) => child.on('exit', r));
+  const rep = JSON.parse(readFileSync(out, 'utf8'));
+  ok('rotate: session BEFORE the rotation is seen', rep.sessions.some((x) => x.clientId === 'beforeRotate'));
+  ok('rotate: session AFTER the rotation is still seen (tail -F, not -f)',
+    rep.sessions.some((x) => x.clientId === 'afterRotate'),
+    'the watcher went deaf at rotation');
+  ok('rotate: the post-rotation device is classified', rep.realDeviceSessions === 1,
+    `${rep.realDeviceSessions}`);
+}
+
 console.log(`\n${pass} passed, ${fails.length} failed`);
 if (fails.length) process.exit(1);
 console.log('ALL PASS');
