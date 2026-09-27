@@ -179,8 +179,8 @@ const ctl = createServer((sock) => {
   let authed = false, buf = '';
   sock.setNoDelay(true);
   sock.on('data', (chunk) => {
+    buf += chunk.toString();
     if (!authed) {
-      buf += chunk.toString();
       const nl = buf.indexOf('\n');
       if (nl < 0) return;
       if (buf.slice(0, nl).trim() !== TOKEN) { sock.destroy(); return; }
@@ -189,9 +189,13 @@ const ctl = createServer((sock) => {
       bridge = sock;
       sock.on('close', () => { if (bridge === sock) bridge = null; });
       flushQueued();
-      return;
+      // FALL THROUGH — do not return. TCP does not preserve write boundaries, so a message
+      // written straight after the token arrives in the SAME segment. Returning here left it
+      // sitting in `buf` unparsed until some later message happened to arrive. The adapter
+      // flushes its queued replies immediately after authenticating, so that is exactly the
+      // shape of the real traffic: a reply held across a sidecar restart was written, accepted
+      // by the socket, and then silently never processed.
     }
-    buf += chunk.toString();
     let nl;
     while ((nl = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, nl); buf = buf.slice(nl + 1);

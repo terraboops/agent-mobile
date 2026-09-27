@@ -719,6 +719,40 @@ let the client reconnect, which is the outcome being ruled out.
 17 assertions. Verified red: 5 fail — all silent-drop assertions. The session-survival ones pass
 against the old code too, which is the honest result: that part was already right.
 
+### The flush, under a real outage
+
+Everything about the outbound queue was first tested with fake writers. `npm run flush-live`
+drives the real thing — a real sidecar process, a real ctl socket, a real SIGKILL, a real
+respawn, a real flush — and reads the evidence out of the **sidecar's own stderr** rather than
+the adapter's bookkeeping:
+
+    sent during the outage -> 'queued', queue holds 1
+    respawned as pid 73470
+    [sidecar] reply for unknown i=CANARY-200191
+
+The canary is a `reply` with an id no phone is waiting on, because the sidecar logs
+`reply for unknown i=` **unconditionally**. A `push` is silently ignored when no phone is
+attached and would have proved nothing.
+
+**It found two real bugs that fake writers structurally could not.**
+
+1. **A write into a dead socket reported success.** When the peer dies, `is_closing()` stays
+   `False` until the EOF is processed, so the write lands in a kernel buffer and evaporates —
+   reported as `SEND_SENT`. The adapter already knew (`_connected` was `False`); it just was not
+   being asked. A fake writer is *told* it is closed, so this was invisible. `_send_to_sidecar`
+   now gates on `_connected` too.
+
+2. **The sidecar dropped whatever shared a TCP segment with the auth token.** The ctl handler
+   consumed the token line and `return`ed, leaving the rest of the buffer unparsed until some
+   later message happened to arrive. TCP does not preserve write boundaries, and the adapter
+   flushes its queued replies *immediately* after authenticating — so a reply held across a
+   restart was written, accepted by the socket, and silently never processed. The handler now
+   falls through and parses the remainder.
+
+The same harness drives `AGENTMOB BRIDGE DOWN` against a genuinely closed port (previously
+asserted-but-never-fired), and the pre-change path is demonstrated losing the identical reply
+rather than described as losing it.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:

@@ -1508,7 +1508,13 @@ class AgentMobAdapter(BasePlatformAdapter):
                     not retrying a TTS turn that already failed.
         """
         kind = _outbound_kind(payload)
-        if self._writer is None or self._writer.is_closing():
+        # `_connected` as well as the socket state. A TCP socket whose PEER HAS DIED still
+        # reports is_closing() == False until the EOF is processed, so a write lands in the
+        # kernel buffer and disappears — reported as SEND_SENT. Found by killing a real sidecar:
+        # the adapter already knew the bridge was down (_connected was False) while
+        # _send_to_sidecar was only asking the socket, which had not noticed yet. No fake writer
+        # could have shown this, because a fake writer is TOLD it is closed.
+        if not self._connected or self._writer is None or self._writer.is_closing():
             if kind in _OUTBOUND_DURABLE:
                 self._outbound_q.append((time.monotonic(), payload))
                 logger.warning("agentmob: bridge closed — queued %r for reconnect (%d held)",
