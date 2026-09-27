@@ -182,7 +182,34 @@ _TTS_RETRY_S = float(os.getenv("AGENTMOB_TTS_RETRY_S", "0.5"))
 _TTS_PERMANENT_ERRORS = (ImportError, ModuleNotFoundError, FileNotFoundError)
 # Outbound messages worth holding across a bridge reconnect. Text the user should see stays
 # true a second later; a status indicator or a chunk of speech does not.
+# What _send_to_sidecar actually did. Three outcomes, not two: a caller that reports success
+# to the agent needs to know the difference between "on the wire", "will arrive on reconnect"
+# and "gone". These are compared explicitly — never for truthiness, since every non-empty
+# string is truthy and "dropped" would read as success.
+SEND_SENT = "sent"
+SEND_QUEUED = "queued"
+SEND_DROPPED = "dropped"
+
 _OUTBOUND_DURABLE = frozenset({"reply", "push"})
+_OUTBOUND_EPHEMERAL_INNER = frozenset({"status", "typing"})
+
+
+def _outbound_kind(payload: dict) -> str:
+    """The kind that decides queue-vs-drop, read from the INNER envelope where it matters.
+
+    _push_status sends {"type": "push", "d": {"type": "status"}}, so classifying on the outer
+    type alone queued stale status indicators — the exact thing the selectivity exists to avoid,
+    and the opposite of what the table in docs/display-surface.md claimed. The outer type is a
+    transport frame; the inner one says what the message IS.
+    """
+    outer = str(payload.get("type") or "")
+    inner = ""
+    d = payload.get("d")
+    if isinstance(d, dict):
+        inner = str(d.get("type") or "")
+    if inner in _OUTBOUND_EPHEMERAL_INNER:
+        return inner
+    return outer
 _OUTBOUND_QUEUE_MAX = int(os.getenv("AGENTMOB_OUTBOUND_QUEUE_MAX", "32"))
 _OUTBOUND_MAX_AGE_S = float(os.getenv("AGENTMOB_OUTBOUND_MAX_AGE_S", "30"))
 
@@ -1293,11 +1320,21 @@ class AgentMobAdapter(BasePlatformAdapter):
         reply = {"type": "text", "text": text, "controls": self._default_controls()}
         if self._pending_i is not None:
             # reply to the in-flight text command (the app matches it by id)
-            self._send_to_sidecar({"type": "reply", "i": self._pending_i, "d": reply})
+            outcome = self._send_to_sidecar({"type": "reply", "i": self._pending_i, "d": reply})
             self._pending_i = None
         else:
             # audio turn has no command id -> deliver as an async push
-            self._send_to_sidecar({"type": "push", "d": reply})
+            outcome = self._send_to_sidecar({"type": "push", "d": reply})
+        # Telling Hermes the reply landed when it did not is how a turn gets closed over a
+        # reply the user never saw. Queued is fine — it will arrive — but dropped is a loss.
+        if outcome == SEND_DROPPED:
+            logger.error("AGENTMOB REPLY LOST: the agent's reply could not be delivered to the "
+                         "phone and was not queued (%d chars). The turn is being reported as "
+                         "failed rather than silently closed.", len(text or ""))
+            self._push_status(working=False)
+            self._release_turn_after_reply()
+            return SendResult(success=False, error="reply could not be delivered to the phone",
+                              message_id=secrets.token_hex(6))
         # Synthesis speech too (piper); coalesced so streaming sends speak once.
         if self._tts_voice and text:
             await self._schedule_speak(text)
@@ -1434,19 +1471,19 @@ class AgentMobAdapter(BasePlatformAdapter):
                     after the moment it belonged to, is worse than nothing. Same reasoning as
                     not retrying a TTS turn that already failed.
         """
-        kind = str(payload.get("type") or "")
+        kind = _outbound_kind(payload)
         if self._writer is None or self._writer.is_closing():
             if kind in _OUTBOUND_DURABLE:
                 self._outbound_q.append((time.monotonic(), payload))
                 logger.warning("agentmob: bridge closed — queued %r for reconnect (%d held)",
                                kind, len(self._outbound_q))
-            else:
-                logger.warning("agentmob: bridge closed — dropped %r (time-sensitive, not "
-                               "worth delivering late)", kind)
-            return False
+                return SEND_QUEUED
+            logger.warning("agentmob: bridge closed — dropped %r (time-sensitive, not "
+                           "worth delivering late)", kind)
+            return SEND_DROPPED
         try:
             self._writer.write((json.dumps(payload) + "\n").encode("utf-8"))
-            return True
+            return SEND_SENT
         except Exception as e:
             # Was debug. An outbound message failing to send is exactly as invisible as the
             # bridge-closed case, and just as consequential.
@@ -1454,7 +1491,8 @@ class AgentMobAdapter(BasePlatformAdapter):
                            kind, type(e).__name__, e)
             if kind in _OUTBOUND_DURABLE:
                 self._outbound_q.append((time.monotonic(), payload))
-            return False
+                return SEND_QUEUED
+            return SEND_DROPPED
 
     def _flush_outbound(self) -> int:
         """Deliver anything held while the bridge was down. Called on reconnect."""
@@ -1592,8 +1630,15 @@ class AgentMobAdapter(BasePlatformAdapter):
                               message_id=secrets.token_hex(6))
         for o in offences:
             logger.warning("agentmob: ui lint warn: %s: %s", o["rule"], o["message"])
-        self._send_to_sidecar({"type": "push", "d": {"type": "render", "ui": ui}})
+        outcome = self._send_to_sidecar({"type": "push", "d": {"type": "render", "ui": ui}})
         comp_types = [c.get("t") for c in ui.get("components", []) if isinstance(c, dict)]
+        if outcome == SEND_DROPPED:
+            # The agent builds on what it believes rendered (render_result feedback). Claiming
+            # a publish that never left the host poisons that loop.
+            logger.error("AGENTMOB RENDER LOST: ui publish could not be delivered (comps=%s)",
+                         comp_types)
+            return SendResult(success=False, error="render could not be delivered to the phone",
+                              message_id=secrets.token_hex(6))
         logger.info("agentmob: ui published: keys=%s comps=%s", list(ui.keys()), comp_types)
         return SendResult(success=True, message_id=secrets.token_hex(6))
 
@@ -1811,9 +1856,15 @@ class AgentMobAdapter(BasePlatformAdapter):
             err = "surface ops rejected:\n" + "\n".join(f"  - op[{i}] {msg}" for i, msg in problems)
             logger.warning("agentmob: %s", err.replace("\n", " "))
             return SendResult(success=False, error=err, message_id=secrets.token_hex(6))
-        self._send_to_sidecar({"type": "push", "d": {"type": "surface", "ops": ops}})
+        outcome = self._send_to_sidecar({"type": "push", "d": {"type": "surface", "ops": ops}})
         opkinds = sorted({o.get("op") for o in ops})
         keys = [o.get("key") for o in ops if o.get("key")]
+        if outcome == SEND_DROPPED:
+            logger.error("AGENTMOB SURFACE LOST: surface ops could not be delivered "
+                         "(ops=%s keys=%s)", opkinds, keys)
+            return SendResult(success=False,
+                              error="surface ops could not be delivered to the phone",
+                              message_id=secrets.token_hex(6))
         logger.info("agentmob: surface ops=%s keys=%s", opkinds, keys)
         return SendResult(success=True, message_id=secrets.token_hex(6))
 

@@ -603,9 +603,15 @@ selectivity is the point:
 
 | kind | on a closed bridge | why |
 |---|---|---|
-| `reply`, `push` | **queued**, flushed on reconnect | text the user should see is still true a second later |
+| `reply`, `push` (text / render / surface) | **queued**, flushed on reconnect | content the user or agent should see is still true a second later |
 | `status`, `typing` | dropped | a stale "working" indicator is worse than none |
 | `pcm` | dropped | speech arriving after the moment it belonged to is worse than silence |
+
+The kind is read from the **inner** envelope where it differs. `_push_status` sends
+`{"type": "push", "d": {"type": "status"}}`, so classifying on the outer type alone queued stale
+status indicators — precisely what this table says it does not do. The outer type is a transport
+frame; the inner one says what the message IS. Found by auditing the callers, not by reading the
+function.
 
 That last row is the same reasoning as not retrying a TTS turn that already failed. The queue is
 bounded (`AGENTMOB_OUTBOUND_QUEUE_MAX` 32, newest kept) and messages older than
@@ -613,7 +619,29 @@ bounded (`AGENTMOB_OUTBOUND_QUEUE_MAX` 32, newest kept) and messages older than
 now logged at WARNING and the message retained — it used to be `debug`, the third instance of
 that swallow.
 
-`npm run outbound-queue` — 22 assertions. Verified red: **14 fail**.
+#### Every caller, classified
+
+`_send_to_sidecar` now returns one of three outcomes — `SEND_SENT`, `SEND_QUEUED`,
+`SEND_DROPPED` — compared explicitly, never for truthiness (every non-empty string is truthy, so
+`"dropped"` would read as success). All eleven callers audited:
+
+| caller | wire kind | loss-capable? |
+|---|---|---|
+| `send` (reply / push) | text | **yes — fixed**: returned `success=True` unconditionally, closing the turn over a reply the user never saw |
+| `_publish_ui` | render | **yes — fixed**: a claimed publish that never left the host poisons the agent's `render_result` loop |
+| `_publish_surface` | surface ops | **yes — fixed**: same |
+| `_push_status` | status | no — but was wrongly *queued*; now dropped |
+| `_transcribe_and_dispatch` ×3 | STT notices | no — queued, correct |
+| `_speak` (TTS notice) | text | no — queued, correct |
+| `_speak` (pcm) | audio | no — dropped, deliberate |
+| `send_typing` | typing | no — dropped, cosmetic |
+
+A **queued** message still reports success: it will arrive, and reporting failure would be its
+own lie. Only `SEND_DROPPED` is a loss, and each of the three now logs a greppable marker
+(`AGENTMOB REPLY LOST`, `RENDER LOST`, `SURFACE LOST`) and returns `success=False`.
+
+`npm run outbound-queue` — 34 assertions. Verified red: 14 fail for the queue itself, and 9 more
+for the caller classification.
 
 ### Pinning the phone — one line, after a confirmed connection
 

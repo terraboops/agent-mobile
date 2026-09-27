@@ -139,7 +139,8 @@ a2 = make_adapter()
 w2 = FakeWriter()
 a2._writer = w2
 rc = a2._send_to_sidecar({"type": "reply", "d": {"type": "text", "text": "hello"}})
-ok("live: sent immediately", rc is True and w2.types() == ["reply"], str(w2.types()))
+ok("live: sent immediately", rc == mod.SEND_SENT and w2.types() == ["reply"],
+   f"{rc} {w2.types()}")
 ok("live: nothing was queued", len(a2._outbound_q) == 0)
 
 # ---- 4. stale messages are discarded rather than delivered late -----------------------------
@@ -182,7 +183,7 @@ a6._writer = FakeWriter(explode=True)
 rc6 = a6._send_to_sidecar({"type": "reply", "d": {"type": "text", "text": "important"}})
 logger.removeHandler(cap6)
 
-ok("write-error: returns False", rc6 is False)
+ok("write-error: reported as queued, not as sent", rc6 == mod.SEND_QUEUED, str(rc6))
 ok("write-error: the message is retained for the next connection", len(a6._outbound_q) == 1,
    str(len(a6._outbound_q)))
 ok("write-error: logged at WARNING (was debug)",
@@ -208,6 +209,138 @@ a7._writer = DiesAfterOne()
 a7._flush_outbound()
 ok("mid-flush failure: the undelivered remainder is kept", len(a7._outbound_q) >= 2,
    f"{len(a7._outbound_q)} kept — the rest were lost")
+
+
+# ---- 8. the kind that decides queue-vs-drop is the INNER one -------------------------------
+# _push_status sends {"type": "push", "d": {"type": "status"}}. Classifying on the OUTER type
+# alone queued stale status indicators — the precise thing the selectivity exists to prevent,
+# and the opposite of what the docs table claimed. Caught by auditing the callers, not the code.
+cap8 = Capture()
+logger.addHandler(cap8)
+a8 = make_adapter()
+a8._writer = None
+a8._push_status = mod.AgentMobAdapter._push_status.__get__(a8)
+a8._push_status(working=True)
+a8._push_status(heard=True)
+logger.removeHandler(cap8)
+
+held8 = [p for _, p in a8._outbound_q]
+ok("inner-kind: a status push is NOT queued despite its outer type being 'push'",
+   held8 == [], f"queued {[p.get('d', {}).get('type') for p in held8]} — stale status would be "
+                f"delivered on reconnect")
+ok("inner-kind: it is reported as dropped, not queued",
+   a8._send_to_sidecar({"type": "push", "d": {"type": "status", "working": False}})
+   == mod.SEND_DROPPED)
+ok("inner-kind: a real text push is still queued",
+   a8._send_to_sidecar({"type": "push", "d": {"type": "text", "text": "real"}})
+   == mod.SEND_QUEUED)
+ok("inner-kind: a render push is still queued (agent state, not a blinking light)",
+   a8._send_to_sidecar({"type": "push", "d": {"type": "render", "ui": {}}})
+   == mod.SEND_QUEUED)
+
+# ---- 9. the loss-capable callers must not claim success on a drop --------------------------
+# send(), _publish_ui() and _publish_surface() returned SendResult(success=True) unconditionally,
+# ignoring whether anything was actually sent. A dropped reply closed the turn over a message
+# the user never saw; a dropped render poisoned the agent's render_result feedback loop.
+cap9 = Capture()
+logger.addHandler(cap9)
+
+
+def loss_adapter():
+    a = make_adapter()
+    a._writer = None                       # bridge down
+    a._pending_i = None
+    a._tts_voice = None
+    a._default_controls = lambda: []
+    a._push_status = lambda **kw: None
+    a._release_turn_after_reply = lambda: None
+    a._drain_surface_feedback = lambda: []
+    a._surface_state = {}
+    a._surface_feedback = []
+    return a
+
+
+async def dropped_reply():
+    a = loss_adapter()
+    # force the DROP path rather than the queue, so the caller sees a real loss
+    a._send_to_sidecar = lambda payload: mod.SEND_DROPPED
+    return await mod.AgentMobAdapter.send(a, "agentmobile", "here is your answer")
+
+
+res9 = asyncio.run(dropped_reply())
+logger.removeHandler(cap9)
+
+ok("caller: send() reports FAILURE when the reply was dropped",
+   res9.success is False, f"success={res9.success} — the turn closed over a lost reply")
+ok("caller: the error says what happened", "could not be delivered" in (res9.error or ""),
+   str(res9.error))
+ok("caller: the loss is logged with a greppable marker",
+   any("AGENTMOB REPLY LOST" in m for m in cap9.at(logging.ERROR)),
+   "; ".join(cap9.at(logging.ERROR)[:1]))
+
+cap10 = Capture()
+logger.addHandler(cap10)
+
+
+async def dropped_render():
+    a = loss_adapter()
+    a._send_to_sidecar = lambda payload: mod.SEND_DROPPED
+    a._lint_ui = lambda ui: []
+    return await mod.AgentMobAdapter._publish_ui(a, "agentmobile",
+                                                 {"components": [{"t": "text", "text": "hi"}]})
+
+
+try:
+    res10 = asyncio.run(dropped_render())
+    ok("caller: _publish_ui reports FAILURE when the render was dropped",
+       res10.success is False, f"success={res10.success}")
+    ok("caller: the render loss is logged",
+       any("AGENTMOB RENDER LOST" in m for m in cap10.at(logging.ERROR)),
+       "; ".join(cap10.at(logging.ERROR)[:1]))
+except Exception as e:
+    ok("caller: _publish_ui reports FAILURE when the render was dropped", False, repr(e))
+    ok("caller: the render loss is logged", False, repr(e))
+logger.removeHandler(cap10)
+
+cap11 = Capture()
+logger.addHandler(cap11)
+
+
+async def dropped_surface():
+    a = loss_adapter()
+    a._send_to_sidecar = lambda payload: mod.SEND_DROPPED
+    # A batch that passes the op linter, so the DELIVERY path is what is under test rather
+    # than the validator (an invalid batch returns success=False for the wrong reason and the
+    # assertion would pass without the fix).
+    return await mod.AgentMobAdapter._publish_surface(
+        a, "agentmobile",
+        [{"op": "register_widget_type", "name": "tile", "code": "window.render=()=>{}"},
+         {"op": "add_widget", "key": "k1", "type": "tile"},
+         {"op": "publish", "key": "k1"}])
+
+
+try:
+    res11 = asyncio.run(dropped_surface())
+    ok("caller: _publish_surface reports FAILURE when the ops were dropped",
+       res11.success is False, f"success={res11.success}")
+    ok("caller: the surface loss is logged",
+       any("AGENTMOB SURFACE LOST" in m for m in cap11.at(logging.ERROR)),
+       "; ".join(cap11.at(logging.ERROR)[:1]))
+except Exception as e:
+    ok("caller: _publish_surface reports FAILURE when the ops were dropped", False, repr(e))
+    ok("caller: the surface loss is logged", False, repr(e))
+logger.removeHandler(cap11)
+
+# A QUEUED reply is NOT a loss — it will arrive, and reporting failure would be its own lie.
+async def queued_reply():
+    a = loss_adapter()
+    a._send_to_sidecar = lambda payload: mod.SEND_QUEUED
+    return await mod.AgentMobAdapter.send(a, "agentmobile", "deferred but fine")
+
+
+res12 = asyncio.run(queued_reply())
+ok("caller: a QUEUED reply still reports success (deferred is not lost)",
+   res12.success is True, f"success={res12.success}")
 
 print(f"\n{PASS} passed, {len(FAILS)} failed")
 sys.exit(1 if FAILS else 0)
