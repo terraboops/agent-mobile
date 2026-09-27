@@ -686,6 +686,39 @@ through the helper rather than merely shipping it. Verified red: 4 integration a
 against the original. The unit assertions stay green there because the helper is new code — the
 integration ones are what prove it is wired in.
 
+### The sidecar's inbound loop
+
+The adapter's read loop learned that a failing handler is not a broken socket. The stakes are
+higher here: the adapter rebuilds its bridge in ~110ms, but tearing down an AEAD channel costs
+the phone its whole **session** — re-handshake, new media socket, lost turn.
+
+**The teardown risk turned out not to exist.** The sidecar already kept the channel on a handler
+error; its `catch` logged and carried on. What it did instead was drop things silently:
+
+- an **unknown frame type** fell through with no `else` at all — and the phone and sidecar ship
+  separately, so a type this build does not know is a realistic drift
+- `handleCmd` returned silently on malformed JSON, even though the payload had *decrypted and
+  authenticated*, so it genuinely came from the paired phone — meaning the two sides disagree
+  about the wire format, which is worth knowing
+- every failure, from an undecodable frame to a handler bug, collapsed into one
+  `rx err <message>` with no type, no location, and no escalation
+
+Now the decode and the dispatch have separate handlers, the frame type is named, unknown types
+and malformed payloads are logged, and `RX_FAIL_ESCALATE` consecutive handler failures raise
+`RX HANDLER WEDGED` — which states that the channel is healthy and this is a handler bug, so the
+log does not point at the link.
+
+`npm run sidecar-inbound` drives a REAL sidecar with a REAL v2 handshake and throws an unknown
+frame type, a sealed frame containing garbage, structurally nonsense commands, a truncated audio
+frame and raw junk at it. The assertion that matters is not "it recovers" but that **nothing
+happened**: same socket, same channel object, no second handshake, no `phone disconnected` — and
+then a real WebRTC offer still gets a real SDP answer on the same stream. A test that only
+checked "the phone can talk again" would pass against a sidecar that dropped the connection and
+let the client reconnect, which is the outcome being ruled out.
+
+17 assertions. Verified red: 5 fail — all silent-drop assertions. The session-survival ones pass
+against the old code too, which is the honest result: that part was already right.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:

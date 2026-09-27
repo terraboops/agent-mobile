@@ -39,7 +39,8 @@
     "stt-failfast": "~/.hermes/hermes-agent/venv/bin/python test/stt-failfast.test.py",
     "tts-failfast": "~/.hermes/hermes-agent/venv/bin/python test/tts-failfast.test.py",
     "outbound-queue": "~/.hermes/hermes-agent/venv/bin/python test/outbound-queue.test.py",
-    "sidecar-wire": "node test/sidecar-wire.test.mjs"
+    "sidecar-wire": "node test/sidecar-wire.test.mjs",
+    "sidecar-inbound": "node test/sidecar-inbound.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

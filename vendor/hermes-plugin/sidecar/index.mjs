@@ -323,6 +323,9 @@ function tailnetAddresses() {
   return out;
 }
 const ICE_HOST_ADDRS = tailnetAddresses();
+// Consecutive inbound frames whose handler threw before saying so loudly. Reset by one
+// success, so an occasional bad frame stays a single line.
+const RX_FAIL_ESCALATE = Number(process.env.AGENTMOB_RX_FAIL_ESCALATE || 5);
 // How long after sending the answer to wait before declaring ICE a failure.
 const ICE_DEADLINE_MS = Number(process.env.AGENTMOB_ICE_DEADLINE_MS || 20000);
 
@@ -384,10 +387,42 @@ wss.on('connection', (ws) => {
       const { type, nonce, tag, ct } = unpack(buf);
       const ptb = conn.channel.recvBytes({ type, nonce, ct, tag }); // type is AAD; per-stream anti-replay
       if (ptb === null) { log('AEAD auth/replay FAILED'); return; }
-      if (type === T.ping) ws.send(pack(T.pong, conn.channel.send(Buffer.alloc(0), T.pong)));
-      else if (type === T.cmd) handleCmd(conn, ptb);
-      else if (type === T.audio) handleAudio(conn, ptb);
-    } catch (e) { log('rx err ' + e.message); }
+
+      // A FAILING HANDLER IS NOT A BROKEN CHANNEL — the same rule the adapter's read loop
+      // follows, and it matters more here: the adapter can rebuild its bridge in ~110ms, but
+      // tearing down an AEAD channel costs the phone its whole SESSION (re-handshake, new
+      // media socket, lost turn). So a frame the handler chokes on is dropped and the channel
+      // is kept, deliberately.
+      //
+      // The dispatch is its own try for that reason. The outer catch below stays for the
+      // handshake path above it, but it no longer doubles as a catch-all that reports every
+      // failure as an indistinguishable 'rx err'.
+      try {
+        if (type === T.ping) ws.send(pack(T.pong, conn.channel.send(Buffer.alloc(0), T.pong)));
+        else if (type === T.cmd) handleCmd(conn, ptb);
+        else if (type === T.audio) handleAudio(conn, ptb);
+        else {
+          // Previously fell through in silence. The phone and the sidecar ship separately, so
+          // a frame type this build does not know is a real way for them to drift apart.
+          log(`rx: unknown frame type ${type} (${ptb.length}b) — dropped, channel kept. `
+            + `The phone may be newer than this sidecar.`);
+        }
+        conn.rxFails = 0;
+      } catch (e) {
+        conn.rxFails = (conn.rxFails || 0) + 1;
+        const where = (e && e.stack || '').split('\n')[1] || '';
+        log(`rx handler FAILED on type ${type} (${(e && e.message) || e})${where ? ' at' + where : ''}`
+          + ` — frame dropped, channel KEPT (${conn.rxFails} in a row)`);
+        if (conn.rxFails === RX_FAIL_ESCALATE) {
+          log(`RX HANDLER WEDGED: ${conn.rxFails} consecutive frames from ${conn.clientId} `
+            + `failed to process. The phone is connected and the channel is healthy, but `
+            + `nothing it sends is getting through — this is a handler bug, not a link problem.`);
+        }
+      }
+    } catch (e) {
+      // Reached only by the handshake/decode path above; dispatch has its own handler.
+      log(`rx frame undecodable (${(e && e.message) || e}) — dropped, channel kept`);
+    }
   });
 
   ws.on('close', () => {
@@ -401,7 +436,16 @@ wss.on('connection', (ws) => {
 });
 
 function handleCmd(conn, ptb) {
-  let obj; try { obj = JSON.parse(ptb.toString('utf8')); } catch { return; }
+  let obj;
+  try {
+    obj = JSON.parse(ptb.toString('utf8'));
+  } catch (e) {
+    // Was a silent `return`. This payload decrypted and authenticated correctly, so it really
+    // came from the paired phone — malformed JSON here means the two sides disagree about the
+    // wire format, which is worth knowing and used to be invisible.
+    log(`cmd payload is not JSON (${ptb.length}b, ${(e && e.message) || e}) — dropped`);
+    return;
+  }
   const { i, d } = obj;
   // Webrtc media control (SDP/candidate) — handled here, never relayed to the
   // agent loop as a message. The native send() encodes d as a quoted string, so
