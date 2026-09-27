@@ -23,7 +23,8 @@
     "device-watch-test": "node test/device-watch.test.mjs",
     "ctrlbar-shot": "node test/audit/ctrlbar-shot.mjs",
     "ice-candidates": "node test/ice-candidates.mjs",
-    "ice-config": "node test/ice-config.test.mjs"
+    "ice-config": "node test/ice-config.test.mjs",
+    "device-verify": "node test/device-verify.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
