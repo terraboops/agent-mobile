@@ -561,6 +561,34 @@ foreign dir never touched, double-discard harmless). Verified red: **11 fail**, 
 hiccup a retry would have fixed. Confirmed live: a real utterance through `e2e-webrtc` now leaves
 zero temp directories.
 
+### TTS: the same distinction, at the other end
+
+The mirror image of the STT pass. `edge-tts` talks to a NETWORK service, so a transient failure
+is real and worth retrying; a missing module or binary is not, and no number of attempts will
+install it. `_synthesize` treated both identically — one try per engine, a generic warning, fall
+through — so a missing dependency and a network blip produced the same log and the same silence.
+
+Now `ImportError`/`ModuleNotFoundError`/`FileNotFoundError` mark that engine dead: it is **never
+tried again this session**, because rediscovering the same ImportError on every reply costs the
+fallback chain a step each time and buries the cause under identical warnings. Everything else
+retries (`AGENTMOB_TTS_ATTEMPTS` 2, `AGENTMOB_TTS_RETRY_S` 0.5) before falling through to the
+next engine, so the fallback chain still works — it is just no longer the *first* response to a
+blip.
+
+When every engine in the order is dead, `TtsUnavailable` is raised and `_speak` logs
+`AGENTMOB TTS UNAVAILABLE` and tells the user **once**: *"Voice output isn't available on the
+host, so I'll reply in text only until that's fixed."* Once, not per reply — the text reply still
+arrives, so the user needs to know voice is off rather than wonder why the phone went quiet, but
+a notice on every reply would be worse than the silence it explains.
+
+Temp files: `_synthesize_f5` already cleaned its wav in a `finally` and there were no leaks —
+that one was correct before this pass. It is now covered by a test that makes the cleanup
+actually happen.
+
+`npm run tts-failfast` — 23 assertions, the load-bearing one being that permanent and transient
+are told APART. Verified red: **13 fail**, including *"permanent tried 1x, transient tried 1x —
+they must differ"* and *"fell through instead of retrying — the retry is gone"*.
+
 ### Pinning the phone — one line, after a confirmed connection
 
 Client pinning is config-driven via `~/.hermes/config.yaml`:

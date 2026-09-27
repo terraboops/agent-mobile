@@ -79,6 +79,15 @@ def check_requirements() -> bool:
     return True
 
 
+class TtsUnavailable(RuntimeError):
+    """No TTS engine can run at all — as distinct from one synthesis that failed.
+
+    Same distinction as SttUnavailable, at the other end of the conversation: the retry loop
+    must not spin on it, the log should name it, and the user should be told their replies are
+    text-only rather than left wondering why the phone stopped talking.
+    """
+
+
 class SttUnavailable(RuntimeError):
     """STT cannot work at all — as distinct from a transcription that merely failed once.
 
@@ -166,6 +175,11 @@ _INBOUND_ERROR_ESCALATE = int(os.getenv("AGENTMOB_INBOUND_ERROR_ESCALATE", "5"))
 # and cheap because the audio is still on disk.
 _STT_ATTEMPTS = int(os.getenv("AGENTMOB_STT_ATTEMPTS", "2"))
 _STT_RETRY_S = float(os.getenv("AGENTMOB_STT_RETRY_S", "0.5"))
+# TTS mirrors STT. edge-tts talks to a network service, so a transient failure is real and worth
+# retrying; a missing module or binary is not, and no number of attempts will install it.
+_TTS_ATTEMPTS = int(os.getenv("AGENTMOB_TTS_ATTEMPTS", "2"))
+_TTS_RETRY_S = float(os.getenv("AGENTMOB_TTS_RETRY_S", "0.5"))
+_TTS_PERMANENT_ERRORS = (ImportError, ModuleNotFoundError, FileNotFoundError)
 
 _LIVE_SIDECARS: set = set()
 _REAPER_INSTALLED = False
@@ -295,6 +309,8 @@ class AgentMobAdapter(BasePlatformAdapter):
         self._sidecar_fails = 0
         self._sidecar_wedged = False
         self._sidecar_stderr = collections.deque(maxlen=6)
+        self._tts_dead: set = set()          # engines proven missing; never retried
+        self._tts_unavail_notified = False   # so the "text only" notice is said once
         self._restart_times = collections.deque()   # monotonic stamps, pruned to the window
         self._sidecar_flapping = False
         self._flap_reports = 0
@@ -1467,6 +1483,16 @@ class AgentMobAdapter(BasePlatformAdapter):
                 dur = len(pcm) / 2 / 24000
                 self._push_status(speaking=True)
                 _supervise_task(self._clear_speaking_after(dur), "clear_speaking_after")
+        except TtsUnavailable as e:
+            # Permanent. Say it once per episode: the reply still arrives as TEXT, so the user
+            # needs to know voice is off rather than wonder why the phone went quiet — but a
+            # notice on every single reply would be worse than the silence it explains.
+            logger.error("AGENTMOB TTS UNAVAILABLE: %s", e)
+            if not self._tts_unavail_notified:
+                self._tts_unavail_notified = True
+                self._send_to_sidecar({"type": "push", "d": {"type": "text", "text":
+                    "(Voice output isn't available on the host, so I'll reply in text only "
+                    "until that's fixed.)"}})
         except Exception as e:
             logger.error("agentmob: TTS failed: %s", e)
 
@@ -1814,16 +1840,52 @@ class AgentMobAdapter(BasePlatformAdapter):
             order = ("_synthesize_edge", "_synthesize_piper")
         last = None
         for i, name in enumerate(order):
-            try:
-                out = await getattr(self, name)(text)
-                if out:
-                    logger.info("agentmob: TTS ENGINE USED = %s (configured=%s, fallback=%s)",
-                                name.replace("_synthesize_", ""), self._tts_engine, i > 0)
-                    return out
-                logger.warning("agentmob: TTS engine %s returned no audio -> next", name.replace("_synthesize_", ""))
-            except Exception as e:
-                last = e
-                logger.warning("agentmob: TTS engine %s FAILED: %s", name.replace("_synthesize_", ""), e)
+            short = name.replace("_synthesize_", "")
+            # An engine already proven missing is not tried again. Re-discovering the same
+            # ImportError on every reply costs the fallback chain a step each time and buries
+            # the real cause under identical warnings.
+            if name in self._tts_dead:
+                logger.debug("agentmob: TTS engine %s skipped (known unavailable)", short)
+                continue
+            for attempt in range(1, _TTS_ATTEMPTS + 1):
+                try:
+                    out = await getattr(self, name)(text)
+                    if out:
+                        logger.info("agentmob: TTS ENGINE USED = %s (configured=%s, fallback=%s)",
+                                    short, self._tts_engine, i > 0)
+                        self._tts_unavail_notified = False
+                        return out
+                    logger.warning("agentmob: TTS engine %s returned no audio -> next", short)
+                    break
+                except _TTS_PERMANENT_ERRORS as e:
+                    # Missing module or missing binary. Retrying cannot install it, and the
+                    # next reply cannot either — so record it and move on for good.
+                    self._tts_dead.add(name)
+                    last = e
+                    logger.error(
+                        "AGENTMOB TTS ENGINE UNAVAILABLE: %s cannot run (%s: %s). It will not "
+                        "be tried again this session; retrying cannot fix a missing "
+                        "dependency.", short, type(e).__name__, e)
+                    break
+                except Exception as e:
+                    # edge-tts talks to a NETWORK service, so this is the genuinely retryable
+                    # shape — the mirror image of the permanent case above.
+                    last = e
+                    if attempt >= _TTS_ATTEMPTS:
+                        logger.warning("agentmob: TTS engine %s FAILED after %d attempt(s): %s "
+                                       "-> next engine", short, _TTS_ATTEMPTS, e)
+                        break
+                    logger.warning("agentmob: TTS engine %s attempt %d/%d failed (%s: %s) — "
+                                   "retrying, this looks transient",
+                                   short, attempt, _TTS_ATTEMPTS, type(e).__name__, e)
+                    await asyncio.sleep(_TTS_RETRY_S)
+
+        if all(n in self._tts_dead for n in order):
+            raise TtsUnavailable(
+                "no TTS engine is usable: "
+                + ", ".join(sorted(n.replace("_synthesize_", "") for n in order))
+                + " are all missing or broken. Replies will be text-only until one is "
+                  "installed; retrying cannot help.")
         if last:
             raise last
         return None
