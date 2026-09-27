@@ -345,9 +345,32 @@ periodically rather than every attempt — silence hides it, and a line every fe
 people to scroll past. A sidecar that ran a while and then died is an ordinary restart and never
 trips it, and a cancellation (shutdown) is not counted as a failed start.
 
-`npm run respawn-escalation` forces the wedge with a binary that always exits immediately
-(16 assertions, timings compressed via `AGENTMOB_RESPAWN_*`). Verified red without the change:
-6 assertions fail, including the backoff pinning at the base and zero ERROR records.
+That counter only sees a sidecar that cannot **start**. One that starts, stays up past the
+healthy threshold and then dies resets it every iteration — so an 11-second crash loop would
+warn forever and never escalate. That shape is the likelier one (binds fine, dies on the first
+real audio frame), so a second detector judges the **rate**, independent of uptime:
+`AGENTMOB_RESPAWN_WINDOW_MAX` restarts (default 6) within `AGENTMOB_RESPAWN_WINDOW_S`
+(default 600s) is flapping.
+
+    AGENTMOB SIDECAR FLAPPING: 7 restarts in the last 600s (last ran 11.2s, rc=3). It starts
+    but will not stay up, so the phone link keeps dropping. Backing off to 24s.
+    Last sidecar output: ...
+
+Backing off is the point: without it the loop keeps restarting at whatever period the crash
+happens to have. The two alarms are deliberately distinct — WEDGED means "cannot start",
+FLAPPING means "cannot stay up", and calling the second one WEDGED would be the wrong
+diagnosis. The window is sized so one genuine crash, or a handful over days, never fires it.
+
+**Unsupervised tasks.** `_connect_bridge` and friends were created with a bare
+`asyncio.create_task`, which parks any exception inside the task object and nowhere else: a
+failing bridge left the adapter holding a live sidecar it could not talk to, with an empty log.
+`_supervise_task` attaches a done-callback that logs `AGENTMOB TASK FAILED: <name> raised ...`.
+Cancellation is normal shutdown and stays quiet.
+
+`npm run respawn-escalation` covers all of it (35 assertions, timings compressed via
+`AGENTMOB_RESPAWN_*`): the instant-death wedge, the stay-up-then-die flap, a failing bridge
+task, and the discrimination case — a single genuine crash must fire NOTHING, or the rate
+window is just a wider net. Verified red without the changes: 10 assertions fail.
 
 `npm run orphan-reap` drives the REAL adapter against a throwaway port (8871/8872 — never 8123,
 and the live gateway is never touched) through all three shutdown paths: `disconnect()`, SIGTERM

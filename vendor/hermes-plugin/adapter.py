@@ -90,6 +90,13 @@ _RESPAWN_MAX_S = float(os.getenv("AGENTMOB_RESPAWN_MAX_S", "60"))
 _RESPAWN_HEALTHY_S = float(os.getenv("AGENTMOB_RESPAWN_HEALTHY_S", "10"))
 _RESPAWN_ESCALATE_AFTER = int(os.getenv("AGENTMOB_RESPAWN_ESCALATE_AFTER", "5"))
 _RESPAWN_ESCALATE_EVERY = int(os.getenv("AGENTMOB_RESPAWN_ESCALATE_EVERY", "10"))
+# Rate window. The fast-failure counter above only catches a sidecar that CANNOT START; one
+# that starts, stays up past the healthy threshold and then dies resets that counter every
+# time, so an 11-second crash loop would warn forever and never escalate. This counts restarts
+# per unit time REGARDLESS of individual uptime, which catches "cannot stay up" as well. Sized
+# so one genuine crash — or a handful over days — never trips it.
+_RESPAWN_WINDOW_S = float(os.getenv("AGENTMOB_RESPAWN_WINDOW_S", "600"))
+_RESPAWN_WINDOW_MAX = int(os.getenv("AGENTMOB_RESPAWN_WINDOW_MAX", "6"))
 
 _LIVE_SIDECARS: set = set()
 _REAPER_INSTALLED = False
@@ -165,6 +172,27 @@ def _install_reaper() -> None:
             pass
 
 
+def _supervise_task(coro, name: str):
+    """asyncio.create_task with the exception actually SURFACED.
+
+    A bare create_task swallows failures into the task object: if _connect_bridge raised, the
+    adapter sat there holding a live sidecar it could not talk to, with nothing in the log. The
+    done-callback turns that into a named ERROR. Cancellation is normal shutdown, not an error.
+    """
+    task = asyncio.ensure_future(coro)
+
+    def _done(t):
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.error("AGENTMOB TASK FAILED: %s raised %s: %s — this path is now dead until "
+                         "the sidecar restarts", name, type(exc).__name__, exc, exc_info=exc)
+
+    task.add_done_callback(_done)
+    return task
+
+
 def _track_sidecar(pid: int) -> None:
     _LIVE_SIDECARS.add(pid)
     _install_reaper()
@@ -198,6 +226,9 @@ class AgentMobAdapter(BasePlatformAdapter):
         self._sidecar_fails = 0
         self._sidecar_wedged = False
         self._sidecar_stderr = collections.deque(maxlen=6)
+        self._restart_times = collections.deque()   # monotonic stamps, pruned to the window
+        self._sidecar_flapping = False
+        self._flap_reports = 0
         # Client pinning. EMPTY means PAIRING MODE (any client accepted) and that is the
         # default on purpose: pinning a stale id locks the phone out, and the phone is the
         # way back in. Flip it in config.yaml (platforms.agentmob.extra.allowed_clients)
@@ -275,8 +306,8 @@ class AgentMobAdapter(BasePlatformAdapter):
             self._set_fatal_error("MISSING_DEP", "node or sidecar missing", retryable=False)
             return False
         if self._supervisor is None or self._supervisor.done():
-            self._supervisor = asyncio.create_task(self._run_sidecar())
-        asyncio.get_event_loop().create_task(self._await_sidecar())
+            self._supervisor = _supervise_task(self._run_sidecar(), "_run_sidecar")
+        _supervise_task(self._await_sidecar(), "_await_sidecar")
         return True
 
     async def disconnect(self):
@@ -341,8 +372,8 @@ class AgentMobAdapter(BasePlatformAdapter):
                 )
                 _track_sidecar(self._proc.pid)
                 logger.info("agentmob: sidecar pid=%s", self._proc.pid)
-                asyncio.create_task(self._pump_stderr())
-                self._dispatcher = asyncio.create_task(self._connect_bridge())
+                _supervise_task(self._pump_stderr(), "_pump_stderr")
+                self._dispatcher = _supervise_task(self._connect_bridge(), "_connect_bridge")
                 started_at = time.monotonic()
                 cancelled = False
                 try:
@@ -365,6 +396,22 @@ class AgentMobAdapter(BasePlatformAdapter):
                     # that dies immediately, every time, is a wedge — a bad node binary, a
                     # syntax error, a permanently held port. Only the second kind escalates,
                     # so a long-lived sidecar crashing once never trips the alarm.
+                    # Rate window: count this restart regardless of how long it ran. The
+                    # fast-failure counter below only sees a sidecar that cannot START; this
+                    # also sees one that cannot STAY UP, which is the likelier shape (binds
+                    # fine, then dies on the first real audio frame).
+                    now_m = time.monotonic()
+                    if not cancelled:
+                        self._restart_times.append(now_m)
+                    while self._restart_times and now_m - self._restart_times[0] > _RESPAWN_WINDOW_S:
+                        self._restart_times.popleft()
+                    in_window = len(self._restart_times)
+                    flapping = in_window >= _RESPAWN_WINDOW_MAX
+                    if not flapping and self._sidecar_flapping and in_window <= 1:
+                        logger.info("agentmob: sidecar restart rate back to normal")
+                        self._sidecar_flapping = False
+                        self._flap_reports = 0
+
                     if cancelled:
                         logger.info("agentmob: sidecar stopped after %.1fs (shutdown)", uptime)
                     elif uptime >= _RESPAWN_HEALTHY_S:
@@ -374,8 +421,9 @@ class AgentMobAdapter(BasePlatformAdapter):
                         self._sidecar_fails = 0
                         self._sidecar_wedged = False
                         delay = _RESPAWN_BASE_S
-                        logger.warning("agentmob: sidecar exited rc=%s after %.1fs — respawning",
-                                       rc, uptime)
+                        logger.warning("agentmob: sidecar exited rc=%s after %.1fs — respawning "
+                                       "(%d restart(s) in the last %.0fs)",
+                                       rc, uptime, in_window, _RESPAWN_WINDOW_S)
                     else:
                         self._sidecar_fails += 1
                         delay = min(_RESPAWN_BASE_S * (2 ** (self._sidecar_fails - 1)),
@@ -400,6 +448,26 @@ class AgentMobAdapter(BasePlatformAdapter):
                                     "connect and will not recover on its own. Retrying every "
                                     "%.0fs. Last sidecar output: %s",
                                     self._sidecar_fails, _RESPAWN_HEALTHY_S, rc, delay, tail)
+
+                    # Flapping is judged on the RATE, so it fires for the stay-up-then-die loop
+                    # that the consecutive-failure counter above resets on every iteration.
+                    # Backing off here is the point: without it the loop keeps restarting at
+                    # whatever period the crash happens to have.
+                    if flapping and not cancelled:
+                        over = in_window - _RESPAWN_WINDOW_MAX + 1
+                        flap_delay = min(_RESPAWN_BASE_S * (2 ** over), _RESPAWN_MAX_S)
+                        delay = max(delay, flap_delay)
+                        first = not self._sidecar_flapping
+                        self._sidecar_flapping = True
+                        if first or self._flap_reports % _RESPAWN_ESCALATE_EVERY == 0:
+                            tail = " | ".join(self._sidecar_stderr) or "(no stderr captured)"
+                            logger.error(
+                                "AGENTMOB SIDECAR FLAPPING: %d restarts in the last %.0fs "
+                                "(last ran %.1fs, rc=%s). It starts but will not stay up, so "
+                                "the phone link keeps dropping. Backing off to %.0fs. "
+                                "Last sidecar output: %s",
+                                in_window, _RESPAWN_WINDOW_S, uptime, rc, delay, tail)
+                        self._flap_reports += 1
                     if cancelled:
                         delay = _RESPAWN_BASE_S
             else:
@@ -534,7 +602,8 @@ class AgentMobAdapter(BasePlatformAdapter):
             self._pending_i = None
             path = evt.get("path")
             if path:
-                asyncio.create_task(self._transcribe_and_dispatch(path, bool(evt.get("lossy"))))
+                _supervise_task(self._transcribe_and_dispatch(path, bool(evt.get("lossy"))),
+                                "_transcribe_and_dispatch")
         elif etype == "interrupt":
             # Phone asked the current agent turn to stop (echo of /stop).
             await self._interrupt_active_session()
