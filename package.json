@@ -27,7 +27,8 @@
     "device-verify": "node test/device-verify.mjs",
     "adb-state": "node test/adb-state.test.mjs",
     "ux-audit": "node test/audit/ux-audit.mjs",
-    "port-in-use": "node test/port-in-use.test.mjs"
+    "port-in-use": "node test/port-in-use.test.mjs",
+    "orphan-reap": "~/.hermes/hermes-agent/venv/bin/python test/orphan-reap.test.py"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

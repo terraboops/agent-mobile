@@ -280,9 +280,12 @@ Both of the sidecar's listeners once died on an unhandled `error` event with a r
 the adapter respawned them every 3 seconds — a log full of identical stack traces saying nothing
 about the cause, at the worst possible moment.
 
-The trigger is real, not hypothetical: **stopping the gateway does not stop the sidecar.**
-`launchctl bootout gui/$(id -u)/ai.hermes.gateway` leaves the node process orphaned and still
-listening on 8123, so the next start collides with it. This was found by doing exactly that.
+The trigger was real, not hypothetical: stopping the gateway used to leave the node process
+orphaned and still listening on 8123, so the next start collided with it. This was found by
+doing exactly that.
+
+**That source defect is now fixed** (see "The adapter reaps its sidecar" below), so the guard
+below is the second line of defence rather than the only one.
 
 The two ports get different treatment, because they mean different things:
 
@@ -300,6 +303,33 @@ To clear an orphan by hand:
 it (13 assertions). It asserts on the ABSENCE of a raw unhandled error as well as the presence
 of the named message — verified red without the guard: 5 assertions fail, including
 `exit 1` instead of 69.
+
+### The adapter reaps its sidecar
+
+The adapter owns the sidecar, so it is responsible for taking it with it. It did not: any stop
+that never reached `disconnect()` — `launchctl bootout`, a hard gateway kill — left a node
+process orphaned and still holding :8123, blocking the next sidecar from binding at all.
+
+Fixed on both sides, because no single side can cover every shutdown:
+
+- **Adapter.** The sidecar is spawned with `start_new_session=True`, giving it its OWN process
+  group, and is reaped through that group (SIGTERM, then SIGKILL). The group matters: the
+  sidecar spawns ffmpeg and the STT/TTS helpers, and a bare `terminate()` reached only the node
+  process. Every spawn is tracked, with an `atexit` + SIGTERM/SIGINT/SIGHUP backstop for the
+  paths that skip `disconnect()`. Signalling is own-group only, so it can never reach the
+  gateway or its siblings.
+- **Sidecar.** A SIGKILL of the gateway cannot be intercepted by the adapter at all, so the
+  sidecar also watches from its side: when its parent dies it is reparented to init, and on
+  seeing `ppid === 1` it exits 0 rather than sit on the port. `AGENTMOB_NO_PARENT_WATCH=1`
+  opts out when running it by hand from a shell you mean to close.
+
+`npm run orphan-reap` drives the REAL adapter against a throwaway port (8871/8872 — never 8123,
+and the live gateway is never touched) through all three shutdown paths: `disconnect()`, SIGTERM
+to the host, and SIGKILL to the host. 10 assertions, including that the reaper leaves bystander
+processes alone.
+
+Both halves are load-bearing, verified by disabling each: without the watchdog the SIGKILL case
+fails (2 assertions); without the adapter's tracking the SIGTERM case fails too (4).
 
 ### Pinning the phone — one line, after a confirmed connection
 
