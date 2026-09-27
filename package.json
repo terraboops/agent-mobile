@@ -20,7 +20,8 @@
     "e2e-webrtc": "node test/e2e-webrtc.mjs",
     "ctrlbar-geometry": "node test/ctrlbar-geometry.test.mjs",
     "device-watch": "node test/device-watch.mjs",
-    "device-watch-test": "node test/device-watch.test.mjs"
+    "device-watch-test": "node test/device-watch.test.mjs",
+    "ctrlbar-shot": "node test/audit/ctrlbar-shot.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
