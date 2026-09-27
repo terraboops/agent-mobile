@@ -30,6 +30,13 @@ public class MainActivity extends BridgeActivity {
     private android.widget.ImageView micButton;   // NATIVE mic/mute control (issue #1), bound to the plugin
     private volatile boolean micOnState;
 
+    /* Bottom-bar geometry, shared with the webview's #ctrlbar CSS. These two numbers and the
+     * matching CSS in www/index.html are ONE layout contract split across two engines, so
+     * test/ctrlbar-geometry.test.mjs parses both sides and fails if they drift apart.
+     * MIC_BOTTOM_GAP_DP is measured from the top of the navigation bar, never the screen edge. */
+    static final int MIC_SIZE_DP = 72;
+    static final int MIC_BOTTOM_GAP_DP = 26;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(AgentChannelPlugin.class);
@@ -116,12 +123,30 @@ public class MainActivity extends BridgeActivity {
         b.setClickable(true);
         b.setFocusable(true);
         micButton = b;
-        int sz = dp(72);
+        int sz = dp(MIC_SIZE_DP);
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(sz, sz,
             Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        lp.bottomMargin = dp(26);
+        lp.bottomMargin = dp(MIC_BOTTOM_GAP_DP);   // refined below once insets arrive
         try {
             ((FrameLayout) findViewById(android.R.id.content)).addView(b, lp);
+            // targetSdk 36 FORCES edge-to-edge: android.R.id.content spans the whole screen,
+            // navigation bar included. A raw dp() bottom margin therefore parks the mic's
+            // lower third inside the gesture strip, where a swipe-up belongs to the system and
+            // the tap never reaches us — and it drifts off the webview's Stop button, which
+            // does honour the inset via env(safe-area-inset-bottom). Both sides must read the
+            // SAME inset or they cannot stay aligned; this listener is that shared source.
+            androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(b, (view, insets) -> {
+                int navBottom = insets
+                    .getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                    .bottom;
+                FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) view.getLayoutParams();
+                int want = dp(MIC_BOTTOM_GAP_DP) + navBottom;
+                if (p.bottomMargin != want) {
+                    p.bottomMargin = want;
+                    view.setLayoutParams(p);
+                }
+                return insets;
+            });
         } catch (Exception e) {
             android.util.Log.e("MainActivity", "mic button add: " + e);
         }

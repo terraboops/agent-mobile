@@ -79,8 +79,11 @@
   body::after { content:''; position: fixed; inset: 0; z-index: 2; pointer-events: none;
      background: repeating-linear-gradient(180deg, var(--scan) 0 1px, transparent 1px 3px); opacity: .55; }
   * { box-sizing: border-box; }
-  /* Reserve the band the fixed #ctrlbar occupies, so scrolled content ends above it. */
-  body { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+  /* Reserve the band the fixed #ctrlbar occupies, so scrolled content ends above it.
+     106px clears the NATIVE mic button too (MIC_BOTTOM_GAP_DP 26 + MIC_SIZE_DP 72 = 98
+     above the nav bar, + 8 of breathing room) — it is drawn over the webview by
+     MainActivity, so CSS cannot see it and must reserve its band by agreement. */
+  body { padding-bottom: calc(106px + env(safe-area-inset-bottom)); }
   body { margin: 0; font: 15px/1.5 var(--sans); background: var(--surface); color: var(--ink);
          background-image:
            radial-gradient(1200px 480px at 50% -8%, rgba(34,211,238,.06), transparent 60%),
@@ -243,7 +246,11 @@
      web Stop button to the right so they sit side by side without overlapping. */
   #ctrlbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
              display: flex; align-items: center; gap: 22px; justify-content: flex-end;
-             padding: 10px 18px calc(16px + env(safe-area-inset-bottom)) 108px;
+             /* 38px, not 16px: centres the 48px-tall Stop on the NATIVE mic button, whose
+                centre sits MIC_BOTTOM_GAP_DP + MIC_SIZE_DP/2 = 62dp above the nav bar
+                (62 - 48/2 = 38). Both sides add env(safe-area-inset-bottom) so the pair
+                stays aligned; see MainActivity.installMicButton. */
+             padding: 10px 18px calc(38px + env(safe-area-inset-bottom)) 108px;
              background: linear-gradient(transparent, var(--surface) 42%); }
   /* The mic/mute control is now a NATIVE Android button (issue #1) — hide the web ring so
      the native one is the single source of truth and cannot wedge/drift. */
