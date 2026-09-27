@@ -89,9 +89,34 @@ const waitForLog = async (off, re, ms) => {
   return null;
 };
 
+let cleaned = false;
+/** Stop the adb server. Idempotent, because several exit paths may reach it. */
+const stopAdb = () => {
+  if (cleaned || DRY || !ADB) return;
+  cleaned = true;
+  try { execFileSync(ADB, ['kill-server'], { stdio: 'ignore' }); } catch {}
+};
+
+/* A lingering adb server leaves Terra with repeated "Allow debugging?" prompts on the phone,
+ * so the cleanup cannot depend on reaching the end of the script. Before these handlers, any
+ * throw in a later stage — or a kill of a backgrounded run — skipped finish() entirely and left
+ * the server up. That already happened once: stopping an armed run needed a manual
+ * `adb kill-server` afterwards. Crashing loudly is fine; crashing dirty is not. */
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => { console.log(`\n${sig} — stopping adb before exit.`); stopAdb(); process.exit(130); });
+}
+process.on('uncaughtException', (e) => {
+  console.error('\nUNCAUGHT: ' + (e && e.stack || e));
+  stopAdb(); process.exit(70);
+});
+process.on('unhandledRejection', (e) => {
+  console.error('\nUNHANDLED REJECTION: ' + (e && e.stack || e));
+  stopAdb(); process.exit(70);
+});
+process.on('exit', stopAdb);   // last resort for any path not covered above
+
 const finish = (code) => {
-  /* Non-negotiable: never leave an adb server running. */
-  if (!DRY && ADB) { try { execFileSync(ADB, ['kill-server'], { stdio: 'ignore' }); } catch {} }
+  stopAdb();
   console.log('\nadb server stopped.');
   const path = join(OUT, 'device-verify.json');
   writeFileSync(path, JSON.stringify({ generated: new Date().toISOString(), dryRun: DRY, report }, null, 2));
