@@ -89,6 +89,20 @@ agent-mobile/
 The Hermes side lives in the `agentmob` gateway plugin: `adapter.py` (TTS/STT, component
 publishing, session control) and a Node `sidecar` (the encrypted WS + UDP transport edge).
 
+> **Running the sidecar by hand.** The adapter normally spawns and owns it. Started yourself, it
+> **exits as soon as its parent process goes away** — it watches for being reparented to init, so
+> that a killed gateway cannot leave an orphan holding port 8123. Backgrounding it and closing
+> the terminal will therefore kill it. For a long-lived manual run, opt out and use spare ports:
+>
+> ```sh
+> AGENTMOB_NO_PARENT_WATCH=1 AGENTMOB_PORT=8899 AGENTMOB_SIDECAR_PORT=8898 \
+>   node ~/.hermes/plugins/agentmob/sidecar/index.mjs
+> ```
+>
+> The ctl port variable is `AGENTMOB_SIDECAR_PORT`, **not** `AGENTMOB_CTL_PORT`. The full env
+> list is in the sidecar's file header; behaviour is documented in
+> [docs/display-surface.md](docs/display-surface.md).
+
 ## Status
 
 Active prototype. Voice transport, AEAD security, and the component surface are working

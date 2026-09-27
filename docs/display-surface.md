@@ -321,7 +321,33 @@ Fixed on both sides, because no single side can cover every shutdown:
 - **Sidecar.** A SIGKILL of the gateway cannot be intercepted by the adapter at all, so the
   sidecar also watches from its side: when its parent dies it is reparented to init, and on
   seeing `ppid === 1` it exits 0 rather than sit on the port. `AGENTMOB_NO_PARENT_WATCH=1`
-  opts out when running it by hand from a shell you mean to close.
+  opts out when running it by hand from a shell you mean to close — this is called out in the
+  README and in the sidecar's own file header, since it surprises you at the moment you run it,
+  not at the moment you read the docs.
+
+### The respawn loop escalates instead of wedging quietly
+
+The adapter retried a dead sidecar every 3s forever, logging one identical line each time. A
+sidecar that could never start — bad node binary, syntax error, permanently held port — produced
+exactly the same log as a healthy supervisor doing its job, so a completely broken phone link
+read as "supervised and healthy".
+
+Now: consecutive FAST failures (dying in under `AGENTMOB_RESPAWN_HEALTHY_S`, default 10s) back
+off exponentially from 3s to a 60s cap, each line naming the attempt number and the next delay.
+After `AGENTMOB_RESPAWN_ESCALATE_AFTER` (default 5) it logs at ERROR with a greppable marker:
+
+    AGENTMOB SIDECAR WEDGED: 5 consecutive failed starts, each dying in under 10s (last rc=1).
+    The phone cannot connect and will not recover on its own. Retrying every 48s.
+    Last sidecar output: [sidecar] FATAL: port 8123 is already in use ...
+
+It carries the sidecar's own last output, so the log says WHY and not only THAT, and repeats
+periodically rather than every attempt — silence hides it, and a line every few seconds trains
+people to scroll past. A sidecar that ran a while and then died is an ordinary restart and never
+trips it, and a cancellation (shutdown) is not counted as a failed start.
+
+`npm run respawn-escalation` forces the wedge with a binary that always exits immediately
+(16 assertions, timings compressed via `AGENTMOB_RESPAWN_*`). Verified red without the change:
+6 assertions fail, including the backoff pinning at the base and zero ERROR records.
 
 `npm run orphan-reap` drives the REAL adapter against a throwaway port (8871/8872 — never 8123,
 and the live gateway is never touched) through all three shutdown paths: `disconnect()`, SIGTERM

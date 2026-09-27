@@ -28,7 +28,8 @@
     "adb-state": "node test/adb-state.test.mjs",
     "ux-audit": "node test/audit/ux-audit.mjs",
     "port-in-use": "node test/port-in-use.test.mjs",
-    "orphan-reap": "~/.hermes/hermes-agent/venv/bin/python test/orphan-reap.test.py"
+    "orphan-reap": "~/.hermes/hermes-agent/venv/bin/python test/orphan-reap.test.py",
+    "respawn-escalation": "~/.hermes/hermes-agent/venv/bin/python test/respawn-escalation.test.py"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
