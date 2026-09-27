@@ -250,7 +250,15 @@
                 centre sits MIC_BOTTOM_GAP_DP + MIC_SIZE_DP/2 = 62dp above the nav bar
                 (62 - 48/2 = 38). Both sides add env(safe-area-inset-bottom) so the pair
                 stays aligned; see MainActivity.installMicButton. */
-             padding: 10px 18px calc(38px + env(safe-area-inset-bottom)) 108px;
+             /* padding-left RESERVES the native mic's centred footprint so right-aligned
+                content can never reach it: 50% is the screen centre, +36 clears the
+                MIC_SIZE_DP/2 radius, +12 is the gap. Overlap becomes structurally
+                impossible at ANY width — the old flat 108px only avoided it by luck of
+                the Pixel's 412dp, and collided at 320dp with a large font scale.
+                container-type makes the CONTENT box queryable below, which is exactly
+                the space left for Stop once the mic band is reserved. */
+             container-type: inline-size;
+             padding: 10px 18px calc(38px + env(safe-area-inset-bottom)) calc(50% + 48px);
              background: linear-gradient(transparent, var(--surface) 42%); }
   /* The mic/mute control is now a NATIVE Android button (issue #1) — hide the web ring so
      the native one is the single source of truth and cannot wedge/drift. */
@@ -267,12 +275,23 @@
                      50% { box-shadow: 0 0 0 22px rgba(34,211,238,0); } }
   /* Stop is SECONDARY (mic is the primary control) — quiet chrome, compact, never
      the loudest thing on screen. Danger colour only on press. */
-  #ctl-stop { flex: 0 0 auto; width: auto; min-width: 92px; max-width: 132px; min-height: 48px; padding: 12px 16px;
+  /* flex 0 1: Stop SHRINKS instead of overflowing its content box, and overflow:hidden keeps
+     a shrunk label inside the button. min-width keeps a 48dp tap target at every size. The
+     @container rule below drops the label before it clips, but an old WebView (minSdk is 24)
+     ignores @container — so the no-overlap guarantee deliberately rests on the reserved
+     padding-left and this shrink, NOT on the query. Worst case there is a clipped word, never
+     a control drawn on top of the mic. */
+  #ctl-stop { flex: 0 1 auto; width: auto; min-width: 48px; max-width: 132px; min-height: 48px;
+              padding: 12px 16px; overflow: hidden; white-space: nowrap;
               border: 1px solid var(--hairline); border-radius: var(--r-lg);
               font: 600 14px var(--display); letter-spacing: .04em; color: var(--muted);
               background: var(--panel); display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
   #ctl-stop:active { color: var(--danger); border-color: rgba(255,92,92,.5); background: rgba(255,92,92,.14); }
-  #ctl-stop .icon { width: 16px; height: 16px; }
+  #ctl-stop .icon { width: 16px; height: 16px; flex: none; }
+  /* Below ~96px of free space the word cannot render without clipping mid-stroke, so drop to
+     the icon alone rather than showing a sliced glyph. The button keeps its 48dp target and
+     its accessible name comes from the title/aria-label, not the visible text. */
+  @container (max-width: 96px) { #ctl-stop .lbl { display: none; } }
 
   /* Agent voice indicator — a floating "default example widget" shown while the
      agent is speaking. Sits above the content; NOT interactive with the mic.
@@ -402,7 +421,7 @@
   </div>
   <div id="ctrlbar">
     <button id="mic-ring" class="muted" title="tap to mute / unmute mic"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6"/></svg></button>
-    <button id="ctl-stop" title="stop the agent"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>Stop</button>
+    <button id="ctl-stop" title="stop the agent" aria-label="Stop the agent"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span class="lbl">Stop</span></button>
   </div>
   <div id="boot">
     <div class="box">

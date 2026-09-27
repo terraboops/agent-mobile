@@ -143,6 +143,47 @@ for (const inset of INSETS) {
   await ctx.close();
 }
 
+/* --- the horizontal invariant, across widths AND Android font scales -------------------- *
+ * The mic is CENTRED and Stop is right-aligned and grows with the system font scale, so the
+ * clearance between them shrinks on narrow screens. Before #ctrlbar reserved the mic's band,
+ * 320dp at scale 1.6 overlapped by 9.5dp — and the people who set a large font are exactly the
+ * ones who can least afford a mis-tap between Stop and the mic. 412dp alone never showed it. */
+const WIDTHS = [320, 360, 393, 412, 480];   // 320 covers split-screen / small phones
+const SCALES = [1, 1.3, 1.6, 2.0];          // Android font size, default .. largest
+const MIN_GAP = 8;
+
+console.log('\n--- horizontal clearance across widths x font scales ---');
+for (const w of WIDTHS) {
+  for (const scale of SCALES) {
+    const ctx = await browser.newContext({ viewport: { width: w, height: 800 },
+      deviceScaleFactor: 2, isMobile: true });
+    const page = await ctx.newPage();
+    await page.goto('file://' + join(ROOT, 'www/index.html'));
+    await page.evaluate((s) => {
+      document.documentElement.style.fontSize = (16 * s) + 'px';
+      document.querySelector('#ctl-stop').style.fontSize = (14 * s) + 'px';
+    }, scale);
+    await page.waitForTimeout(120);
+    const r = await page.evaluate(() => {
+      const e = document.querySelector('#ctl-stop');
+      const b = e.getBoundingClientRect();
+      const lbl = document.querySelector('#ctl-stop .lbl');
+      return { x: b.x, w: b.width, h: b.height,
+               labelShown: !!lbl && getComputedStyle(lbl).display !== 'none',
+               name: e.getAttribute('aria-label') || e.getAttribute('title') || '' };
+    });
+    const gap = r.x - (w + MIC_SIZE) / 2;
+    const tag = `${w}dp @ font x${scale}`;
+    ok(`${tag}: Stop clears the mic by >= ${MIN_GAP}dp`, gap >= MIN_GAP, `gap ${gap.toFixed(1)}dp`);
+    ok(`${tag}: Stop keeps a ${MIN_TAP}dp tap target`, r.w >= MIN_TAP && r.h >= MIN_TAP,
+      `${r.w.toFixed(1)}x${r.h.toFixed(1)}`);
+    /* When the label is dropped for space the control must still announce itself. */
+    ok(`${tag}: Stop is still named when the label is hidden`,
+      r.labelShown || /stop/i.test(r.name), `label=${r.labelShown} name="${r.name}"`);
+    await ctx.close();
+  }
+}
+
 await browser.close();
 
 console.log(`\n${pass} passed, ${fails.length} failed`);
