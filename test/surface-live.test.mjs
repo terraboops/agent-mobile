@@ -41,9 +41,29 @@ const CANARY = `http://127.0.0.1:${canary.address().port}`;
 
 const browser = await chromium.launch();
 const context = await browser.newContext();
+/* Record what the boundary refuses, do not just silently abort.
+ *
+ * This aborted every non-app URL and kept no record, which made the egress assertion at the end
+ * of this file unfalsifiable twice over: nothing in the page ever TRIED to reach the canary, and
+ * even if it had, Playwright would have aborted it before the socket. "0 canary hits" was
+ * therefore guaranteed by the harness rather than by containment, and it read as proof.
+ *
+ * Keeping the refused URLs turns the abort into evidence: it says an attempt was made and where
+ * it was headed. */
+const refusedExternal = [];
 await context.route('**/*', (route) => {
   const u = route.request().url();
   if (u.startsWith(APP)) return route.continue();
+  /* The CANARY is allowed THROUGH on purpose.
+   *
+   * Aborting it here made the egress assertion unfalsifiable: no matter how broken containment
+   * became, Playwright refused the request before the socket and the canary stayed at zero. The
+   * harness was proving itself. Letting canary traffic reach the loopback server means an escape
+   * actually LANDS and is counted — which is the only way "0 hits" can be evidence.
+   *
+   * Everything else stays aborted: this is a test fixture, not an open door. */
+  if (u.startsWith(CANARY)) return route.continue();
+  refusedExternal.push(u);
   return route.abort();
 });
 const page = await context.newPage();
@@ -207,6 +227,16 @@ await push({ type: 'surface', ops: [
       + 'try{var f=document.createElement("iframe");document.body.appendChild(f);o.nested=typeof f.contentWindow.RTCPeerConnection;}catch(e){o.nested="blocked";}'
       + 'try{var g=document.createElement("iframe");g.srcdoc="<b>x</b>";document.body.appendChild(g);o.srcdoc=g.isConnected?"attached":"removed";}catch(e){o.srcdoc="blocked";}'
       + 'try{document.body.attachShadow({mode:"closed"});o.shadow="allowed";}catch(e){o.shadow="blocked";}'
+      /* EGRESS ATTEMPTS. Without these the canary assertion below tested nothing: a widget that
+         never reaches for the network cannot demonstrate that the network is closed to it. The
+         URL is INTERPOLATED because a sandboxed opaque-origin frame cannot read the parent's
+         window.__CANARY — which is how the original version managed to look convincing while
+         handing the frame nothing at all. */
+      + 'var C=' + JSON.stringify(CANARY) + ';'
+      + 'try{fetch(C+"/w-fetch").then(function(){o.fetch="LANDED";},function(er){o.fetch="refused:"+String(er&&er.message).slice(0,40);});o.fetch="tried";}catch(e){o.fetch="threw:"+String(e&&e.message).slice(0,40);}'
+      + 'try{var xh=new XMLHttpRequest();xh.open("GET",C+"/w-xhr");xh.send();o.xhr="tried";}catch(e){o.xhr="threw";}'
+      + 'try{var im=new Image();im.onerror=function(){};im.src=C+"/w-img";o.img="tried";}catch(e){o.img="threw";}'
+      + 'try{new WebSocket(C.replace("http","ws")+"/w-ws");o.ws="tried";}catch(e){o.ws="threw";}'
       + 'setTimeout(function(){o.srcdocLater=document.querySelectorAll("iframe").length;r.textContent=JSON.stringify(o);},120);};',
     assets: [] },
   { op: 'add_widget', key: 'evil1', type: 'evil', props: {} },
@@ -223,9 +253,59 @@ ok(evil.shadow === 'blocked', 'sandbox: attachShadow disabled (frames cannot hid
 ok(evil.srcdocLater === 0, 'sandbox: nested frames are purged (child-src none + observer)');
 await push({ type: 'surface', ops: [{ op: 'remove_widget', key: 'evil1' }] });
 
-// ---- 8. Egress-free proof --------------------------------------------------------------
-await page.waitForTimeout(150);
-ok(canaryHits === 0, 'NO egress: reachable canary received 0 requests from surface');
+// ---- 8. Egress-free proof ----------------------------------------------------------------
+// Three claims, because the single one this replaced could not fail:
+//   (a) the canary COUNTS  — otherwise zero means nothing
+//   (b) the widget TRIED   — otherwise zero means nobody reached for the network
+//   (c) nothing LANDED     — the actual guarantee
+await page.waitForTimeout(400);
+
+/* (a) positive control, out-of-band: if containment holds, nothing in the page can hit the
+ * canary, so proving it counts has to come from here. Reset afterwards so the probe is not
+ * mistaken for egress. */
+{
+  const before = canaryHits;
+  const probed = await new Promise((resolve) => {
+    http.get(`${CANARY}/__positive_control`, (res) => { res.resume(); res.on('end', () => resolve(true)); })
+      .on('error', () => resolve(false));
+  });
+  ok(probed, 'egress canary answered a direct request (it is actually listening)');
+  ok(canaryHits === before + 1,
+    'egress canary COUNTS a request that reaches it — so a zero below is a measurement');
+  canaryHits = 0;
+}
+
+/* (b) the widget genuinely reached for the network. Its own report says it issued the calls; the
+ * boundary log says where they were headed. Either alone could be fooled — the widget could
+ * report "tried" while throwing, or a stray request could come from elsewhere in the page. */
+ok(['fetch', 'xhr', 'img', 'ws'].every((k) => typeof evil[k] === 'string' && evil[k] !== 'untried'),
+  'the hostile widget attempted egress on every API it has',
+  JSON.stringify({ fetch: evil.fetch, xhr: evil.xhr, img: evil.img, ws: evil.ws })
+  + ' — an API reporting nothing means the call was never issued, and a canary that nobody '
+  + 'reached for proves nothing');
+/* Where they were stopped is informational, not the claim. Measured: the sandbox CSP
+ * (connect-src 'none') refuses them IN-PAGE, so they never reach the network layer at all and
+ * Playwright's route never sees them. Blocked earlier than expected is still blocked — what
+ * must not happen is a request ARRIVING, and the canary is now reachable so one would. */
+console.log(`  boundary refusals: ${refusedExternal.length}`
+  + ` | widget egress verdicts: ${JSON.stringify({ fetch: evil.fetch, xhr: evil.xhr, img: evil.img, ws: evil.ws })}`);
+
+/* (c) and nothing arrived.
+ *
+ * HOW FAR THIS ONE IS FALSIFIABLE, measured rather than claimed. (a) and (b) are: breaking the
+ * canary counter fails (a), and a widget that stops reaching for the network fails (b). For (c)
+ * I tried to make a request LAND by loosening connect-src in the page CSP and in the sandbox
+ * preamble, together and separately — the fetch stayed "Failed to fetch" and the canary stayed
+ * at zero. The block is below CSP: the widget frames are sandbox="allow-scripts" with no
+ * allow-same-origin, so they run at an opaque origin, and that is enforced by the browser rather
+ * than by anything this repo can switch off.
+ *
+ * So (c) is a backstop I could not demonstrate failing, and it is labelled as one instead of
+ * being presented as the proof. The load-bearing egress proof lives in containment.test.mjs,
+ * where the attack bundle runs in the PAGE (not an opaque-origin frame), reaches the network
+ * layer for real, and is refused there — with its own canary positive control. */
+ok(canaryHits === 0, 'NO egress: the canary received 0 requests from the surface (backstop)',
+  `${canaryHits} request(s) landed — sandboxed widget code reached the network`);
 ok(await page.evaluate(() => typeof window.__surfaceState === 'function'), 'surface host still alive after all ops');
 
 await browser.close();

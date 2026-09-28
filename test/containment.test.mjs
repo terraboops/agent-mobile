@@ -102,6 +102,39 @@ await page.evaluate((s) => window.__pushAgentMessage(s), renderReply);
 
 // ---- agent pushes its (malicious) code through the channel; shell injects it -
 const scriptReply = await roundtrip({ type: 'script' });
+/* ---- POSITIVE CONTROL: prove the canary would NOTICE a hit ---------------------------------
+ * The assertion below is "zero bytes reached the canary", and it is called the load-bearing
+ * proof. But zero is also what you get from a canary that never bound, a port that moved, or a
+ * handler that stopped counting — and every one of those failures reads as perfect containment.
+ * An unfalsifiable security assertion is worse than none, because it is trusted.
+ *
+ * So hit it out-of-band first and require the counter to move. Out-of-band on purpose: if the
+ * containment works, nothing INSIDE the page can reach it, so the control has to come from here.
+ * It proves the server is listening, the URL is right, and the handler counts — after which a
+ * zero from the page means something.
+ *
+ * IT RUNS BEFORE THE ATTACK BUNDLE, and that ordering is the whole correctness of it. I first
+ * placed this after the attacks and reset the counter there — which ERASED any hit the attacks
+ * had actually landed, turning the load-bearing egress assertion into one that could never fail.
+ * The mutation harness caught it at once: deleting the egress-blocking CSP went from CAUGHT to
+ * MISSED. A "control" that destroys the evidence it was added to protect is worse than none. */
+{
+  const before = canaryHits.length;
+  const probe = await new Promise((resolve) => {
+    http.get(`${CANARY}/__positive_control`, (res) => { res.resume(); res.on('end', () => resolve(true)); })
+      .on('error', () => resolve(false));
+  });
+  ok(probe, 'the canary answered a direct request (it is actually listening)');
+  ok(canaryHits.length === before + 1,
+    'the canary COUNTS a request that reaches it — so a zero below is a measurement',
+    `hits went ${before} -> ${canaryHits.length}; if the counter does not move, "0 requests" `
+    + 'below proves nothing and the containment claim is unfalsifiable');
+  ok(canaryHits.includes('/__positive_control'),
+    'the canary records WHAT it received, so an unexpected hit can be identified',
+    JSON.stringify(canaryHits));
+  canaryHits.length = 0;   // discard the control; only page-originated hits count below
+}
+
 const source = JSON.parse(scriptReply).source;
 await page.evaluate((src) => {
   const el = document.createElement('script');
@@ -126,6 +159,16 @@ for (const k of ['fetch', 'img', 'ws', 'webrtc']) {
 }
 console.log('        (informational, not asserted here) storage:', JSON.stringify(attacks.storage), 'open:', JSON.stringify(attacks.open),
   '— DOM storage is app-local by design; popups/navigation are refused natively (EgressWebViewClient + no multiple windows), which a desktop browser cannot model.');
+
+/* The attack bundle must actually AIM at this canary.
+ *
+ * The gateway builds the malicious bundle with the canary as its attacker origin
+ * (startGateway(0, CANARY)). If that wiring ever broke, the bundle would fire at some other
+ * host, land nowhere, and report perfect containment — the same silent zero as a dead canary,
+ * from the opposite direction. The source is right here, so check it rather than assume it. */
+ok(typeof source === 'string' && source.includes(CANARY),
+  'the attack bundle aims at the live canary',
+  `the bundle does not mention ${CANARY} — attacks aimed elsewhere cannot prove containment`);
 
 // Layer-2 (no egress): the load-bearing proof. The bundle fires xhr/sendBeacon/
 // fetch/img at a LIVE canary. Whether CSP stops them before the network layer
