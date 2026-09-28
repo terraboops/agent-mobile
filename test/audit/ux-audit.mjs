@@ -73,6 +73,27 @@ const AUDIT = () => {
   const vp=document.querySelector('meta[name=viewport]')?.content||''; if(/user-scalable=no|maximum-scale=1/.test(vp)) out.issues.push({sev:'high',cat:'a11y',el:'meta viewport',msg:'pinch-zoom disabled'});
   // 9. horizontal overflow
   if(document.documentElement.scrollWidth>document.documentElement.clientWidth+1) out.issues.push({sev:'high',cat:'layout',el:'body',msg:`horizontal overflow ${document.documentElement.scrollWidth}>${document.documentElement.clientWidth}`});
+  // ---- did anything actually RENDER? -------------------------------------------------------
+  // Every check above hunts for elements WITH a problem, so a page showing nothing at all has
+  // no problems and scores a perfect sheet. Verified: setting the whole UI to
+  // visibility:hidden produced "21 states, 0 issues, exit 0" — a completely invisible app
+  // passing an audit whose entire purpose is to look at it. A blank render is the most severe
+  // UI defect there is and it was the one state that could not be reported.
+  const visibleEls = [...document.querySelectorAll('body *')].filter(vis);
+  const visibleText = visibleEls
+    .map((el) => (el.children.length === 0 ? (el.textContent || '') : ''))
+    .join(' ').replace(/\s+/g, ' ').trim();
+  out.stats.visibleEls = visibleEls.length;
+  out.stats.visibleTextLen = visibleText.length;
+  // Thresholds measured, not guessed. Across all 21 real states the minimum visible text is 6
+  // chars (the sparse idle/landscape screens); an all-hidden page gives 0. Element COUNT does
+  // not separate them — hiding the UI still leaves the background canvas visible, so the blank
+  // page reaches 10 elements against the sparsest real state's 11. Text is the clean signal.
+  if (visibleText.length < 4) {
+    out.issues.push({ sev: 'high', cat: 'blank-render', el: 'body',
+      msg: `${visibleEls.length} visible element(s) and ${visibleText.length} chars of visible `
+         + `text — the page rendered nothing readable` });
+  }
   return out;
 };
 

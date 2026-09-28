@@ -39,6 +39,21 @@ const WSF = join(REPO, 'transport/wsframes.js');
 
 const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 
+/** Reload the gateway so a mutated sidecar/adapter is the one actually running. */
+function restartGateway() {
+  try {
+    execFileSync('launchctl', ['kickstart', '-k', `gui/${process.getuid()}/ai.hermes.gateway`],
+      { stdio: 'ignore' });
+  } catch { /* not running under launchd here */ }
+  const deadline = Date.now() + 90000;
+  while (Date.now() < deadline) {
+    const r = spawnSync('lsof', ['-nP', '-iTCP:8123', '-sTCP:LISTEN'], { encoding: 'utf8' });
+    if ((r.stdout || '').includes('LISTEN')) { spawnSync('sleep', ['6']); return true; }
+    spawnSync('sleep', ['2']);
+  }
+  return false;
+}
+
 /** suite -> the one edit that removes the behaviour it claims to test.
  *
  * The first batch covered the suites written during this sweep. The second covers the ones that
@@ -111,6 +126,26 @@ const MUTANTS = [
   { suite: 'aead-trigger', file: DV, why: 'the working trigger',
     from: 'const trig = await typedTurn({ text: TRIGGER });',
     to: 'const trig = { ok: true, error: null }; void typedTurn;' },
+
+  /* ---- the four that sat outside the table ------------------------------------------------
+   * ux-audit gates 21 rendered states; the e2e harnesses need a live gateway, which makes them
+   * awkward to mutate, not exempt from it. */
+
+  { suite: 'ux-audit', file: INDEX, why: 'noticing that the page rendered nothing',
+    from: '</head>',
+    to: '<style>#ui,#surface,#badge,#ctrlbar{visibility:hidden!important}</style>\n</head>' },
+
+  { suite: 'e2e-webrtc', file: SC, restart: true, why: 'answering the phone\'s WebRTC offer',
+    from: "      ack({ webrtc: { rtype: 'answer', sdp: ans.sdp } });",
+    to: "      ack({ webrtc: { rtype: 'answer' } });" },
+
+  { suite: 'e2e-interrupt', file: SC, restart: true, why: 'cutting the reply short on interrupt',
+    from: '        if (tok.cancelled || !target.webrtc || !target.webrtc.connected) {',
+    to: '        if (false) {' },
+
+  { suite: 'e2e-voice', file: AD, restart: true, why: 'dispatching the transcript to the agent',
+    from: '            await self.dispatch_text(text)',
+    to: '            pass  # dispatch removed' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
@@ -206,10 +241,15 @@ try {
      * harness that cannot guarantee the mutation took effect is worse than none, since its
      * false MISSES send you auditing tests that are fine. */
     try { rmSync(join(dirname(m.file), '__pycache__'), { recursive: true, force: true }); } catch {}
+    /* The sidecar and adapter are RUNNING processes. Editing their source changes nothing until
+     * the gateway reloads them, so an e2e mutation without this restart would test the
+     * unmutated code and record a false MISS — the live-process equivalent of stale bytecode. */
+    if (m.restart) restartGateway();
     const r = spawnSync('npm', ['run', '-s', m.suite],
-      { cwd: REPO, encoding: 'utf8', timeout: 600000,
+      { cwd: REPO, encoding: 'utf8', timeout: 900000,
         env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
     writeFileSync(m.file, original);
+    if (m.restart) restartGateway();
     const failed = r.status !== 0;
     const n = (r.stdout || '').match(/(\d+) (?:passed|failed)/g) || [];
     results.push({ ...m, verdict: failed ? 'CAUGHT' : 'MISSED', note: n.join(' ') });
