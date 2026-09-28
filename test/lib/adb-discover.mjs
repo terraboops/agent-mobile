@@ -174,18 +174,36 @@ export async function discover({ host, hosts, runMdns, scan, ranges = DEFAULT_SC
   }
 
   /* mDNS is link-local, so a remote phone is invisible to it. That is not an error. */
-  log(`no mDNS service (expected when the phone is remote — mDNS does not cross Tailscale); `
-    + `scanning ${targets.join(', ')}`);
+  log('no mDNS service (expected when the phone is remote — mDNS does not cross Tailscale)');
   tried.push('scan');
   const scanned = {};
+  let didScan = false;
   for (const h of targets) {
+    /* A scan callback may return null to mean "SKIPPED, not empty".
+     *
+     * device-verify sweeps on a slower cadence than it polls mDNS, so most passes deliberately do
+     * not scan. This used to log "scanning <ip>" before calling, and "nothing open on <ip>"
+     * after — on every pass, including the ones where no packet was sent. An armed run therefore
+     * printed a thousand lines claiming sweeps it never performed, and "nothing open" is a
+     * MEASUREMENT: reporting one that was never taken is the same defect as any other check that
+     * says it did something it did not.
+     *
+     * null and [] are different answers and the log now distinguishes them. */
     const open = await scan(h, ranges);
+    if (open === null || open === undefined) {
+      scanned[h] = null;
+      log(`sweep of ${h} skipped this pass (slower cadence — mDNS is still being polled)`);
+      continue;
+    }
+    didScan = true;
     scanned[h] = open;
+    log(`scanned ${h}`);
     if (open.length) {
       log(`found an open port at ${h}:${open[0]}`);
       return { endpoint: `${h}:${open[0]}`, via: 'scan', tried, services, open, scanned };
     }
     log(`nothing open on ${h}`);
   }
-  return { endpoint: null, via: 'none', tried, services, open: [], scanned };
+  if (!didScan) tried[tried.indexOf('scan')] = 'scan-skipped';
+  return { endpoint: null, via: 'none', tried, services, open: [], scanned, didScan };
 }

@@ -306,9 +306,12 @@ if (DRY) {
         hosts: peer.lan ? [peer.lan, PHONE_HOST] : [PHONE_HOST],
         runMdns: async () => adb(['mdns', 'services'],
           { timeout: Math.max(1000, Math.min(20000, remaining())) }).stdout,
+        /* null, not [] — "skipped" and "swept and found nothing" are different facts, and
+         * returning [] made discover() log a sweep and a negative result for a pass that never
+         * sent a packet. */
         scan: (h, ranges) => doScan
           ? scanPorts(h, ranges, { concurrency: 500, timeoutMs: 2000, signal: deadlineSignal() })
-          : Promise.resolve([]),
+          : Promise.resolve(null),
         log: (m) => console.log(`  [discover] ${m}`),
       });
       if (found.endpoint) {

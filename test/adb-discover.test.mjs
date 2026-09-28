@@ -225,6 +225,61 @@ ok('refused and timeout are not conflated',
   ok('sweeping stops at the first host that answers', seen.join(',') === 'a', seen.join(','));
 }
 
+/* ---- a skipped sweep must not be logged as a performed one ---------------------------------
+ * device-verify polls mDNS often and sweeps rarely, so most passes deliberately send no packets.
+ * discover() logged "scanning <ip>" before the call and "nothing open on <ip>" after, on EVERY
+ * pass — so an armed run printed a thousand claims of sweeps it never ran. "nothing open" is a
+ * measurement; reporting one that was never taken is the same defect as any other check that
+ * says it did something it did not.
+ *
+ * null now means SKIPPED and [] means swept-and-empty, and the log tells them apart. */
+{
+  const lines = [];
+  const res = await discover({
+    hosts: ['10.0.0.1', '10.0.0.2'],
+    runMdns: async () => '',
+    scan: async () => null,                      // every host skipped
+    ranges: [[1, 1]],
+    log: (m) => lines.push(m),
+  });
+  ok('a skipped pass does not log "scanned <host>"', !lines.some((l) => /^scanned /.test(l)),
+    lines.join(' | '));
+  ok('a skipped pass does not report "nothing open" — a measurement nobody took',
+    !lines.some((l) => /nothing open/.test(l)), lines.join(' | '));
+  ok('each skipped host says so explicitly',
+    lines.filter((l) => /skipped this pass/.test(l)).length === 2, lines.join(' | '));
+  ok('the result records that no sweep happened', res.didScan === false);
+  ok('skipped hosts are recorded as null, not as an empty result',
+    res.scanned['10.0.0.1'] === null && res.scanned['10.0.0.2'] === null);
+  ok('the tried list does not claim a scan was attempted',
+    res.tried.includes('scan-skipped') && !res.tried.includes('scan'), res.tried.join(','));
+}
+{
+  const lines = [];
+  const res = await discover({
+    hosts: ['10.0.0.1'], runMdns: async () => '',
+    scan: async () => [],                        // genuinely swept, found nothing
+    ranges: [[1, 1]], log: (m) => lines.push(m),
+  });
+  ok('a real sweep that finds nothing still reports it',
+    lines.some((l) => /nothing open on 10\.0\.0\.1/.test(l)), lines.join(' | '));
+  ok('the result records that a sweep did happen', res.didScan === true);
+  ok('a swept host records an array, not null', Array.isArray(res.scanned['10.0.0.1']));
+}
+{
+  /* Mixed: first host skipped, second swept and found something. */
+  const lines = [];
+  let n = 0;
+  const res = await discover({
+    hosts: ['a', 'b'], runMdns: async () => '',
+    scan: async () => (n++ === 0 ? null : [5555]),
+    ranges: [[1, 1]], log: (m) => lines.push(m),
+  });
+  ok('a skipped host does not prevent a later host from being found',
+    res.endpoint === 'b:5555', String(res.endpoint));
+  ok('mixed results are recorded per host', res.scanned.a === null && Array.isArray(res.scanned.b));
+}
+
 console.log(`\n${pass} passed, ${fails.length} failed`);
 if (fails.length) process.exit(1);
 console.log('ALL PASS');
