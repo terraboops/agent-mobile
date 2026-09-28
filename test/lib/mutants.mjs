@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 export const REPO = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const AD = join(homedir(), '.hermes/plugins/agentmob/adapter.py');
 const SC = join(homedir(), '.hermes/plugins/agentmob/sidecar/index.mjs');
+const WRTC = join(homedir(), '.hermes/plugins/agentmob/sidecar/webrtc-media.mjs');
 const DV = join(REPO, 'test/device-verify.mjs');
 const VF = join(REPO, 'test/lib/vendor-files.mjs');
 const AS = join(REPO, 'test/lib/adb-state.mjs');
@@ -160,6 +161,35 @@ export const MUTANTS = [
   { suite: 'gateway-scope', file: GS, why: 'the refusal to kickstart the live gateway label',
     from: '  if (label.includes(LIVE_LABEL)) {',
     to: '  if (false) {' },
+
+  /* MEASURED, not assumed. My first entry here forced the downlink stamp to a hardcoded 96,
+     expecting it to be fatal at PT 111. It came back MISSED, so I ran it by hand: with
+     `const pt = 96` in place, the wire still carried PT 111. werift's sender RE-STAMPS the
+     payload type from the negotiated codec, so the RtpHeader payloadType the sidecar passes is
+     inert. The only live effect of that `pt` value is the `if (!pt) return false` guard — i.e.
+     whether a frame is sent at all, not what number it carries.
+     
+     Consequence worth stating: the sidecar has NO payload-type-specific logic, so no mutation
+     can be caught at 111 and missed at 96. The 111 suite earns its place by exercising the whole
+     path (negotiate -> SRTP uplink -> whisper -> agent -> TTS -> RTP downlink) at the number
+     Android actually uses, which nothing had ever done — not by isolating PT-specific code that
+     does not exist.
+     
+     So this entry targets what the media path really guarantees: TTS leaves over SRTP rather
+     than falling back to the WebSocket. `ready` false sends every reply down the fallback, which
+     the suite fails on twice (no downlink RTP, and ws frames > 0). */
+  { suite: 'e2e-webrtc-pt111', file: WRTC, restart: true,
+    why: 'the RTP downlink being used at all instead of the WebSocket fallback',
+    from: '    get ready() { return this.connected && !!this.opusPT; }',
+    to: '    get ready() { return false; }' },
+
+  /* The answer must carry the offerer's payload-type mapping back unchanged. Renumbering it —
+     here by rewriting opus to 96 on the way out — leaves a well-formed answer that negotiates a
+     codec the phone never offered. */
+  { suite: 'webrtc-pt', file: SC, restart: true,
+    why: 'returning the answer SDP unmodified, with the offerer\'s payload types intact',
+    from: "      ack({ webrtc: { rtype: 'answer', sdp: ans.sdp } });",
+    to: "      ack({ webrtc: { rtype: 'answer', sdp: ans.sdp.replace(/a=rtpmap:\\d+ opus/gi, 'a=rtpmap:96 opus') } });" },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

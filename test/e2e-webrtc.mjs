@@ -12,7 +12,8 @@
 //   agent TTS -> sidecar writeReply -> RTP on OUR receiver (downlink proof)
 //
 // Needs the gateway up. Usage: npm run e2e-webrtc ["utterance"]
-import { RTCPeerConnection, MediaStreamTrack, RtpPacket, RtpHeader } from 'werift';
+import { RTCPeerConnection, MediaStreamTrack, RtpPacket, RtpHeader,
+         RTCRtpCodecParameters } from 'werift';
 import { AgentStream } from '../transport/ws-client.mjs';
 import { unpack, T } from '../transport/wsframes.js';
 import { execFileSync } from 'node:child_process';
@@ -67,7 +68,25 @@ await s.connect();
 ok(true, 'AEAD control channel up');
 
 // ---- 3. the phone's PeerConnection: offer with a real mic track --------------
-const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+/* AGENTMOB_OPUS_PT pins the opus payload type this client OFFERS.
+ *
+ * Unset, werift picks its default (96) — which is the only value this suite, or any other in the
+ * repo, had ever exercised. Android's libwebrtc offers 111, and the note that "only the device
+ * settles it" was half wrong: the sidecar's handling of the NUMBER is testable here. Running the
+ * whole flow at 111 makes the `downlinkPT === opusPT` assertion below do the real work — the
+ * phone decodes by payload type, so a sidecar that answers 111 and stamps 96 is silence with
+ * every state reading "connected".
+ *
+ * It does not make this Android. See test/webrtc-pt.test.mjs for what that does and does not
+ * buy. */
+const PIN_PT = process.env.AGENTMOB_OPUS_PT ? Number(process.env.AGENTMOB_OPUS_PT) : null;
+if (PIN_PT) console.log(`offering opus at payload type ${PIN_PT} (Android's libwebrtc uses 111)`);
+const pc = new RTCPeerConnection({
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  ...(PIN_PT ? { codecs: { audio: [new RTCRtpCodecParameters({
+    mimeType: 'audio/opus', clockRate: 48000, channels: 2, payloadType: PIN_PT,
+  })] } } : {}),
+});
 const micTrack = new MediaStreamTrack({ kind: 'audio' });
 const micSender = await pc.addTrack(micTrack);
 
@@ -155,9 +174,20 @@ ok(wsAudioFrames === 0,
   `downlink did NOT fall back to the WebSocket (ws audio frames: ${wsAudioFrames})`,
   wsAudioFrames ? 'sidecar still considered webrtc not-ready' : '');
 /* downlinkPT was printed inside the message above and never checked. The payload type the
- * sidecar SENDS must be the one that was negotiated, or the phone receives RTP it cannot
- * decode — audible as silence with a healthy-looking packet count, which every other
- * assertion here would pass. */
+ * phone decodes by is the negotiated one, so a downlink stamped with anything else is silence
+ * with the connection state reading "connected".
+ *
+ * WHO ACTUALLY GUARANTEES THIS, measured rather than assumed. The sidecar passes a payloadType
+ * into the RtpHeader it builds, so this looks like a test of sidecar logic. It is not: forcing
+ * that value to a hardcoded 96 and running this suite at PT 111 produced PT 111 on the wire
+ * anyway, because werift's sender re-stamps from the negotiated codec. The sidecar's number is
+ * inert; its only live effect is the `if (!pt) return false` guard on whether to send at all.
+ *
+ * So this assertion checks that negotiation and media agree END TO END — which is worth
+ * checking, and is what breaks if the answer and the sender ever disagree — but it is not
+ * evidence that any sidecar code chose the number. Recorded here so the next person does not
+ * re-derive it from a green tick, and so nobody writes a PT-specific mutation expecting it to
+ * bite: there is no PT-specific code for it to bite. */
 ok(Number(downlinkPT) === Number(opusPT),
   `downlink RTP carries the negotiated payload type (${downlinkPT} === ${opusPT})`,
   `sent PT ${downlinkPT} but negotiated ${opusPT} — the phone would decode nothing`);
