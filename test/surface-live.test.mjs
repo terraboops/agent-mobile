@@ -73,6 +73,29 @@ await page.goto(APP, { waitUntil: 'networkidle' });
 await page.waitForFunction(() => typeof window.__surfaceState === 'function', null, { timeout: 8000 });
 
 async function push(obj) { await page.evaluate((s) => window.__pushAgentMessage(s), JSON.stringify(obj)); }
+
+/* POSITIVE CONTROL, and it runs BEFORE any widget — which is the whole correctness of it.
+ *
+ * I first placed this after the hostile widget had already fired and reset the counter there,
+ * which ERASED any hit the widget had landed. That is the identical mistake I had found and
+ * fixed in containment.test.mjs hours earlier, reproduced here from the same instinct: put the
+ * control next to the assertion it supports. The mutation harness caught it — loosening BOTH
+ * CSPs left the suite green, reported MISSED.
+ *
+ * If containment holds, nothing in the page can reach the canary, so proving it counts has to
+ * come from out-of-band. Reset afterwards so the probe is not mistaken for egress. */
+{
+  const before = canaryHits;
+  const probed = await new Promise((resolve) => {
+    http.get(`${CANARY}/__positive_control`, (res) => { res.resume(); res.on('end', () => resolve(true)); })
+      .on('error', () => resolve(false));
+  });
+  ok(probed, 'egress canary answered a direct request (it is actually listening)');
+  ok(canaryHits === before + 1,
+    'egress canary COUNTS a request that reaches it — so a zero below is a measurement');
+  canaryHits = 0;
+}
+
 const widgetCount = () => page.evaluate(() => document.querySelectorAll('#surface .swidget').length);
 const keys = () => page.evaluate(() => [...document.querySelectorAll('#surface .swidget')].map(n => n.dataset.key));
 const sandboxText = (key) => page.evaluate(async (k) => {
@@ -260,21 +283,6 @@ await push({ type: 'surface', ops: [{ op: 'remove_widget', key: 'evil1' }] });
 //   (c) nothing LANDED     — the actual guarantee
 await page.waitForTimeout(400);
 
-/* (a) positive control, out-of-band: if containment holds, nothing in the page can hit the
- * canary, so proving it counts has to come from here. Reset afterwards so the probe is not
- * mistaken for egress. */
-{
-  const before = canaryHits;
-  const probed = await new Promise((resolve) => {
-    http.get(`${CANARY}/__positive_control`, (res) => { res.resume(); res.on('end', () => resolve(true)); })
-      .on('error', () => resolve(false));
-  });
-  ok(probed, 'egress canary answered a direct request (it is actually listening)');
-  ok(canaryHits === before + 1,
-    'egress canary COUNTS a request that reaches it — so a zero below is a measurement');
-  canaryHits = 0;
-}
-
 /* (b) the widget genuinely reached for the network. Its own report says it issued the calls; the
  * boundary log says where they were headed. Either alone could be fooled — the widget could
  * report "tried" while throwing, or a stray request could come from elsewhere in the page. */
@@ -290,21 +298,27 @@ ok(['fetch', 'xhr', 'img', 'ws'].every((k) => typeof evil[k] === 'string' && evi
 console.log(`  boundary refusals: ${refusedExternal.length}`
   + ` | widget egress verdicts: ${JSON.stringify({ fetch: evil.fetch, xhr: evil.xhr, img: evil.img, ws: evil.ws })}`);
 
-/* (c) and nothing arrived.
+/* (c) and nothing arrived — and this IS falsifiable, which I previously said it was not.
  *
- * HOW FAR THIS ONE IS FALSIFIABLE, measured rather than claimed. (a) and (b) are: breaking the
- * canary counter fails (a), and a widget that stops reaching for the network fails (b). For (c)
- * I tried to make a request LAND by loosening connect-src in the page CSP and in the sandbox
- * preamble, together and separately — the fetch stayed "Failed to fetch" and the canary stayed
- * at zero. The block is below CSP: the widget frames are sandbox="allow-scripts" with no
- * allow-same-origin, so they run at an opaque origin, and that is enforced by the browser rather
- * than by anything this repo can switch off.
+ * I had labelled this a backstop after loosening connect-src and watching the widget's fetch
+ * still report "Failed to fetch". That reasoning was wrong: the widget frame runs at an opaque
+ * origin, so it sends `Origin: null`, and the canary's 204 carries no CORS headers — the
+ * RESPONSE is blocked and the promise rejects EVEN WHEN THE REQUEST WAS SENT AND ARRIVED. The
+ * widget's own verdict is therefore worthless as evidence in both directions, which is precisely
+ * why the canary counts bytes instead of trusting it.
  *
- * So (c) is a backstop I could not demonstrate failing, and it is labelled as one instead of
- * being presented as the proof. The load-bearing egress proof lives in containment.test.mjs,
- * where the attack bundle runs in the PAGE (not an opaque-origin frame), reaches the network
- * layer for real, and is refused there — with its own canary positive control. */
-ok(canaryHits === 0, 'NO egress: the canary received 0 requests from the surface (backstop)',
+ * Measured, with the same probe widget, changing only the CSP:
+ *     connect-src 'none'  ->  canary hits 0
+ *     connect-src *       ->  canary hits 2
+ * and in BOTH runs the widget reported {"same":"refused:Failed to fetch",
+ * "cross":"refused:Failed to fetch"}. The instrument that moves is the canary.
+ *
+ * Worth recording what else that probe showed: with connect-src 'none' a widget cannot fetch
+ * even its OWN origin. Widget code has no network at all, not merely no egress.
+ *
+ * Guarded by a mutation entry on the sandbox preamble's connect-src, so this cannot quietly
+ * revert to the unfalsifiable version it was this morning. */
+ok(canaryHits === 0, 'NO egress: the canary received 0 requests from the surface',
   `${canaryHits} request(s) landed — sandboxed widget code reached the network`);
 ok(await page.evaluate(() => typeof window.__surfaceState === 'function'), 'surface host still alive after all ops');
 

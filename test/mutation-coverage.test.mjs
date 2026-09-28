@@ -49,6 +49,10 @@ const UTILITIES = {
   'mutation-coverage': 'this gate itself; mutating it would only test the test',
 };
 
+/* An entry may carry several edits (defence in depth needs them — see mutants.mjs). Normalise
+ * once so every check below reads one shape. */
+const editsOf = (m) => (Array.isArray(m.edits) && m.edits.length ? m.edits
+                                                                 : [{ file: m.file, from: m.from, to: m.to }]);
 const covered = new Set(MUTANTS.map((m) => m.suite));
 const all = Object.keys(scripts);
 
@@ -85,7 +89,8 @@ for (const [name, reason] of Object.entries(UTILITIES)) {
 }
 
 /* ---- 5. table entries are well-formed ----------------------------------------------------- */
-const malformed = MUTANTS.filter((m) => !m.suite || !m.file || !m.from || m.to === undefined || !m.why);
+const malformed = MUTANTS.filter((m) => !m.suite || !m.why
+  || editsOf(m).some((e) => !e.file || !e.from || e.to === undefined));
 ok('every table entry names a suite, file, mutation and reason', malformed.length === 0,
   malformed.map((m) => m.suite || '(unnamed)').join(', '));
 
@@ -102,7 +107,7 @@ ok('every table entry names a suite, file, mutation and reason', malformed.lengt
 const seen = new Map();
 const sameEdit = [];
 for (const m of MUTANTS) {
-  const key = `${m.file}::${m.from}::${m.to}`;
+  const key = editsOf(m).map((e) => `${e.file}::${e.from}::${e.to}`).sort().join('||');
   if (seen.has(key)) sameEdit.push(`${seen.get(key)} & ${m.suite}`); else seen.set(key, m.suite);
 }
 ok('no two entries make the identical edit', sameEdit.length === 0, sameEdit.join(', '));
@@ -112,7 +117,8 @@ ok('no two entries make the identical edit', sameEdit.length === 0, sameEdit.joi
 const perSuite = {};
 for (const m of MUTANTS) (perSuite[m.suite] = perSuite[m.suite] || []).push(m);
 const samePlace = Object.entries(perSuite)
-  .filter(([, ms]) => ms.length > 1 && new Set(ms.map((m) => `${m.file}::${m.from}`)).size !== ms.length)
+  .filter(([, ms]) => ms.length > 1
+    && new Set(ms.map((m) => editsOf(m).map((e) => `${e.file}::${e.from}`).sort().join('||'))).size !== ms.length)
   .map(([s]) => s);
 ok('a suite with several entries mutates a different place each time', samePlace.length === 0,
   samePlace.join(', '));
@@ -126,12 +132,20 @@ ok('a suite with several entries mutates a different place each time', samePlace
   const cosmetic = [];
   const inapplicable = [];
   for (const m of MUTANTS) {
-    if (!existsSync(m.file)) continue;
-    const before = readFileSync(m.file, 'utf8');
-    if (!before.includes(m.from)) { inapplicable.push(m.suite); continue; }
-    const after = before.replace(m.from, m.to);
-    const lang = langOf(m.file);
-    if (codeOnly(before, lang) === codeOnly(after, lang)) cosmetic.push(m.suite);
+    const edits = editsOf(m);
+    if (edits.some((e) => !existsSync(e.file))) continue;
+    if (edits.some((e) => !readFileSync(e.file, 'utf8').includes(e.from))) {
+      inapplicable.push(m.suite); continue;
+    }
+    /* An entry is cosmetic only if EVERY one of its edits is. One real edit makes the mutation
+     * real, even if a sibling edit only touches a comment. */
+    const allCosmetic = edits.every((e) => {
+      const before = readFileSync(e.file, 'utf8');
+      const after = before.replace(e.from, e.to);
+      const lang = langOf(e.file);
+      return codeOnly(before, lang) === codeOnly(after, lang);
+    });
+    if (allCosmetic) cosmetic.push(m.suite);
   }
   ok('every mutation alters executable code, not a comment or whitespace',
     cosmetic.length === 0,

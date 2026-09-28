@@ -288,6 +288,23 @@ export const MUTANTS = [
     from: "    + 'var N=[\"RTCPeerConnection\",",
     to: "    + 'var N=[\"__NothingStripped\",\"RTCPeerConnection_disabled\"," },
 
+  /* surface-live #3 — the egress block, which takes TWO edits because it is defence in depth.
+     The widget frame is subject to the page's CSP (inherited through srcdoc) AND the sandbox
+     preamble's meta CSP, and the most restrictive wins. Measured with a probe widget, changing
+     only the CSP: preamble only -> 0 canary hits, page only -> 0, BOTH -> 2. In every one of
+     those runs the widget's own fetch reported "Failed to fetch", because its opaque origin
+     blocks the RESPONSE even when the request was sent and arrived — which is exactly why the
+     canary counts bytes and the widget's verdict is ignored.
+     A single-edit entry MISSED here, and the wrong lesson would have been "unguardable". */
+  { suite: 'surface-live',
+    why: 'the two CSPs that together stop widget code reaching the network',
+    edits: [
+      { file: BRIDGE, from: "connect-src \\'none\\'", to: 'connect-src *' },
+      { file: INDEX,
+        from: "               connect-src 'none'; webrtc 'block';",
+        to: "               connect-src *; webrtc 'block';" },
+    ] },
+
   /* adb-discover #2 — its first entry covers mDNS + scan discovery; this covers reading the
      peer's LAN address out of tailscale status, which is what stopped a reachable handset being
      reported as "powered off" when our own sweep drowned the probe. */

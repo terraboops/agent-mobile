@@ -47,7 +47,20 @@ export
 const only = process.argv[2];
 const chosen = only ? MUTANTS.filter((m) => m.suite.includes(only)) : MUTANTS;
 
-const touched = [...new Set(chosen.map((m) => m.file))];
+/* An entry is ONE conceptual mutation, but it may need SEVERAL edits.
+ *
+ * Defence in depth breaks a single-edit harness. surface-live's egress guarantee is enforced by
+ * TWO independent CSPs — the page's (inherited by the srcdoc frame) and the sandbox preamble's —
+ * and the most restrictive wins, so loosening either alone changes nothing. Measured: preamble
+ * only -> 0 canary hits; page only -> 0; BOTH -> 2. A harness that can only edit one file per
+ * entry therefore reports MISSED on a property that is perfectly falsifiable, and the obvious
+ * (wrong) reaction is to delete the entry and call the claim unguardable.
+ *
+ * `edits: [{file, from, to}, ...]` says "make all of these, then run the suite". The legacy
+ * {file, from, to} shape is normalised into a single-edit list so nothing else has to change. */
+const editsOf = (m) => (Array.isArray(m.edits) && m.edits.length ? m.edits
+                                                                 : [{ file: m.file, from: m.from, to: m.to }]);
+const touched = [...new Set(chosen.flatMap((m) => editsOf(m).map((e) => e.file)))];
 const backups = new Map();
 for (const f of touched) {
   if (!existsSync(f)) continue;
@@ -69,7 +82,10 @@ const results = [];
 let scopedUp = null;
 try {
   for (const m of chosen) {
-    if (!existsSync(m.file)) { results.push({ ...m, verdict: 'skip', note: 'file missing' }); continue; }
+    const edits = editsOf(m);
+    if (edits.some((e) => !existsSync(e.file))) {
+      results.push({ ...m, verdict: 'skip', note: 'file missing' }); continue;
+    }
     /* adapter.py is imported INTO the gateway process, so reloading it means restarting that
      * process. The live one is not ours to restart — so these run against a SCOPED instance with
      * its own HERMES_HOME, ports and plugin copy (test/lib/scoped-gateway.mjs). The file mutated
@@ -88,19 +104,24 @@ try {
       console.log(`  [scoped] up; live gateway pid ${livePidBefore} (must be unchanged at the end)`);
     }
 
-    const original = readFileSync(m.file, 'utf8');
-    if (!original.includes(m.from)) {
-      results.push({ ...m, verdict: 'STALE', note: 'the mutation target no longer exists' });
+    const originals = edits.map((e) => ({ ...e, src: readFileSync(e.file, 'utf8') }));
+    const stale = originals.filter((o) => !o.src.includes(o.from));
+    if (stale.length) {
+      results.push({ ...m, verdict: 'STALE',
+        note: `the mutation target no longer exists in ${stale.map((o) => o.file.split('/').pop()).join(', ')}` });
       continue;
     }
-    writeFileSync(m.file, original.replace(m.from, m.to));
+    for (const o of originals) writeFileSync(o.file, o.src.replace(o.from, o.to));
+    const restoreEdits = () => { for (const o of originals) { try { writeFileSync(o.file, o.src); } catch {} } };
     /* Purge the bytecode cache. Python will happily load a __pycache__ .pyc compiled from the
      * UNMUTATED source, so the mutation silently does nothing and the suite is recorded as
      * MISSED — which is what happened to tts-failfast: it was CAUGHT when run alone and MISSED
      * in sequence, because an earlier iteration had left a cached adapter behind. A mutation
      * harness that cannot guarantee the mutation took effect is worse than none, since its
      * false MISSES send you auditing tests that are fine. */
-    try { rmSync(join(dirname(m.file), '__pycache__'), { recursive: true, force: true }); } catch {}
+    for (const e of edits) {
+      try { rmSync(join(dirname(e.file), '__pycache__'), { recursive: true, force: true }); } catch {}
+    }
     /* The sidecar and adapter are RUNNING processes. Editing their source changes nothing until
      * the gateway reloads them, so an e2e mutation without this restart would test the
      * unmutated code and record a false MISS — the live-process equivalent of stale bytecode. */
@@ -110,7 +131,7 @@ try {
       stopScoped({});
       const again = startScoped({});
       if (!again.ok) {
-        writeFileSync(m.file, original);
+        restoreEdits();
         results.push({ ...m, verdict: 'BLOCKED', note: `scoped restart failed: ${again.note}` });
         console.log(`  BLOCKED ${m.suite.padEnd(24)} scoped restart failed: ${again.note}`);
         continue;
@@ -121,7 +142,7 @@ try {
         /* A reload that did not happen means the suite would run against UNMUTATED code and be
          * recorded as MISSED — a false negative that sends you auditing a test that is fine.
          * Say so instead. */
-        writeFileSync(m.file, original);
+        restoreEdits();
         results.push({ ...m, verdict: 'BLOCKED', note: `sidecar reload failed: ${rl.note}` });
         console.log(`  BLOCKED ${m.suite.padEnd(24)} sidecar reload failed: ${rl.note}`);
         continue;
@@ -131,7 +152,7 @@ try {
       { cwd: REPO, encoding: 'utf8', timeout: 900000,
         env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1',
                ...(m.scope === 'gateway' ? { AGENTMOB_WS_URL: SCOPED_WS_URL } : {}) } });
-    writeFileSync(m.file, original);
+    restoreEdits();
     if (m.scope === 'gateway') { stopScoped({}); startScoped({}); }
     else if (m.restart) reloadSidecar();
     const failed = r.status !== 0;
