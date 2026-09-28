@@ -171,18 +171,16 @@ if (clean) {
 }
 
 const blocked = results.filter((r) => r.verdict === 'BLOCKED');
-const precondition = results.filter((r) => r.verdict === 'PRECONDITION');
 const missed = results.filter((r) => r.verdict === 'MISSED');
 const stale = results.filter((r) => r.verdict === 'STALE');
 const caught = results.filter((r) => r.verdict === 'CAUGHT');
 console.log(`\n${caught.length} caught, ${missed.length} MISSED, ${stale.length} stale, `
-  + `${blocked.length} blocked, ${precondition.length} not run, of ${results.length}`);
-for (const r of precondition) console.log(`  NOT RUN: ${r.note}`);
+  + `${blocked.length} blocked, of ${results.length}`);
 for (const r of blocked) console.log(`  BLOCKED: ${r.suite} — ${r.note}`);
 for (const r of missed) console.log(`  MISSED: ${r.suite} — passed with "${r.why}" deleted; it is asserting on scaffolding`);
 for (const r of stale) console.log(`  STALE : ${r.suite} — ${r.note}`);
-/* A PRECONDITION is missing coverage, not a pass. It does not fail the run — the mutation was
- * never attempted, so there is no verdict to fail on — but it is printed every time so it cannot
- * quietly become the status quo. BLOCKED does fail: it means the harness could not guarantee the
- * mutation took effect. */
+/* BLOCKED fails the run: it means the harness could not guarantee the mutation took effect, and a
+ * mutation that may not have applied produces a MISSED that sends you auditing a test that is
+ * fine. There is deliberately no softer "not run" verdict any more — the scoped instance removed
+ * the case that needed one, and a verdict nothing can emit is scaffolding. */
 process.exit(!clean || livePidMoved || missed.length || stale.length || blocked.length ? 1 : 0);

@@ -20,8 +20,9 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertKickstartAllowed, LIVE_LABEL, KICKSTART_OPT_IN, needsScopedGateway,
-         sidecarPids, scopedGatewayPrecondition } from './lib/gateway-scope.mjs';
+import { assertKickstartAllowed, LIVE_LABEL, KICKSTART_OPT_IN, sidecarPids }
+  from './lib/gateway-scope.mjs';
+import { MUTANTS } from './lib/mutants.mjs';
 import { codeOnly } from './lib/code-only.mjs';
 import { assertNotLiveHome, assertScopedSafe, writeScopedEnv, SCOPED_HOME, SCOPED_PORT,
          SCOPED_SIDECAR_PORT, LIVE_HOME, PROFILES_ROOT } from './lib/scoped-gateway.mjs';
@@ -115,17 +116,46 @@ ok('no test file executes launchctl', offenders.length === 0,
     'the run must fail if production restarted, not merely print that it did');
 }
 
-/* ---- 4. the replacement mechanisms are wired to the right files ---------------------------- */
-ok('adapter.py is classified as needing a scoped gateway',
-  needsScopedGateway('/Users/x/.hermes/plugins/agentmob/adapter.py'));
-ok('the sidecar is NOT classified as needing a scoped gateway',
-  !needsScopedGateway('/Users/x/.hermes/plugins/agentmob/sidecar/index.mjs'),
-  'it is a child process the adapter respawns; restarting the gateway for it is gratuitous');
-/* Kept: it is still the fallback wording if a scoped instance cannot be brought up. */
-ok('the precondition message names the suite and says it was not run',
-  /NOT RUN/.test(scopedGatewayPrecondition('e2e-voice', '/x/adapter.py'))
-  && /e2e-voice/.test(scopedGatewayPrecondition('e2e-voice', '/x/adapter.py')),
-  'missing coverage has to be visible or it becomes the status quo');
+/* ---- 4. the mutation table routes RUNTIME adapter edits away from the live plugin -----------
+ * My first version of this asserted that EVERY adapter mutation targets the scoped copy, and it
+ * failed on eleven suites — orphan-reap, stt-failfast, adapter-fields and the rest. They were
+ * right and the assertion was wrong. Those suites test adapter.py STATICALLY: they read and parse
+ * the file, they never need it loaded, and the live gateway has its module already imported, so
+ * editing the file on disk does not change the running process.
+ *
+ * The rule that actually matters is about mutations whose suite exercises RUNNING code. Those
+ * need the process reloaded, and reloading the production process is what the whole scoped
+ * instance exists to avoid. So: scope:'gateway' entries must point at a profile copy, and nothing
+ * marked scope:'gateway' may point at the live plugin.
+ *
+ * RESIDUAL RISK, recorded rather than papered over: the static entries do briefly edit the live
+ * adapter.py on disk, restored in a finally and verified by hash. If the gateway happened to
+ * restart inside that window it would import mutated code. The window is seconds and nothing
+ * schedules a restart, but it is not zero, and pointing those suites at the vendored copy instead
+ * would close it — at the cost of no longer testing the installed artifact, which is the thing
+ * they exist to check. Left as-is deliberately. */
+{
+  const adapterEntries = MUTANTS.filter((m) => /adapter\.py$/.test(m.file));
+  ok('there are adapter mutation entries to check', adapterEntries.length > 0,
+    'if these vanished, the adapter is uncovered');
+
+  const runtime = MUTANTS.filter((m) => m.scope === 'gateway');
+  ok('there are gateway-scoped mutation entries', runtime.length > 0,
+    'the adapter mutations that need a running process must exist and be scoped');
+  const notProfile = runtime.filter((m) => !m.file.includes('/profiles/'));
+  ok('every gateway-scoped mutation targets a profile copy, not the live plugin',
+    notProfile.length === 0,
+    `${notProfile.map((m) => m.suite).join(', ')} — that file is loaded by the production gateway, `
+    + 'and a scoped mutation is pointless if it edits the live one');
+
+  /* The inverse: an entry whose suite needs running code must not be left unscoped. Approximated
+   * by the e2e suites, which are the ones that connect to a live endpoint. */
+  const e2eUnscoped = MUTANTS.filter((m) => /^e2e-/.test(m.suite) && /adapter\.py$/.test(m.file)
+    && m.scope !== 'gateway');
+  ok('no e2e adapter mutation is left unscoped', e2eUnscoped.length === 0,
+    `${e2eUnscoped.map((m) => m.suite).join(', ')} — an e2e suite exercises the RUNNING adapter, `
+    + 'so its mutation needs a scoped instance or it tests unmutated code');
+}
 ok('sidecarPids returns a list of integers', Array.isArray(sidecarPids())
   && sidecarPids().every((p) => Number.isInteger(p)));
 

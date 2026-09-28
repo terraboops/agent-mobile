@@ -130,22 +130,3 @@ function waitForSidecar({ port, timeoutMs, note }) {
   }
   return { ok: false, note: `${note}: none appeared within ${timeoutMs}ms` };
 }
-
-/**
- * Does this mutation need the GATEWAY process reloaded (as opposed to just the sidecar)?
- * True for anything editing a file imported into the gateway, i.e. the adapter.
- */
-export function needsScopedGateway(file) {
-  return /adapter\.py$/.test(String(file || ''));
-}
-
-/**
- * The refusal message for a mutation that cannot run without a scoped gateway. Kept here so the
- * harness reports a NAMED PRECONDITION rather than quietly dropping coverage.
- */
-export function scopedGatewayPrecondition(suite, file) {
-  return `${suite}: needs a scoped gateway — ${file.replace(process.env.HOME, '~')} is imported `
-    + 'into the gateway process, so reloading it means restarting that process. The live one is '
-    + 'off limits (see gateway-scope.mjs), and no throwaway HERMES_HOME instance exists yet. '
-    + 'NOT RUN — this is missing coverage, named rather than hidden.';
-}
