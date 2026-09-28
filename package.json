@@ -16,6 +16,7 @@
     "surface-chunks": "node test/surface-chunks.test.mjs",
     "surface-integration": "node test-surface-integration.mjs",
     "e2e-voice": "node test/e2e-voice.mjs",
+    "e2e-voice-render": "node test/e2e-voice.mjs --render",
     "pairing": "node test/pairing.test.mjs",
     "e2e-webrtc": "node test/e2e-webrtc.mjs",
     "ctrlbar-geometry": "node test/ctrlbar-geometry.test.mjs",
@@ -50,6 +51,7 @@
     "aead-trigger": "node test/aead-trigger.test.mjs",
     "apk-installable": "node test/apk-installable.test.mjs",
     "mutation": "node test/mutation.mjs",
+    "gateway-scope": "node test/gateway-scope.test.mjs",
     "mutation-coverage": "node test/mutation-coverage.test.mjs",
     "ice-tailnet": "node test/ice-tailnet.test.mjs"
   },

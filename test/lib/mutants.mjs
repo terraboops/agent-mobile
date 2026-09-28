@@ -22,6 +22,7 @@ const SHOST = join(REPO, 'www/surface-host.js');
 const INDEX = join(REPO, 'www/index.html');
 const DWATCH = join(REPO, 'test/device-watch.mjs');
 const WSF = join(REPO, 'transport/wsframes.js');
+const GS = join(REPO, 'test/lib/gateway-scope.mjs');
 
 /** suite -> the one edit that removes the behaviour it claims to test.
  *
@@ -139,6 +140,22 @@ export const MUTANTS = [
   { suite: 'e2e-voice', file: AD, restart: true, why: 'reporting that the utterance was heard',
     from: '        self._push_status(heard=True)',
     to: '        pass  # heard status removed' },
+
+  /* The narration itself. e2e-voice's entry above kills the HEARD status, which is a different
+   * feature — before this entry existed, deleting the one line that speaks over a render broke
+   * nothing in the table. That is the exact shape of a coverage hole: a feature added with a
+   * suite, and a table that still points somewhere else. */
+  { suite: 'e2e-voice-render', file: AD, restart: true,
+    why: 'the one spoken line over a purely visual reply',
+    from: '        if self._tts_voice:\n            await self._schedule_speak(self._narrate_components([c for c in comp_types if c]))',
+    to: '        pass  # narration removed' },
+
+  /* The guard that stands between this harness and the production gateway. If the live-label
+     refusal stops firing, every restart-marked mutation is free to kickstart ai.hermes.gateway
+     again — the exact regression that cost fourteen production bounces in one night. */
+  { suite: 'gateway-scope', file: GS, why: 'the refusal to kickstart the live gateway label',
+    from: '  if (label.includes(LIVE_LABEL)) {',
+    to: '  if (false) {' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

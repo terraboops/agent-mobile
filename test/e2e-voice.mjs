@@ -15,7 +15,15 @@ const require = createRequire('/Users/terra/.hermes/plugins/agentmob/sidecar/ind
 const OpusScript = require('opusscript');
 
 const NEW = process.argv.includes('--new');
-const UTT = process.argv.filter((a) => !a.startsWith('--'))[2] || 'What is two plus two? Answer in one short sentence.';
+/* --render asks for a reply that is PURELY VISUAL. The default utterance produces a text reply,
+ * so the narration path — the one line spoken over a chart — is never exercised by it. The two
+ * shapes travel differently (a render is a cmd on the control channel, narration is audio
+ * frames) and only this mode can order one against the other. */
+const RENDER = process.argv.includes('--render');
+const DEFAULT_UTT = RENDER
+  ? 'Draw me a chart of the numbers one through five. Just the chart.'
+  : 'What is two plus two? Answer in one short sentence.';
+const UTT = process.argv.filter((a) => !a.startsWith('--'))[2] || DEFAULT_UTT;
 const RATE = 24000, FRAME = 480; // sidecar uplink decoder: 24k mono, 20ms
 const dir = mkdtempSync(join(tmpdir(), 'e2e-'));
 execFileSync('say', ['-v', 'Samantha', '-o', join(dir, 'u.aiff'), UTT]);
@@ -29,6 +37,15 @@ const events = [];
 const chartColourViolations = [];
 const s = new AgentStream({ url: 'ws://127.0.0.1:8123', onPair: async (id, agentId) => { console.log('TOFU pair: agent', agentId, 'identity', Buffer.from(id).toString('base64').slice(0, 24) + '…'); return true; } });
 let audioFrames = 0;
+/* ---- cross-rail ordering ----------------------------------------------------------------
+ * Render envelopes are cmd frames; narration is audio frames. Counting each separately proves
+ * both were SENT and says nothing about their order, which is the whole question for a
+ * render-only turn: narration that precedes its render is narrating nothing. One counter
+ * bumped in both branches puts them on a single timeline. Only the FIRST audio frame is
+ * stamped — later ones cannot move the boundary. */
+let tick = 0;
+let firstAudioTick = null;
+const renderTicks = [];
 // Capture EVERY inbound cmd (the stock client only resolves its own pending ids).
 s._onFrame = function (raw) {
   let f; try { f = unpack(Buffer.from(raw)); } catch { return; }
@@ -42,6 +59,8 @@ s._onFrame = function (raw) {
     if (p) { clearTimeout(p.t); this._pending.delete(i); p.resolve(d); return; }
     events.push(d);
     const kind = d && d.type;
+    const myTick = ++tick;
+    if (kind === 'render' || kind === 'surface') renderTicks.push(myTick);
     if (kind === 'text') console.log(`  ← text: ${JSON.stringify(d.text).slice(0, 200)}`);
     else if (kind === 'render') { console.log(`  ← render: ${JSON.stringify(d.ui || d).slice(0, 160)}`);
       const comps = ((d.ui || d).components || []); comps.forEach((c) => { if (c.t === 'chart') { const o = c.options || {}; const bad = [];
@@ -53,7 +72,7 @@ s._onFrame = function (raw) {
     else console.log(`  ← ${kind}: ${JSON.stringify(d).slice(0, 160)}`);
     // Honour the render feedback contract like the phone does.
     if (kind === 'surface') for (const op of (d.ops || [])) if (op.key) s.cmd({ type: 'render_result', key: op.key, ok: true }).catch(() => {});
-  } else if (f.type === T.audio) { audioFrames++; }
+  } else if (f.type === T.audio) { audioFrames++; if (firstAudioTick === null) firstAudioTick = ++tick; }
 };
 await s.connect();
 console.log('handshake OK — AEAD channel up');
@@ -75,7 +94,8 @@ while (Date.now() < deadline) {
   // Done = the agent spoke a reply to THIS utterance and finished speaking.
   const spoke = events.some((d) => d && d.type === 'status' && d.speaking === true);
   const quiet = spoke && events[events.length - 1] && events[events.length - 1].type === 'status' && events[events.length - 1].speaking === false;
-  if (quiet && events.some((d) => d && d.type === 'text') && audioFrames > 0) { await new Promise((r) => setTimeout(r, 1500)); break; }
+  const answered = events.some((d) => d && d.type === 'text') || renderTicks.length > 0;
+  if (quiet && answered && audioFrames > 0) { await new Promise((r) => setTimeout(r, 1500)); break; }
 }
 console.log(`\nsummary: ${events.length} cmd events, ${audioFrames} TTS audio frames`);
 const texts = events.filter((d) => d.type === 'text').map((d) => d.text);
@@ -122,6 +142,45 @@ ok('the speaking indicator was raised and then cleared',
 ok('no chart carried hard-coded colours (the surface themes them)',
   chartColourViolations.length === 0,
   chartColourViolations.join(', '));
+
+/* ---- the narration ORDER, not merely its existence ----------------------------------------
+ * `the reply was spoken` above counts audio frames. That proves the narration was SENT; it says
+ * nothing about WHEN. A render envelope is a cmd on the AEAD control channel and the narration
+ * is audio frames — two rails, each ordered internally, neither ordered against the other by the
+ * protocol. Narration emitted BEFORE its render would count identically and be wrong: the phone
+ * would say "Here's the chart" to a blank surface.
+ *
+ * WHAT THE ORDERING CLAIM IS WORTH, measured rather than assumed. I tried to red-prove it by
+ * moving the _schedule_speak call ABOVE the render push in the adapter, restarting the gateway,
+ * and re-running. It stayed GREEN. The reason is _flush_speak: it sleeps 1.5s (a settle window
+ * that coalesces streamed sends) before synthesising, while the render push is synchronous in
+ * the same coroutine. The order therefore holds BY CONSTRUCTION and cannot be inverted by moving
+ * the call — so this is a STRUCTURAL GUARD, not a test of the call site. It fails only if that
+ * settle window is removed AND the call is reordered. Recorded here so the next person does not
+ * repeat the experiment, and so the green tick is not mistaken for strength it does not have.
+ *
+ * STATED LIMIT, because it is the difference between this and done: this is the HOST's send
+ * order. It does not prove the handset PLAYS them in that order — Android buffers audio and the
+ * WebView renders on its own schedule, and only the device can answer that. `npm run
+ * device-verify` is where that claim lives, and it is currently blocked on hardware.
+ *
+ * The assertion that carries real weight is the first one: it is CAUGHT by the mutation that
+ * deletes the narration (npm run mutation -- e2e-voice-render). */
+if (renderTicks.length > 0 && texts.length === 0) {
+  ok('a render-only reply was narrated at all', audioFrames > 0,
+    'the phone would show the component in total silence — indistinguishable from a lost request');
+  ok('the narration followed the render envelope (structural guard, see above — not falsifiable)',
+    firstAudioTick !== null && firstAudioTick > Math.min(...renderTicks),
+    `first audio at tick ${firstAudioTick}, first render at tick ${Math.min(...renderTicks)} — `
+    + 'narrating a surface that has not been sent yet');
+} else if (RENDER) {
+  /* --render asked for a purely visual answer and did not get one. The narration claim cannot be
+   * evaluated, and silently passing would make this suite look like it covers narration when the
+   * agent simply replied in prose. Fail loudly rather than vacuously. */
+  ok('--render produced a render-only turn (so the narration claim could be evaluated)',
+    false, `texts: ${texts.length} renders: ${renderTicks.length} — reword the utterance; `
+    + 'a narration assertion that never runs is not coverage');
+}
 
 console.log(`\n${pass} passed, ${fails.length} failed`);
 s.close();

@@ -16,7 +16,7 @@
  * Run: npm run mutation            (all)
  *      npm run mutation -- stt     (one, by substring)
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -24,24 +24,22 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { MUTANTS, REPO } from './lib/mutants.mjs';
+import { reloadSidecar, needsScopedGateway, scopedGatewayPrecondition } from './lib/gateway-scope.mjs';
 
 const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 
-/** Reload the gateway so a mutated sidecar/adapter is the one actually running. */
-function restartGateway() {
-  try {
-    execFileSync('launchctl', ['kickstart', '-k', `gui/${process.getuid()}/ai.hermes.gateway`],
-      { stdio: 'ignore' });
-  } catch { /* not running under launchd here */ }
-  const deadline = Date.now() + 90000;
-  while (Date.now() < deadline) {
-    const r = spawnSync('lsof', ['-nP', '-iTCP:8123', '-sTCP:LISTEN'], { encoding: 'utf8' });
-    if ((r.stdout || '').includes('LISTEN')) { spawnSync('sleep', ['6']); return true; }
-    spawnSync('sleep', ['2']);
-  }
-  return false;
-}
-
+/* Reloading mutated code WITHOUT restarting the live gateway.
+ *
+ * What used to be here ran `launchctl kickstart -k gui/<uid>/ai.hermes.gateway` — the LIVE
+ * gateway serving Telegram, the phone bridge and every cron job on this machine — and wrapped it
+ * in `catch {}` so the one signal that could have flagged it was swallowed. It bounced production
+ * about fourteen times in a night: cron work killed mid-write and logged as failure, the phone
+ * bridge dropped mid-conversation, an unclean exit recorded with no exit path run.
+ *
+ * Replaced by reloadSidecar(), which signals only the sidecar CHILD process and lets the
+ * adapter's own supervisor respawn it. Adapter mutations cannot be reloaded that way and are
+ * reported as a named precondition instead of silently skipped. The guard in gateway-scope.mjs
+ * makes the old behaviour impossible even if someone reaches for launchctl again. */
 
 export 
 const only = process.argv[2];
@@ -68,6 +66,13 @@ const results = [];
 try {
   for (const m of chosen) {
     if (!existsSync(m.file)) { results.push({ ...m, verdict: 'skip', note: 'file missing' }); continue; }
+    /* adapter.py is imported INTO the gateway process; reloading it means restarting that
+     * process, and the live one is not ours to restart. Named, not hidden. */
+    if (m.restart && needsScopedGateway(m.file)) {
+      results.push({ ...m, verdict: 'PRECONDITION', note: scopedGatewayPrecondition(m.suite, m.file) });
+      console.log(`  NOT RUN ${m.suite.padEnd(24)} (needs a scoped gateway — see below)`);
+      continue;
+    }
     const original = readFileSync(m.file, 'utf8');
     if (!original.includes(m.from)) {
       results.push({ ...m, verdict: 'STALE', note: 'the mutation target no longer exists' });
@@ -84,12 +89,23 @@ try {
     /* The sidecar and adapter are RUNNING processes. Editing their source changes nothing until
      * the gateway reloads them, so an e2e mutation without this restart would test the
      * unmutated code and record a false MISS — the live-process equivalent of stale bytecode. */
-    if (m.restart) restartGateway();
+    if (m.restart) {
+      const rl = reloadSidecar();
+      if (!rl.ok) {
+        /* A reload that did not happen means the suite would run against UNMUTATED code and be
+         * recorded as MISSED — a false negative that sends you auditing a test that is fine.
+         * Say so instead. */
+        writeFileSync(m.file, original);
+        results.push({ ...m, verdict: 'BLOCKED', note: `sidecar reload failed: ${rl.note}` });
+        console.log(`  BLOCKED ${m.suite.padEnd(24)} sidecar reload failed: ${rl.note}`);
+        continue;
+      }
+    }
     const r = spawnSync('npm', ['run', '-s', m.suite],
       { cwd: REPO, encoding: 'utf8', timeout: 900000,
         env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
     writeFileSync(m.file, original);
-    if (m.restart) restartGateway();
+    if (m.restart) reloadSidecar();
     const failed = r.status !== 0;
     const n = (r.stdout || '').match(/(\d+) (?:passed|failed)/g) || [];
     results.push({ ...m, verdict: failed ? 'CAUGHT' : 'MISSED', note: n.join(' ') });
@@ -117,10 +133,19 @@ if (clean) {
   console.log('backups KEPT for recovery: ' + [...backups.values()].map((b) => b.backup).join(', '));
 }
 
+const blocked = results.filter((r) => r.verdict === 'BLOCKED');
+const precondition = results.filter((r) => r.verdict === 'PRECONDITION');
 const missed = results.filter((r) => r.verdict === 'MISSED');
 const stale = results.filter((r) => r.verdict === 'STALE');
 const caught = results.filter((r) => r.verdict === 'CAUGHT');
-console.log(`\n${caught.length} caught, ${missed.length} MISSED, ${stale.length} stale, of ${results.length}`);
+console.log(`\n${caught.length} caught, ${missed.length} MISSED, ${stale.length} stale, `
+  + `${blocked.length} blocked, ${precondition.length} not run, of ${results.length}`);
+for (const r of precondition) console.log(`  NOT RUN: ${r.note}`);
+for (const r of blocked) console.log(`  BLOCKED: ${r.suite} — ${r.note}`);
 for (const r of missed) console.log(`  MISSED: ${r.suite} — passed with "${r.why}" deleted; it is asserting on scaffolding`);
 for (const r of stale) console.log(`  STALE : ${r.suite} — ${r.note}`);
-process.exit(!clean || missed.length || stale.length ? 1 : 0);
+/* A PRECONDITION is missing coverage, not a pass. It does not fail the run — the mutation was
+ * never attempted, so there is no verdict to fail on — but it is printed every time so it cannot
+ * quietly become the status quo. BLOCKED does fail: it means the harness could not guarantee the
+ * mutation took effect. */
+process.exit(!clean || missed.length || stale.length || blocked.length ? 1 : 0);

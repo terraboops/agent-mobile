@@ -82,9 +82,12 @@ if (!probe.ok) {
   fatal(3, 'sidecar not reachable',
     `Nothing is listening on ${probe.host}:${probe.port} (${probe.reason}).\n`
     + `The agentmob sidecar is started and supervised by the Hermes gateway, so this normally\n`
-    + `means the gateway is down. Check and restart:\n`
+    + `means the gateway is down. Check:\n`
     + `  lsof -nP -iTCP:${probe.port} -sTCP:LISTEN\n`
-    + `  launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway\n`
+    + `  hermes gateway status\n`
+    + `Restarting the gateway is a LAST resort and a human decision, not a step to paste: it\n`
+    + `kills in-flight cron work mid-write and drops every platform connection, including the\n`
+    + `phone bridge. If only the sidecar is missing, the adapter respawns it on its own.\n`
     + `(Probe with lsof, NOT bash /dev/tcp — zsh does not support it and reports a false DOWN.)`);
 }
 
