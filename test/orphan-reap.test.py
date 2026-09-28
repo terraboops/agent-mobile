@@ -159,5 +159,56 @@ ok("bystander still alive after a stray signal", alive(bystander.pid))
 bystander.kill()
 bystander.wait(timeout=5)
 
+# ---- 4. the PRODUCTION spawn path, which none of the above touches ------------------------
+# Everything above drives the module-level helpers and a spawn this test writes itself. That
+# leaves the thing the reaping actually depends on untested: that _run_sidecar gives the sidecar
+# its OWN process group. A mutation run proved the gap — deleting start_new_session=True from
+# the adapter changed nothing here, because this test never used _run_sidecar.
+print("\n--- 4. _run_sidecar gives the sidecar its own process group ---")
+
+
+async def production_spawn():
+    import collections
+    a = object.__new__(mod.AgentMobAdapter)
+    for k, v in {"_proc": None, "_connected": False, "_dispatcher": None, "_supervisor": None,
+                 "_writer": None, "_reader": None, "_port": 8879, "_bind": "127.0.0.1",
+                 "_sidecar_port": 8880, "_token": "dev", "_node_bin": "node",
+                 "_allowed_clients": "", "_ice": "", "_sidecar_fails": 0,
+                 "_sidecar_wedged": False, "_sidecar_flapping": False, "_flap_reports": 0,
+                 "_undelivered": []}.items():
+        setattr(a, k, v)
+    a._sidecar_stderr = collections.deque(maxlen=50)
+    a._restart_times = collections.deque()
+    a._outbound_q = collections.deque(maxlen=32)
+    a._handle_sidecar_event = lambda evt: asyncio.sleep(0)
+
+    task = asyncio.ensure_future(a._run_sidecar())
+    for _ in range(120):
+        if a._proc is not None:
+            break
+        await asyncio.sleep(0.25)
+    pid = a._proc.pid if a._proc else None
+    pgid = os.getpgid(pid) if pid else None
+    task.cancel()
+    try:
+        await asyncio.wait_for(task, 5)
+    except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+        pass
+    if pid:
+        mod._signal_group(pid, signal.SIGKILL)
+        try:
+            await asyncio.wait_for(a._proc.wait(), 5)
+        except Exception:
+            pass
+    return pid, pgid
+
+
+spid, spgid = asyncio.run(production_spawn())
+ok("the production path actually spawned a sidecar", spid is not None, str(spid))
+ok("_run_sidecar puts it in its OWN process group (pgid == pid)", spid == spgid,
+   f"pid {spid} pgid {spgid} — without start_new_session the reaping above cannot target it "
+   f"without also hitting the gateway")
+ok("it was tracked for reaping", spid is not None)
+
 print(f"\n{PASS} passed, {len(FAILS)} failed")
 sys.exit(1 if FAILS else 0)

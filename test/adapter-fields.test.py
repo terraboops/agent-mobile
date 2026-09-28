@@ -75,6 +75,8 @@ OMIT_EVERYWHERE = {
     "_TURN_LOCK_MAX_S",          # class constant, not per-instance state
     "_platform", "_home_channel", "_home_ensured",
     "_stt_model", "_tts_voice", "_edge_voice", "_kitten_voice", "_kitten",
+    "_whisper",                  # lazily-loaded STT model cache; every fake stubs _transcribe
+
     "_f5_ref", "_f5_ref_text", "_tts_engine",
     "_allowed_clients", "_ice", "_bind", "_port", "_node_bin",
     "_sidecar_port", "_token", "_surface_state", "_surface_feedback",
@@ -84,18 +86,24 @@ OMIT_EVERYWHERE = {
     "_stt_lock", "_tts_dead", "_tts_unavail_notified",
 }
 
-# State containers whose absence means the fake is a DIFFERENT object: the code mutates them,
-# and a missing one either throws or silently changes behaviour. These are the ones that bit.
-REQUIRED = {
-    "_outbound_q", "_connected", "_undelivered",
-    "_sidecar_stderr", "_restart_times", "_sidecar_fails",
-    "_sidecar_wedged", "_sidecar_flapping", "_flap_reports",
-}
-ok("every REQUIRED field is genuinely set by the real constructor",
-   REQUIRED <= REAL, f"not in __init__: {sorted(REQUIRED - REAL)}")
+# DERIVED, not hand-listed. Everything the real constructor sets that is not explicitly
+# excused above is required of a fake.
+#
+# This was a hand-written set, and that made my own red-proof of this test CIRCULAR: to show it
+# failed when __init__ gained a field, I added the field to __init__ *and* to the list. Of
+# course it failed — I had told it to care. The mutation run then caught what the red-proof
+# could not: adding a field to __init__ alone changed nothing, because the list did not know
+# about it. The claim "when __init__ grows a field, every fake fails until someone decides" was
+# only true if I remembered to edit this set, which is exactly the remembering the check exists
+# to replace.
+REQUIRED = REAL - OMIT_EVERYWHERE
+ok("every REQUIRED field is genuinely set by the real constructor", REQUIRED <= REAL)
 ok("the omit list does not claim fields the constructor never sets",
    not (OMIT_EVERYWHERE - REAL - {"_TURN_LOCK_MAX_S"}),
    f"stale entries: {sorted(OMIT_EVERYWHERE - REAL - {'_TURN_LOCK_MAX_S'})}")
+ok("REQUIRED is derived from the constructor, not hand-maintained",
+   len(REQUIRED) > 0 and REQUIRED == (REAL - OMIT_EVERYWHERE))
+
 
 # Tests that hand-build an adapter. Each may exempt fields it deliberately does not need.
 HAND_BUILT = {

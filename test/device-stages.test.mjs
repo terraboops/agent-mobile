@@ -36,55 +36,54 @@ const ok = (name, cond, detail = '') => {
   ok('log marks are timestamps, not byte offsets',
     !/const logSize = \(\) => \{ try \{ return readFileSync\(GLOG\)\.length/.test(SRC),
     'logSize() still returns a byte length');
+  /* These live in the shared helper now, so assert against ITS source, not device-verify's. */
+  const LIBSRC = readFileSync(join(HERE, 'lib/gateway-log.mjs'), 'utf8');
   ok('the log reader looks at the ROTATED file too',
-    /GLOG \+ '\.1'/.test(SRC), 'only gateway.log is read, so a rotation loses the line');
-  ok('the timestamp is built from LOCAL time, not toISOString()',
-    /getHours\(\)/.test(SRC) && !/toISOString\(\)[\s\S]{0,80}logSince/.test(SRC),
-    'an ISO stamp is UTC and would match nothing against a locally-stamped log');
+    /file \+ '\.1'/.test(LIBSRC), 'only gateway.log is read, so a rotation loses the line');
+  /* Behavioural, not a grep: the file MENTIONS toISOString in the comment explaining why it is
+   * wrong, and an assertion that forbids the word also forbids documenting the trap. Compare
+   * the stamp against locally-formatted time instead — that is the property that matters. */
+  {
+    const { logStamp: ls } = await import('./lib/gateway-log.mjs');
+    const t = Date.now();
+    const d = new Date(t - 2000);
+    const p2 = (n) => String(n).padStart(2, '0');
+    const localHour = `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    const utcHour = `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;
+    ok('the timestamp is LOCAL time, matching how the log stamps its lines',
+      ls(t).includes(localHour), `${ls(t)} does not contain ${localHour}`);
+    if (localHour !== utcHour) {
+      ok('and it is NOT UTC (which would sit hours away and match nothing)',
+        !ls(t).includes(utcHour), `${ls(t)} looks like UTC`);
+    }
+  }
 
-  /* Drive the real helpers across a rotation. */
+  /* Drive the REAL helpers across a rotation — imported, not reimplemented.
+   * This block used to define its own logSince/stamp, so it was testing a copy: a mutation run
+   * deleting the real fix left it green. Importing is the difference between checking the code
+   * and checking your recollection of it. */
+  const { logStamp, logSince } = await import('./lib/gateway-log.mjs');
   const dir = mkdtempSync(join(tmpdir(), 'devstage-'));
   const log = join(dir, 'gateway.log');
-  const stampOf = () => {
-    const d = new Date(Date.now() - 2000);
-    const p2 = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} `
-         + `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
-  };
-  const now = () => {
-    const d = new Date();
-    const p2 = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} `
-         + `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
-  };
-  const readSince = (stamp) => {
-    let text = '';
-    for (const f of [log + '.1', log]) {
-      try { text += readFileSync(f, 'utf8'); } catch {}
-    }
-    return text.split('\n').filter((l) => {
-      const m = l.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
-      return m && m[1] >= stamp;
-    }).join('\n');
-  };
+  const now = () => logStamp(Date.now() + 2000);      // "now", undoing the helper's slack
 
   writeFileSync(log, `${now()} INFO old padding\n`.repeat(50));
-  const mark = stampOf();
+  const mark = logStamp();
   writeFileSync(log, readFileSync(log, 'utf8') + `${now()} INFO [sidecar] handshake confirmed BEFORE\n`);
   renameSync(log, log + '.1');                       // the rotation
   writeFileSync(log, `${now()} INFO [sidecar] handshake confirmed AFTER\n`);
 
-  const seen = readSince(mark);
+  const seen = logSince(mark, log);
   ok('rotation: a line written BEFORE the roll is still found', /BEFORE/.test(seen), seen.slice(0, 80));
   ok('rotation: a line written AFTER the roll is found', /AFTER/.test(seen), seen.slice(0, 80));
 
-  /* And the old approach, for contrast — this is what the stages used to do. */
-  const legacyOffset = 4000;
-  let legacy = '';
-  try { legacy = readFileSync(log, 'utf8').slice(legacyOffset); } catch {}
+  const legacy = readFileSync(log, 'utf8').slice(4000);
   ok('rotation: a BYTE OFFSET finds neither (this is the bug)',
-    !/BEFORE/.test(legacy) && !/AFTER/.test(legacy),
-    'the offset happened to still work — pick a larger pre-roll file');
+    !/BEFORE/.test(legacy) && !/AFTER/.test(legacy));
+
+  ok('device-verify uses the shared helper rather than its own copy',
+    /from '\.\/lib\/gateway-log\.mjs'/.test(SRC),
+    'the stages still carry a private reimplementation');
 }
 
 /* ---- DEFECT 2: the mic tap and the truncation check were different controls ---------------
@@ -170,8 +169,10 @@ const ok = (name, cond, detail = '') => {
     /no tailscale binary found/.test(SRC),
     'the probe would degrade to a correct-but-useless message with nothing saying why');
   ok('a failed screenshot records WHY',
-    /lastShotError/.test(SRC),
-    'a bare return false made a permission prompt and a dead device look identical');
+    /lastShotError = \(r\.stderr/.test(SRC),
+    'a bare return false made a permission prompt and a dead device look identical '
+    + '(checking the ASSIGNMENT, not just that the name appears — a declaration alone proves '
+    + 'nothing)');
 }
 
 console.log(`\n${pass} passed, ${fails.length} failed`);
