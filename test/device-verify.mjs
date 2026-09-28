@@ -77,6 +77,21 @@ const DISCOVER_EVERY_MS = Number(flag('--discover-every', 120000));
  * phone is NOT on this LAN. */
 const SCAN_EVERY_MS = Number(flag('--scan-every', 600000));
 let lastScan = 0;
+/* This run gets its OWN adb server, and that is structural rather than a habit.
+ *
+ * The armed 2-hour wait shared the default server on :5037 with everything else on this Mac.
+ * While it ran, loopback experiments elsewhere in the session did `adb connect` against that
+ * same server — and every one of those endpoints appeared in the armed run's device list, which
+ * dutifully reported "device 127.0.0.1:49152 is OFFLINE ... Toggle Wireless debugging off/on".
+ * A dozen strangers, described to the operator as their phone misbehaving.
+ *
+ * Promising to be careful next time is not a fix: the device list is shared state, and anything
+ * on the machine can write to it. `adb -P <port>` gives this run a private server, so a listener
+ * registered on the default one cannot enter its device list at all.
+ *
+ * 5039, not 5037 (the default) and not 5038 (adb's own second-choice / emulator console
+ * neighbourhood). Overridable for the same reason everything else here is. */
+const ADB_PORT = Number(flag('--adb-port', process.env.AGENTMOB_ADB_PORT || 5039));
 const WAIT_S = Number(flag('--wait', 1800));
 const TRIGGER = String(flag('--say', 'Device check. Counting: one, two, three, four, five, '
   + 'six, seven, eight, nine, ten. That is the end of the test sentence.'));
@@ -95,7 +110,10 @@ const stage = (name, status, detail = '') => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const adb = (args, opts = {}) => {
   if (DRY) return { status: 0, stdout: '', stderr: '(dry-run)' };
-  const r = spawnSync(ADB, args, { encoding: 'utf8', timeout: opts.timeout || 120000, ...opts });
+  /* -P FIRST, always. Every adb call in this file goes through here precisely so the isolation
+   * cannot be forgotten at one call site — which is the failure mode a convention would have. */
+  const r = spawnSync(ADB, ['-P', String(ADB_PORT), ...args],
+    { encoding: 'utf8', timeout: opts.timeout || 120000, ...opts });
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 };
 
@@ -118,7 +136,9 @@ let cleaned = false;
 const stopAdb = () => {
   if (cleaned || DRY || !ADB) return;
   cleaned = true;
-  try { execFileSync(ADB, ['kill-server'], { stdio: 'ignore' }); } catch {}
+  /* OUR server, by port. Killing the default one would take down whatever else on this Mac is
+   * using adb — the mirror image of the contamination this isolation exists to prevent. */
+  try { execFileSync(ADB, ['-P', String(ADB_PORT), 'kill-server'], { stdio: 'ignore' }); } catch {}
 };
 
 /* A lingering adb server leaves Terra with repeated "Allow debugging?" prompts on the phone,

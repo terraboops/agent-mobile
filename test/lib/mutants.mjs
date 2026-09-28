@@ -203,6 +203,14 @@ export const MUTANTS = [
 
   /* The sweep must be able to say DETECTED, or every "nothing open" it prints is unfalsifiable.
      Making scanPorts never report an open port is the honest inverse. */
+  /* The private adb server. Dropping -P puts device-verify back on the shared default server,
+     where any listener on the machine enters its device list and gets described to the operator
+     as their phone — which is exactly what happened during the 2-hour armed wait. */
+  { suite: 'adb-isolation', file: DV,
+    why: 'device-verify using its OWN adb server rather than the shared default one',
+    from: "  const r = spawnSync(ADB, ['-P', String(ADB_PORT), ...args],",
+    to: '  const r = spawnSync(ADB, [...args],' },
+
   { suite: 'discover-live', file: ADIS,
     why: 'the port sweep actually reporting a listener it found',
     from: '      if (hit) open.push(port);',
