@@ -62,6 +62,21 @@ const CONNECT = flag('--connect', process.env.AGENTMOB_ADB_TARGET);
 const PHONE_HOST = String(flag('--host', process.env.AGENTMOB_PHONE_HOST
   || '100.112.255.69'));
 const DISCOVER_EVERY_MS = Number(flag('--discover-every', 120000));
+/* The port sweep runs on its OWN, much slower cadence.
+ *
+ * Discovery does two things with very different costs. mDNS is link-local multicast: free, and
+ * the path that actually matters here, because the phone shares this LAN and Android advertises
+ * _adb-tls-connect._tcp within seconds of the Wireless debugging toggle. The sweep is ~35,000 TCP
+ * attempts pushed through the Tailscale tunnel, and it takes LONGER than the 120s discovery
+ * interval — so on a long arm the two overlap and it sweeps continuously. A two-hour arm at that
+ * rate is on the order of a million connection attempts aimed at someone's phone, and it is
+ * self-harming besides: that traffic is exactly what made the reachability probe report a
+ * reachable handset as "powered off, asleep, or off the tailnet".
+ *
+ * So: poll mDNS often, sweep rarely. The sweep stays, because it is the only option when the
+ * phone is NOT on this LAN. */
+const SCAN_EVERY_MS = Number(flag('--scan-every', 600000));
+let lastScan = 0;
 const WAIT_S = Number(flag('--wait', 1800));
 const TRIGGER = String(flag('--say', 'Device check. Counting: one, two, three, four, five, '
   + 'six, seven, eight, nine, ten. That is the end of the test sentence.'));
@@ -284,12 +299,16 @@ if (DRY) {
         else { const t = setTimeout(() => ac.abort(), ms); t.unref?.(); }
         return ac.signal;
       };
+      /* Decided once per pass, so both hosts in a pass share the same answer. */
+      const doScan = Date.now() - lastScan >= SCAN_EVERY_MS;
+      if (doScan) lastScan = Date.now();
       const found = await discover({
         hosts: peer.lan ? [peer.lan, PHONE_HOST] : [PHONE_HOST],
         runMdns: async () => adb(['mdns', 'services'],
           { timeout: Math.max(1000, Math.min(20000, remaining())) }).stdout,
-        scan: (h, ranges) => scanPorts(h, ranges,
-          { concurrency: 500, timeoutMs: 2000, signal: deadlineSignal() }),
+        scan: (h, ranges) => doScan
+          ? scanPorts(h, ranges, { concurrency: 500, timeoutMs: 2000, signal: deadlineSignal() })
+          : Promise.resolve([]),
         log: (m) => console.log(`  [discover] ${m}`),
       });
       if (found.endpoint) {
