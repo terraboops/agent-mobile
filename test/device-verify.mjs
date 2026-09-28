@@ -291,6 +291,45 @@ else {
     okInstall ? APK : (r.stderr || r.stdout).trim().slice(0, 200));
 }
 
+/* ---- 2b. the WebView version, from the DEVICE's own report --------------------------------
+ *
+ * The open question this closes: index.html used `container-type` / `@container` and `:has()`,
+ * all of which need Chrome 105+, while minSdk is 24 — Android 7 ships WebView Chrome 51. The
+ * note in the CSS said an old WebView "ignores @container" and left it at that for weeks.
+ *
+ * Both were removed rather than gambled on (a media query and a JS-toggled class express the
+ * same conditions and need nothing newer than 2012), so correctness no longer depends on the
+ * answer. But "we no longer need to know" is not the same as knowing, and the version is a fact
+ * this stage can simply read the moment adb is reachable. Recording it means the next person
+ * deciding whether some modern CSS is safe has a measurement instead of an assumption.
+ *
+ * Read from the package manager, not from a UA string: the UA can be overridden by the app, the
+ * package version is what is actually installed. Both Google's WebView and a Chrome-provided
+ * one are checked, since either can be the WebView implementation. */
+if (!DRY && serial) {
+  const providers = ['com.google.android.webview', 'com.android.webview',
+                     'com.android.chrome', 'com.google.android.trichromelibrary'];
+  const found = [];
+  for (const pkg of providers) {
+    const r = adb(['-s', serial, 'shell', 'dumpsys', 'package', pkg], { timeout: 30000 });
+    const v = /versionName=(\S+)/.exec(r.stdout || '');
+    if (v) found.push(`${pkg}=${v[1]}`);
+  }
+  /* The implementation actually in use, when the device will say. */
+  const impl = adb(['-s', serial, 'shell', 'cmd', 'webviewupdate', 'query'], { timeout: 30000 });
+  const implLine = (impl.stdout || '').split('\n')
+    .find((l) => /current webview package/i.test(l)) || '';
+  const major = found.map((f) => Number((/=(\d+)/.exec(f) || [])[1])).filter(Boolean).sort((a, b) => b - a)[0];
+  if (found.length) {
+    stage('WebView version read from the device', 'verified',
+      `${found.join(' ')} ${implLine.trim()}`.trim()
+      + (major ? ` | major ${major} — container queries and :has() need 105+` : ''));
+  } else {
+    stage('WebView version read from the device', 'failed',
+      'no WebView provider package reported a versionName; tried ' + providers.join(', '));
+  }
+}
+
 /* ---- 3. launch ---------------------------------------------------------------------------- */
 if (!DRY && serial) {
   const logOff = logSize();

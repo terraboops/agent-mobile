@@ -21,6 +21,13 @@ const page = await ctx.newPage();
 const errors=[]; page.on('pageerror',e=>errors.push(e.message)); page.on('console',m=>{ if(m.type()==='error') errors.push('console: '+m.text()); });
 await page.goto(`${base}/index.html`); await page.waitForTimeout(400);
 
+/* Captured while the page is still open — the baseline gate below runs after the browser has
+ * been closed, and reading it there threw "Target page, context or browser has been closed". */
+const AUDIT_BROWSER = {
+  supportsContainer: await page.evaluate(() => CSS.supports('container-type: inline-size')),
+  ua: await page.evaluate(() => navigator.userAgent),
+};
+
 // ---- in-page objective checks --------------------------------------------
 const AUDIT = () => {
   const out = { issues: [], stats: {} };
@@ -198,6 +205,67 @@ await page.waitForTimeout(500); await snap('20-errors-matrix', null);
 writeFileSync(join(OUT,'findings.json'), JSON.stringify({errors, results}, null, 2));
 await browser.close(); server.close();
 // summary
+// ---- WebView baseline: no CSS the target WebView might not have ----------------------------
+// This gate exists because a question sat open as a COMMENT for weeks: index.html used
+// `container-type: inline-size` + `@container`, which need Chrome 105+, while minSdk is 24
+// (Android 7, stock WebView Chrome 51). The note said an old WebView "ignores @container" and
+// left it there. A flag is not a finding, and nothing failed while it was unresolved.
+//
+// It is resolved by REMOVAL: the container query was replaced with an equivalent media query,
+// because the bar's content box is a pure function of viewport width (W/2 - 66), so the two
+// express the same condition and the media form needs nothing newer than 2012. Measured before
+// and after — no overlap and a 48px target at every width from 240 to 412, with and without
+// container-query support.
+//
+// What this gate enforces is that it STAYS resolved. Any of these reappearing fails the audit
+// until someone either removes it or establishes, from the device's own report, that the
+// WebView in the field supports it. That is the difference between a gate and a TODO.
+//
+// The scan runs over CSS with COMMENTS STRIPPED. The prose above says "@container" several
+// times, and an early version of this check matched inside a comment — the same class of error
+// that, in the probe that produced these measurements, silently ate the #ctl-stop rule and
+// reported a 44px button against min-height:48px.
+const MODERN_CSS = [
+  { re: /@container[\s(]/, name: '@container', needs: 'Chrome 105' },
+  { re: /container-type\s*:/, name: 'container-type', needs: 'Chrome 105' },
+  { re: /:has\(/, name: ':has()', needs: 'Chrome 105' },
+  { re: /@layer[\s{]/, name: '@layer', needs: 'Chrome 99' },
+  { re: /\bcolor-mix\s*\(/, name: 'color-mix()', needs: 'Chrome 111' },
+  { re: /@scope[\s{]/, name: '@scope', needs: 'Chrome 118' },
+  { re: /\btext-wrap\s*:\s*balance/, name: 'text-wrap: balance', needs: 'Chrome 114' },
+];
+const baselineFindings = [];
+{
+  const { readdirSync } = await import('node:fs');
+  const wwwDir = join(ROOT, 'www');
+  const files = readdirSync(wwwDir).filter((f) => /\.(html|css)$/.test(f));
+  for (const f of files) {
+    const raw = readFileSync(join(wwwDir, f), 'utf8');
+    // Strip CSS /* */ comments and HTML <!-- --> comments before matching.
+    const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '');
+    for (const { re, name, needs } of MODERN_CSS) {
+      if (re.test(code)) {
+        baselineFindings.push({ sev: 'high', cat: 'webview-baseline', el: f,
+          msg: `${f} uses ${name}, which needs ${needs}. minSdk is 24 (Android 7 ships `
+             + `WebView Chrome 51) and the Pixel 7's actual WebView version has never been `
+             + `recorded. Remove it, or establish support from the device's own report first.` });
+      }
+    }
+  }
+  results['00-webview-baseline'] = { issues: baselineFindings, stats: {
+    filesScanned: files.length,
+    featuresChecked: MODERN_CSS.length,
+    /* Recorded so the report says what the AUDIT browser supports — which is NOT the phone,
+     * and is labelled that way so the two are never confused. */
+    auditBrowserSupportsContainer: AUDIT_BROWSER.supportsContainer,
+    auditBrowserUA: AUDIT_BROWSER.ua,
+    deviceWebViewUA: 'UNRECORDED — no handset has reported one; see test/audit/out/device/',
+  } };
+  console.log(`webview baseline: ${files.length} file(s) scanned, `
+    + `${baselineFindings.length} finding(s) — the surface must not need a WebView newer than `
+    + 'the minSdk floor');
+}
+
 const all=[]; for(const [st,r] of Object.entries(results)) r.issues.forEach(i=>all.push({state:st,...i}));
 const by=(k)=>all.reduce((m,i)=>(m[i[k]]=(m[i[k]]||0)+1,m),{});
 
@@ -212,6 +280,7 @@ const by=(k)=>all.reduce((m,i)=>(m[i[k]]=(m[i[k]]||0)+1,m),{});
 const BENIGN_ERRORS = [
   "console: Unrecognized Content-Security-Policy directive 'webrtc'.",
 ];
+
 const unexpected = errors.filter((e) => !BENIGN_ERRORS.includes(String(e).trim()));
 const benignCount = errors.length - unexpected.length;
 

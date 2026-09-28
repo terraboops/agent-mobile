@@ -51,6 +51,23 @@ import { createSurface } from './surface-core.js';
     (ui && ui.parentNode ? ui.parentNode : document.body).appendChild(surfaceEl);
   }
 
+  /* Mirror "the surface has widgets" onto <body> as a class.
+   *
+   * This used to be `body:has(#surface .swidget) #ui .idle { display: none; }` in the CSS. :has()
+   * needs Chrome 105+, minSdk is 24 (Android 7 ships WebView Chrome 51), and unlike the container
+   * query this rule was load-bearing: an old WebView drops the whole selector, so the idle
+   * placeholder would stay on screen behind rendered widgets. A class toggled here works on every
+   * WebView the app can install on, and is exactly as declarative from the CSS side.
+   *
+   * Called after every add AND every removal, because the state is "any widget present", not
+   * "a widget was once added". */
+  function syncSurfaceOccupancy() {
+    try {
+      const any = !!surfaceEl.querySelector('.swidget');
+      document.body.classList.toggle('has-widgets', any);
+    } catch (_) { /* pre-body or detached: nothing to mirror */ }
+  }
+
   function makeView(key) {
     const node = document.createElement('div');
     node.className = 'swidget';
@@ -58,6 +75,7 @@ import { createSurface } from './surface-core.js';
     const v = { key, node, type: null, iframe: null, chart: null, label: '' };
     views[key] = v;
     surfaceEl.appendChild(node);
+    syncSurfaceOccupancy();
     return v;
   }
 
@@ -281,6 +299,7 @@ import { createSurface } from './surface-core.js';
     try { if (v.chart) { v.chart.destroy(); v.chart = null; } } catch (_) {}
     try { if (v.node && v.node.parentNode) v.node.parentNode.removeChild(v.node); } catch (_) {}
     delete views[key];
+    syncSurfaceOccupancy();
   }
 
   function handleEvent(ev) {

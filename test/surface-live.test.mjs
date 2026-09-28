@@ -88,6 +88,24 @@ await page.waitForFunction(() => document.querySelectorAll('#surface .swidget').
 ok((await widgetCount()) === 2, 'two widgets added -> two keyed viewports mounted');
 ok((await keys()).join(',') === 'weather,clock', 'viewports are keyed (weather,clock) for stable in-place targeting');
 
+/* The idle placeholder must get out of the way when the surface is occupied.
+ *
+ * This was `body:has(#surface .swidget) #ui .idle { display: none; }` — and :has() needs
+ * Chrome 105+ while minSdk is 24 (Android 7 ships WebView Chrome 51). An old WebView drops an
+ * unknown selector WHOLESALE, so the placeholder would have stayed on screen behind live
+ * widgets: a visible bug, not a cosmetic one, and nothing tested it either way. Replaced with a
+ * class that surface-host toggles, which works on every WebView the app can install on — and
+ * asserted here, on both edges, because a class that is set and never cleared is its own bug. */
+{
+  const occupied = await page.evaluate(() => ({
+    cls: document.body.classList.contains('has-widgets'),
+    idleShown: [...document.querySelectorAll('#ui .idle')]
+      .some((el) => getComputedStyle(el).display !== 'none'),
+  }));
+  ok(occupied.cls, 'body carries .has-widgets while the surface holds widgets');
+  ok(!occupied.idleShown, 'the idle placeholder is hidden while widgets are on the surface');
+}
+
 // ---- 3. Sandbox got the registered asset source + type code ----------------------
 await page.waitForTimeout(150);
 const wDoc = await page.evaluate((k) => {
@@ -135,6 +153,26 @@ await push({ type: 'surface', ops: [{ op: 'remove_widget', key: 'weather' }] });
 await page.waitForFunction(() => !document.querySelector('#surface .swidget[data-key="weather"]'), null, { timeout: 5000 });
 ok((await widgetCount()) === 1, 'remove_widget tears down only its own viewport');
 ok((await keys()).join(',') === 'clock', 'peer (clock) viewport still mounted after weather torn down');
+
+/* ...and the occupancy class must survive a PARTIAL teardown: one widget gone, one still there
+ * is still "occupied". A naive toggle-on-remove would clear it here and flash the placeholder
+ * back over a live widget. */
+ok(await page.evaluate(() => document.body.classList.contains('has-widgets')),
+  'body keeps .has-widgets while any widget remains (partial teardown)');
+
+/* Remove the last one: the class must CLEAR and the placeholder must come back. Without this
+ * edge the surface would be permanently marked occupied after its first widget ever. */
+await push({ type: 'surface', ops: [{ op: 'remove_widget', key: 'clock' }] });
+await page.waitForFunction(() => !document.querySelector('#surface .swidget'), null, { timeout: 5000 });
+ok(!(await page.evaluate(() => document.body.classList.contains('has-widgets'))),
+  'body drops .has-widgets once the last widget is torn down');
+ok(await page.evaluate(() => [...document.querySelectorAll('#ui .idle')]
+     .every((el) => getComputedStyle(el).display !== 'none') || !document.querySelector('#ui .idle')),
+  'the idle placeholder returns when the surface is empty again');
+
+/* Put one back so the later steps see the surface they expect. */
+await push({ type: 'surface', ops: [{ op: 'add_widget', key: 'clock', type: 'mybox', props: { v: 2 } }] });
+await page.waitForFunction(() => document.querySelector('#surface .swidget[data-key="clock"]'), null, { timeout: 5000 });
 
 // ---- 7. Legacy flat render still works ----------------------------------------------
 await push({ type: 'render', ui: { text: 'legacy still fine', components: [{ t: 'list', items: [{ title: 'a' }, { title: 'b' }] }] } });
