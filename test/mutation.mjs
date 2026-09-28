@@ -24,7 +24,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { MUTANTS, REPO } from './lib/mutants.mjs';
-import { reloadSidecar, needsScopedGateway, scopedGatewayPrecondition } from './lib/gateway-scope.mjs';
+import { reloadSidecar } from './lib/gateway-scope.mjs';
+import { setupScopedHome, startScoped, stopScoped, liveGatewayPid, SCOPED_WS_URL, logTail }
+  from './lib/scoped-gateway.mjs';
 
 const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 
@@ -54,6 +56,7 @@ for (const f of touched) {
   backups.set(f, { backup: b, hash: sha(f) });
 }
 let restored = false;
+let livePidMoved = false;
 const restoreAll = () => {
   if (restored) return;
   restored = true;
@@ -63,16 +66,28 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { resto
 process.on('uncaughtException', (e) => { restoreAll(); console.error(e); process.exit(70); });
 
 const results = [];
+let scopedUp = null;
 try {
   for (const m of chosen) {
     if (!existsSync(m.file)) { results.push({ ...m, verdict: 'skip', note: 'file missing' }); continue; }
-    /* adapter.py is imported INTO the gateway process; reloading it means restarting that
-     * process, and the live one is not ours to restart. Named, not hidden. */
-    if (m.restart && needsScopedGateway(m.file)) {
-      results.push({ ...m, verdict: 'PRECONDITION', note: scopedGatewayPrecondition(m.suite, m.file) });
-      console.log(`  NOT RUN ${m.suite.padEnd(24)} (needs a scoped gateway — see below)`);
-      continue;
+    /* adapter.py is imported INTO the gateway process, so reloading it means restarting that
+     * process. The live one is not ours to restart — so these run against a SCOPED instance with
+     * its own HERMES_HOME, ports and plugin copy (test/lib/scoped-gateway.mjs). The file mutated
+     * is that copy: the production adapter is never touched at all. */
+    if (m.scope === 'gateway' && !scopedUp) {
+      const livePidBefore = liveGatewayPid();
+      setupScopedHome({ log: (msg) => console.log(`  [scoped] ${msg}`) });
+      const started = startScoped({ log: (msg) => console.log(`  [scoped] ${msg}`) });
+      if (!started.ok) {
+        results.push({ ...m, verdict: 'BLOCKED', note: `scoped gateway did not start: ${started.note}` });
+        console.log(`  BLOCKED ${m.suite.padEnd(24)} scoped gateway did not start`);
+        console.log((started.tail || logTail(started.logPath) || '').split('\n').slice(-12).join('\n'));
+        continue;
+      }
+      scopedUp = { livePidBefore };
+      console.log(`  [scoped] up; live gateway pid ${livePidBefore} (must be unchanged at the end)`);
     }
+
     const original = readFileSync(m.file, 'utf8');
     if (!original.includes(m.from)) {
       results.push({ ...m, verdict: 'STALE', note: 'the mutation target no longer exists' });
@@ -89,7 +104,18 @@ try {
     /* The sidecar and adapter are RUNNING processes. Editing their source changes nothing until
      * the gateway reloads them, so an e2e mutation without this restart would test the
      * unmutated code and record a false MISS — the live-process equivalent of stale bytecode. */
-    if (m.restart) {
+    if (m.scope === 'gateway') {
+      /* Restart the SCOPED gateway so it imports the mutated adapter. Our own child process,
+       * stopped and started by us — no launchd, no label, nothing production-adjacent. */
+      stopScoped({});
+      const again = startScoped({});
+      if (!again.ok) {
+        writeFileSync(m.file, original);
+        results.push({ ...m, verdict: 'BLOCKED', note: `scoped restart failed: ${again.note}` });
+        console.log(`  BLOCKED ${m.suite.padEnd(24)} scoped restart failed: ${again.note}`);
+        continue;
+      }
+    } else if (m.restart) {
       const rl = reloadSidecar();
       if (!rl.ok) {
         /* A reload that did not happen means the suite would run against UNMUTATED code and be
@@ -103,9 +129,11 @@ try {
     }
     const r = spawnSync('npm', ['run', '-s', m.suite],
       { cwd: REPO, encoding: 'utf8', timeout: 900000,
-        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1',
+               ...(m.scope === 'gateway' ? { AGENTMOB_WS_URL: SCOPED_WS_URL } : {}) } });
     writeFileSync(m.file, original);
-    if (m.restart) reloadSidecar();
+    if (m.scope === 'gateway') { stopScoped({}); startScoped({}); }
+    else if (m.restart) reloadSidecar();
     const failed = r.status !== 0;
     const n = (r.stdout || '').match(/(\d+) (?:passed|failed)/g) || [];
     results.push({ ...m, verdict: failed ? 'CAUGHT' : 'MISSED', note: n.join(' ') });
@@ -113,6 +141,15 @@ try {
   }
 } finally {
   restoreAll();
+  if (scopedUp) {
+    stopScoped({ log: (msg) => console.log(`  [scoped] ${msg}`) });
+    /* The whole point of the scoped instance: prove production never moved. */
+    const after = liveGatewayPid();
+    const same = after === scopedUp.livePidBefore;
+    console.log(`  [scoped] live gateway pid ${scopedUp.livePidBefore} -> ${after} `
+      + `${same ? '(UNCHANGED)' : '!! CHANGED — the production gateway restarted'}`);
+    if (!same) livePidMoved = true;
+  }
 }
 
 /* Prove every file is exactly as we found it, then remove the backups.
@@ -148,4 +185,4 @@ for (const r of stale) console.log(`  STALE : ${r.suite} — ${r.note}`);
  * never attempted, so there is no verdict to fail on — but it is printed every time so it cannot
  * quietly become the status quo. BLOCKED does fail: it means the harness could not guarantee the
  * mutation took effect. */
-process.exit(!clean || missed.length || stale.length || blocked.length ? 1 : 0);
+process.exit(!clean || livePidMoved || missed.length || stale.length || blocked.length ? 1 : 0);

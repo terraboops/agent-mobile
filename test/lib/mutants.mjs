@@ -23,6 +23,9 @@ const INDEX = join(REPO, 'www/index.html');
 const DWATCH = join(REPO, 'test/device-watch.mjs');
 const WSF = join(REPO, 'transport/wsframes.js');
 const GS = join(REPO, 'test/lib/gateway-scope.mjs');
+/* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
+ * instance's own copy, so the production adapter is never modified and never needs restoring. */
+const SCOPED_AD = join(homedir(), '.hermes/profiles/agentmobtest/plugins/agentmob/adapter.py');
 
 /** suite -> the one edit that removes the behaviour it claims to test.
  *
@@ -137,7 +140,8 @@ export const MUTANTS = [
    * and this one had none until it was given some. Removing the `heard` status leaves the
    * pipeline fully working (text replies, TTS, speaking indicator all fine) and breaks exactly
    * one of e2e-voice's stated claims. */
-  { suite: 'e2e-voice', file: AD, restart: true, why: 'reporting that the utterance was heard',
+  { suite: 'e2e-voice', file: SCOPED_AD, scope: 'gateway',
+    why: 'reporting that the utterance was heard',
     from: '        self._push_status(heard=True)',
     to: '        pass  # heard status removed' },
 
@@ -145,7 +149,7 @@ export const MUTANTS = [
    * feature — before this entry existed, deleting the one line that speaks over a render broke
    * nothing in the table. That is the exact shape of a coverage hole: a feature added with a
    * suite, and a table that still points somewhere else. */
-  { suite: 'e2e-voice-render', file: AD, restart: true,
+  { suite: 'e2e-voice-render', file: SCOPED_AD, scope: 'gateway',
     why: 'the one spoken line over a purely visual reply',
     from: '        if self._tts_voice:\n            await self._schedule_speak(self._narrate_components([c for c in comp_types if c]))',
     to: '        pass  # narration removed' },

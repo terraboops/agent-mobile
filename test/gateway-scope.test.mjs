@@ -23,6 +23,10 @@ import { fileURLToPath } from 'node:url';
 import { assertKickstartAllowed, LIVE_LABEL, KICKSTART_OPT_IN, needsScopedGateway,
          sidecarPids, scopedGatewayPrecondition } from './lib/gateway-scope.mjs';
 import { codeOnly } from './lib/code-only.mjs';
+import { assertNotLiveHome, assertScopedSafe, writeScopedEnv, SCOPED_HOME, SCOPED_PORT,
+         SCOPED_SIDECAR_PORT, LIVE_HOME, PROFILES_ROOT } from './lib/scoped-gateway.mjs';
+import { mkdtempSync, writeFileSync as wf, readFileSync as rf, existsSync as ex } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 let pass = 0; const fails = [];
@@ -100,9 +104,15 @@ ok('no test file executes launchctl', offenders.length === 0,
   const raw = readFileSync(join(HERE, 'mutation.mjs'), 'utf8');
   ok('the mutation harness reloads the sidecar instead', raw.includes('reloadSidecar('),
     'nothing reloads mutated sidecar source, so restart-marked mutations would test stale code');
-  ok('the mutation harness refuses adapter mutations rather than restarting the gateway',
-    raw.includes('needsScopedGateway('),
-    'adapter.py is imported into the gateway process; those mutations must be named, not run');
+  /* This claim CHANGED once the scoped instance existed. It used to be "adapter mutations are
+   * refused"; they are now RUN, against a throwaway instance. What must stay true is that they
+   * never reach production: routed through startScoped and pointed at the scoped endpoint. */
+  ok('adapter mutations are routed to a scoped instance, not the live gateway',
+    raw.includes('startScoped(') && raw.includes('AGENTMOB_WS_URL'),
+    'gateway-scoped mutations must start their own instance and point the suite at it');
+  ok('the harness proves the live gateway pid did not move',
+    raw.includes('liveGatewayPid()') && raw.includes('livePidMoved'),
+    'the run must fail if production restarted, not merely print that it did');
 }
 
 /* ---- 4. the replacement mechanisms are wired to the right files ---------------------------- */
@@ -111,12 +121,73 @@ ok('adapter.py is classified as needing a scoped gateway',
 ok('the sidecar is NOT classified as needing a scoped gateway',
   !needsScopedGateway('/Users/x/.hermes/plugins/agentmob/sidecar/index.mjs'),
   'it is a child process the adapter respawns; restarting the gateway for it is gratuitous');
+/* Kept: it is still the fallback wording if a scoped instance cannot be brought up. */
 ok('the precondition message names the suite and says it was not run',
   /NOT RUN/.test(scopedGatewayPrecondition('e2e-voice', '/x/adapter.py'))
   && /e2e-voice/.test(scopedGatewayPrecondition('e2e-voice', '/x/adapter.py')),
   'missing coverage has to be visible or it becomes the status quo');
 ok('sidecarPids returns a list of integers', Array.isArray(sidecarPids())
   && sidecarPids().every((p) => Number.isInteger(p)));
+
+/* ---- 5. the scoped instance's own rails ---------------------------------------------------
+ * The scoped gateway exists so adapter mutations can run without restarting production. It is a
+ * second Hermes, and a second Hermes is only safe if it cannot act as the first one. */
+ok('the live Hermes root is refused as a scoped home',
+  threw(() => assertNotLiveHome(LIVE_HOME)) instanceof Error);
+ok('a non-profile directory inside the live root is refused',
+  threw(() => assertNotLiveHome(join(LIVE_HOME, 'cron'))) instanceof Error,
+  'only <root>/profiles/<name> is a real profile; anything else shares the live state');
+ok('a profile directory is allowed',
+  threw(() => assertNotLiveHome(join(PROFILES_ROOT, 'agentmobtest'))) === null,
+  'the supported layout must not be blocked by its own guard');
+ok('the scoped ports are not the live ports',
+  SCOPED_PORT !== 8123 && SCOPED_SIDECAR_PORT !== 8790, `${SCOPED_PORT}/${SCOPED_SIDECAR_PORT}`);
+
+/* THE ONE THAT MATTERS MOST. A second process holding TELEGRAM_BOT_TOKEN connects as Terra's bot
+ * and starts consuming her messages — strictly worse than the gateway restarts this replaces. The
+ * scoped .env is built by allowlist; this proves a token in the source does not survive the trip. */
+{
+  const tmp = mkdtempSync(join(tmpdir(), 'scoped-env-'));
+  const fake = join(tmp, 'live.env');
+  wf(fake, [
+    'FIREWORKS_API_KEY=fw-REDACTED-TEST',
+    'TELEGRAM_BOT_TOKEN=1234:SHOULD-NEVER-BE-COPIED',
+    'TELEGRAM_ALLOWED_USERS=8334926343',
+    'DISCORD_BOT_TOKEN=nope',
+    'SLACK_APP_TOKEN=nope',
+    'RELAY_SECRET=nope',
+    'SOME_OTHER_SECRET=nope',
+  ].join('\n'));
+  const home = join(tmp, 'profiles', 'scratch');
+  const info = writeScopedEnv(home, fake);
+  const written = rf(join(home, '.env'), 'utf8');
+  ok('the scoped .env carries the model credential it needs',
+    info.keys.includes('FIREWORKS_API_KEY') && written.includes('fw-REDACTED-TEST'));
+  for (const forbidden of ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_ALLOWED_USERS', 'DISCORD_BOT_TOKEN',
+                           'SLACK_APP_TOKEN', 'RELAY_SECRET', 'SOME_OTHER_SECRET']) {
+    ok(`the scoped .env does NOT carry ${forbidden}`, !written.includes(forbidden + '='),
+      'a scoped instance holding this would act as Terra, not as a test');
+  }
+  /* And the re-check refuses a home someone hand-edited afterwards. */
+  wf(join(home, '.env'), 'TELEGRAM_BOT_TOKEN=1234:sneaked-in\n');
+  ok('assertScopedSafe refuses a home whose .env gained a platform token',
+    threw(() => assertScopedSafe(home)) instanceof Error,
+    'the allowlist runs once at setup; this is what catches a later edit');
+}
+
+/* The real scoped home, if it has been created, must satisfy the same rules. */
+if (ex(join(SCOPED_HOME, 'config.yaml'))) {
+  const cfg = rf(join(SCOPED_HOME, 'config.yaml'), 'utf8');
+  ok('the scoped config pins the scoped port', cfg.includes(`port: ${SCOPED_PORT}`));
+  ok('the scoped config configures no messaging platform',
+    !/\n\s*(telegram|discord|whatsapp|slack|weixin):/.test(cfg));
+  ok('the live scoped home passes its own safety check',
+    threw(() => assertScopedSafe(SCOPED_HOME)) === null);
+  const env = ex(join(SCOPED_HOME, '.env')) ? rf(join(SCOPED_HOME, '.env'), 'utf8') : '';
+  ok('the real scoped .env holds no platform credential',
+    !/TELEGRAM|DISCORD|SLACK|WHATSAPP|RELAY/i.test(env.replace(/^#.*$/gm, '')),
+    'checked with comments stripped, since the header names these on purpose');
+}
 
 console.log(`\n${pass} passed, ${fails.length} failed`);
 process.exit(fails.length ? 1 : 0);

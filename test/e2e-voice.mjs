@@ -24,6 +24,10 @@ const DEFAULT_UTT = RENDER
   ? 'Draw me a chart of the numbers one through five. Just the chart.'
   : 'What is two plus two? Answer in one short sentence.';
 const UTT = process.argv.filter((a) => !a.startsWith('--'))[2] || DEFAULT_UTT;
+/* AGENTMOB_WS_URL points this suite at a SCOPED gateway instance instead of the live one, which is
+ * how the adapter mutations run without restarting production (test/lib/scoped-gateway.mjs). */
+const WS_URL = process.env.AGENTMOB_WS_URL || 'ws://127.0.0.1:8123';
+if (process.env.AGENTMOB_WS_URL) console.log(`endpoint: ${WS_URL} (scoped instance)`);
 const RATE = 24000, FRAME = 480; // sidecar uplink decoder: 24k mono, 20ms
 const dir = mkdtempSync(join(tmpdir(), 'e2e-'));
 execFileSync('say', ['-v', 'Samantha', '-o', join(dir, 'u.aiff'), UTT]);
@@ -35,7 +39,7 @@ console.log(`utterance: "${UTT}" (${(speech.length / 2 / RATE).toFixed(1)}s spee
 
 const events = [];
 const chartColourViolations = [];
-const s = new AgentStream({ url: 'ws://127.0.0.1:8123', onPair: async (id, agentId) => { console.log('TOFU pair: agent', agentId, 'identity', Buffer.from(id).toString('base64').slice(0, 24) + '…'); return true; } });
+const s = new AgentStream({ url: WS_URL, onPair: async (id, agentId) => { console.log('TOFU pair: agent', agentId, 'identity', Buffer.from(id).toString('base64').slice(0, 24) + '…'); return true; } });
 let audioFrames = 0;
 /* ---- cross-rail ordering ----------------------------------------------------------------
  * Render envelopes are cmd frames; narration is audio frames. Counting each separately proves
@@ -45,6 +49,7 @@ let audioFrames = 0;
  * stamped — later ones cannot move the boundary. */
 let tick = 0;
 let firstAudioTick = null;
+let audioAfterRender = 0;     // frames that arrived once a render envelope had been sent
 const renderTicks = [];
 // Capture EVERY inbound cmd (the stock client only resolves its own pending ids).
 s._onFrame = function (raw) {
@@ -72,7 +77,11 @@ s._onFrame = function (raw) {
     else console.log(`  ← ${kind}: ${JSON.stringify(d).slice(0, 160)}`);
     // Honour the render feedback contract like the phone does.
     if (kind === 'surface') for (const op of (d.ops || [])) if (op.key) s.cmd({ type: 'render_result', key: op.key, ok: true }).catch(() => {});
-  } else if (f.type === T.audio) { audioFrames++; if (firstAudioTick === null) firstAudioTick = ++tick; }
+  } else if (f.type === T.audio) {
+    audioFrames++;
+    if (firstAudioTick === null) firstAudioTick = ++tick;
+    if (renderTicks.length > 0) audioAfterRender++;
+  }
 };
 await s.connect();
 console.log('handshake OK — AEAD channel up');
@@ -150,29 +159,36 @@ ok('no chart carried hard-coded colours (the surface themes them)',
  * protocol. Narration emitted BEFORE its render would count identically and be wrong: the phone
  * would say "Here's the chart" to a blank surface.
  *
- * WHAT THE ORDERING CLAIM IS WORTH, measured rather than assumed. I tried to red-prove it by
- * moving the _schedule_speak call ABOVE the render push in the adapter, restarting the gateway,
- * and re-running. It stayed GREEN. The reason is _flush_speak: it sleeps 1.5s (a settle window
- * that coalesces streamed sends) before synthesising, while the render push is synchronous in
- * the same coroutine. The order therefore holds BY CONSTRUCTION and cannot be inverted by moving
- * the call — so this is a STRUCTURAL GUARD, not a test of the call site. It fails only if that
- * settle window is removed AND the call is reordered. Recorded here so the next person does not
- * repeat the experiment, and so the green tick is not mistaken for strength it does not have.
+ * WHAT THE ORDERING CLAIM IS, after two corrections from real runs.
+ *
+ * First I compared the turn's FIRST audio frame against the render. It stayed green when I moved
+ * _schedule_speak above the render push in the adapter, because _flush_speak sleeps 1.5s before
+ * synthesising while the render push is synchronous — so I labelled it a structural guard that
+ * could not fail. Then it FAILED on a scoped instance: first audio at tick 88, render at 103.
+ *
+ * The scoped run showed why, and it was the assertion that was wrong, not the adapter. The agent
+ * had spoken a PREAMBLE before rendering — a full speaking:true/false pair precedes the render
+ * envelope — so the turn's first audio frame belongs to that preamble, not to the narration. A
+ * reply that talks first and then shows something is perfectly good behaviour on a voice-first
+ * surface; the claim must not forbid it.
+ *
+ * What actually matters is that speech arrives AFTER the surface is on screen, so the narration
+ * describes something the user can see. That is audioAfterRender, and unlike the first-frame
+ * version it is falsifiable: delete _narrate_components and a render-only turn has no audio after
+ * its render envelope at all. The mutation entry for this suite proves exactly that.
  *
  * STATED LIMIT, because it is the difference between this and done: this is the HOST's send
  * order. It does not prove the handset PLAYS them in that order — Android buffers audio and the
  * WebView renders on its own schedule, and only the device can answer that. `npm run
- * device-verify` is where that claim lives, and it is currently blocked on hardware.
- *
- * The assertion that carries real weight is the first one: it is CAUGHT by the mutation that
- * deletes the narration (npm run mutation -- e2e-voice-render). */
+ * device-verify` is where that claim lives, and it is currently blocked on hardware. */
 if (renderTicks.length > 0 && texts.length === 0) {
   ok('a render-only reply was narrated at all', audioFrames > 0,
     'the phone would show the component in total silence — indistinguishable from a lost request');
-  ok('the narration followed the render envelope (structural guard, see above — not falsifiable)',
-    firstAudioTick !== null && firstAudioTick > Math.min(...renderTicks),
-    `first audio at tick ${firstAudioTick}, first render at tick ${Math.min(...renderTicks)} — `
-    + 'narrating a surface that has not been sent yet');
+  ok('speech arrived AFTER the render envelope, so the narration describes a visible surface',
+    audioAfterRender > 0,
+    `${audioFrames} audio frames in the turn but ${audioAfterRender} after the render at tick `
+    + `${Math.min(...renderTicks)} (first audio at tick ${firstAudioTick}) — everything spoken `
+    + 'came before the surface was sent, so the phone talked about a screen that was not there');
 } else if (RENDER) {
   /* --render asked for a purely visual answer and did not get one. The narration claim cannot be
    * evaluated, and silently passing would make this suite look like it covers narration when the
