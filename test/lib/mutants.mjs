@@ -96,6 +96,10 @@ export const MUTANTS = [
     from: 'const trig = await typedTurn({ text: TRIGGER });',
     to: 'const trig = { ok: true, error: null }; void typedTurn;' },
 
+  { suite: 'ice-tailnet', file: SC, restart: true, why: 'gathering the tailnet address as a host candidate',
+    from: 'const ICE_HOST_ADDRS = tailnetAddresses();',
+    to: 'const ICE_HOST_ADDRS = [];' },
+
   /* ---- found by the coverage gate: suites that had no entry at all ----------------------- */
 
   /* Elegant case: the mutation IS drift. Change the installed sidecar and plugin-drift must
