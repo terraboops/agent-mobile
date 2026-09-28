@@ -159,8 +159,39 @@ ok(/via WebRTC/.test(tail), 'the interrupted reply was on the WebRTC path, not a
 const afterInterrupt = lastDownlinkAt > tInterrupt ? lastDownlinkAt - tInterrupt : 0;
 ok(afterInterrupt === 0, 'no audio packet arrived after the interrupt',
   `last packet landed ${afterInterrupt}ms AFTER the interrupt`);
+/* ---- AND THE SURFACE MUST STILL WORK ---------------------------------------------------------
+ * Every assertion above is about audio STOPPING. None of them says the thing is usable
+ * afterwards, and "the control works once and then wedges" is the exact shape of issue #1 — a
+ * Stop that silences the agent permanently is not a Stop, it is a mute with extra steps.
+ *
+ * This is also the half that no longer needs a handset. The device stage can only tell us that
+ * AudioTrack flushed its buffer; whether the pipeline accepts another turn, synthesises it, and
+ * puts it back on the SAME WebRTC downlink is answerable right here, and was not being asked.
+ *
+ * A typed turn rather than more mic audio: the uplink already did its job above, and whisper
+ * adds a minute of variance to a claim that is about the reply path. */
+const beforeSecond = downlink;
+console.log('\n  asking for a second reply — the pipeline must not be wedged…');
+await s.cmd('Count slowly from one to twelve.', { timeoutMs: 30000 }).catch(() => {});
+/* 20 packets is ~0.4s: enough that this cannot be a stray tail packet from the interrupted
+ * reply, and small enough not to depend on how long the second answer happens to be. */
+const resumed = await waitFor(() => downlink > beforeSecond + 20, 180000);
+ok(resumed, `a NEW reply plays after the interrupt (${beforeSecond} -> ${downlink} RTP)`,
+  'the downlink never restarted — Stop left the pipeline wedged, so the agent is silenced for '
+  + 'the rest of the session and only a reconnect recovers it');
+
+/* Same transport, not a silent demotion. An interrupt that quietly drops the peer connection and
+ * finishes over the WebSocket fallback would still "work" by the assertion above while having
+ * broken the thing this whole path exists for. */
+if (resumed) {
+  ok(pc.connectionState === 'connected',
+    `the WebRTC peer survived the interrupt (state: ${pc.connectionState})`,
+    'the second reply arrived but the peer connection had been torn down and rebuilt, or fell '
+    + 'back to the WebSocket — a demotion this suite would otherwise call success');
+}
+
 console.log(`\n  downlink total ${downlink} RTP | 0 packets after the interrupt | `
-  + `quiet for ${(quietFor / 1000).toFixed(1)}s`);
+  + `quiet for ${(quietFor / 1000).toFixed(1)}s | second reply ${downlink - beforeSecond} RTP`);
 console.log(`\n${pass} passed, ${fail} failed`);
 try { pc.close(); } catch {}
 try { s.close?.(); } catch {}

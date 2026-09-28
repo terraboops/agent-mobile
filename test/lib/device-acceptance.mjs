@@ -99,12 +99,15 @@ export const DEVICE_ACCEPTANCE = [
     issue: null,
     claim: 'Tapping Stop mid-sentence actually stops playback on the device.',
     whyDeviceOnly:
-      'e2e-interrupt sends the interrupt over the channel and confirms no further audio packet '
-      + 'is emitted. On the device the chain is longer: a touch must reach the WebView button, '
-      + 'the bridge must carry it, and the AudioTrack already holding buffered PCM must be '
-      + 'flushed — audio can keep playing for hundreds of ms after the send path goes quiet, '
-      + 'and only the handset shows that.',
-    hostProof: 'e2e-interrupt (no audio packet arrives after the interrupt, host side)',
+      'Narrowed to the buffer. The host now proves the downlink stops, stays stopped, and '
+      + 'RESUMES for a later turn. What remains is that the AudioTrack already holding buffered '
+      + 'PCM is flushed: audio can keep playing for hundreds of ms after the send path goes '
+      + 'quiet, and only the handset shows that. The touch-to-bridge leg is covered by mic-mute.',
+    hostProof: 'e2e-interrupt (13 assertions: the downlink stops, the sidecar records the '
+             + 'playback as CUT SHORT with a reason naming the interrupt, no packet arrives '
+             + 'after it, AND — the half that was missing — a NEW reply plays afterwards on the '
+             + 'same surviving WebRTC peer, so Stop does not wedge the pipeline); mic-mute '
+             + '(Stop sends an interrupt and does not touch the mic)',
     stages: ['tapped Stop mid-sentence', 'Stop actually stopped the audio'],
   },
   {
