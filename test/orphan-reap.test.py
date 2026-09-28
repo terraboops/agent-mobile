@@ -4,8 +4,8 @@ The bug this exists for: stopping the gateway left a node process orphaned and s
 on :8123, which then blocked the next sidecar from ever binding. The EADDRINUSE guard makes that
 collision survivable; this makes it not happen. The adapter OWNS the sidecar, so it reaps it.
 
-Everything here runs against a THROWAWAY port, driving the module-level reaping helpers and a
-real sidecar subprocess — NOT an AgentMobAdapter instance, which this test never builds. The live
+Everything here runs against a THROWAWAY port: the module-level reaping helpers, a real sidecar
+subprocess, and (section 4) the real _run_sidecar spawn driven through a hand-built adapter. The live
 gateway is never touched — taking it down to demonstrate a fix about not taking things down
 would be its own joke, and it already cost an outage tonight.
 

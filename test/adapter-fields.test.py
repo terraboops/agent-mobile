@@ -129,6 +129,10 @@ HAND_BUILT = {
     "transcribe-capture.test.py": {"_outbound_q", "_connected", "_undelivered",
                                    "_sidecar_stderr", "_restart_times", "_sidecar_fails",
                                    "_sidecar_wedged", "_sidecar_flapping", "_flap_reports"},
+    # Added when orphan-reap gained a section that drives the REAL _run_sidecar to prove the
+    # spawn puts the sidecar in its own process group. It hand-builds an adapter for that, so
+    # it falls under this check now — which is exactly how this check is meant to behave.
+    "orphan-reap.test.py": set(),
 }
 
 SELF = Path(__file__).name
@@ -148,14 +152,14 @@ for name, exempt in sorted(HAND_BUILT.items()):
     ok(f"{name}: carries the state fields it does not exempt", not missing,
        f"missing {sorted(missing)} — this fake is a different object than production runs")
 
-# orphan-reap does NOT hand-build an adapter; it drives module-level reaping and a subprocess.
-# Its docstring used to claim "a real AgentMobAdapter instance", which was never true.
+# orphan-reap's docstring has now been wrong in BOTH directions. It first claimed "a real
+# AgentMobAdapter instance" when it built none; after gaining the production-spawn section it
+# builds one, which made the correction itself stale. Assert the current truth rather than
+# either past version.
 orphan = (TESTS / "orphan-reap.test.py").read_text(encoding="utf8")
-ok("orphan-reap builds no adapter (so field parity does not apply to it)",
-   "object.__new__" not in orphan)
-ok("orphan-reap no longer claims to use a real adapter instance",
-   "real AgentMobAdapter instance" not in orphan,
-   "the docstring still overstates what it does")
+ok("orphan-reap's docstring matches what it now does",
+   "_run_sidecar" in orphan and "object.__new__" in orphan,
+   "it no longer drives the production spawn")
 
 print(f"\n{PASS} passed, {len(FAILS)} failed")
 sys.exit(1 if FAILS else 0)
