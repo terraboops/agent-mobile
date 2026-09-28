@@ -108,16 +108,17 @@ ok('the agent responded at all (text or a render)', texts.length > 0 || renders.
   'nothing came back — the utterance never reached the agent, or it produced nothing');
 ok('the sidecar reported hearing the utterance (status.heard)', heard.length > 0,
   'no heard status — the transcript never made it to the dispatch path');
-if (texts.length) {
-  ok('a text reply was spoken (TTS audio frames arrived)', audioFrames > 0, `${audioFrames} frames`);
-  ok('the speaking indicator was raised and then cleared',
-    events.some((d) => d.type === 'status' && d.speaking === true)
-    && events.some((d) => d.type === 'status' && d.speaking === false),
-    'the phone would be left with a stuck speaking pill');
-} else {
-  console.log('  note  render-only reply: no text, so the speech claims do not apply. '
-    + 'The phone shows the component and stays silent.');
-}
+/* EVERY reply is spoken, including a purely visual one. A render used to arrive in silence —
+ * the phone showed the component and said nothing, no TTS and no speaking indicator — which on
+ * a voice-first surface is indistinguishable from the request having been lost. The adapter now
+ * narrates a render-only reply in one line, so the claim applies to both shapes and FAILS when
+ * speech is missing rather than being excused. */
+ok('the reply was spoken (TTS audio frames arrived)', audioFrames > 0,
+  `${audioFrames} frames — a render-only reply must still be narrated, not left silent`);
+ok('the speaking indicator was raised and then cleared',
+  events.some((d) => d.type === 'status' && d.speaking === true)
+  && events.some((d) => d.type === 'status' && d.speaking === false),
+  'the phone would be left with a stuck speaking pill');
 ok('no chart carried hard-coded colours (the surface themes them)',
   chartColourViolations.length === 0,
   chartColourViolations.join(', '));

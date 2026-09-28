@@ -154,6 +154,13 @@ await sleep(2500);
 ok(wsAudioFrames === 0,
   `downlink did NOT fall back to the WebSocket (ws audio frames: ${wsAudioFrames})`,
   wsAudioFrames ? 'sidecar still considered webrtc not-ready' : '');
+/* downlinkPT was printed inside the message above and never checked. The payload type the
+ * sidecar SENDS must be the one that was negotiated, or the phone receives RTP it cannot
+ * decode — audible as silence with a healthy-looking packet count, which every other
+ * assertion here would pass. */
+ok(Number(downlinkPT) === Number(opusPT),
+  `downlink RTP carries the negotiated payload type (${downlinkPT} === ${opusPT})`,
+  `sent PT ${downlinkPT} but negotiated ${opusPT} — the phone would decode nothing`);
 
 console.log(`\n  states: ${states.join(' -> ')}`);
 console.log(`  uplink ${sent} RTP  |  downlink ${downlinkPkts} RTP (${downlinkBytes}B)  |  ws fallback frames ${wsAudioFrames}  |  trickled candidates ${cands}`);

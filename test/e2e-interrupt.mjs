@@ -151,7 +151,16 @@ if (cut) {
 }
 ok(/via WebRTC/.test(tail), 'the interrupted reply was on the WebRTC path, not a fallback');
 
-console.log(`\n  downlink total ${downlink} RTP | interrupt -> silence in ${((lastDownlinkAt - tInterrupt) / 1000).toFixed(1)}s`);
+/* lastDownlinkAt - tInterrupt is NEGATIVE whenever the interrupt works, because the last
+ * packet necessarily arrived BEFORE the interrupt that stopped them. It was printed as a
+ * latency and read "-0.0s" on every successful run — a meaningless number presented as a
+ * result. What is actually measurable is how much audio arrived AFTER the interrupt (zero) and
+ * how long it has been quiet since. */
+const afterInterrupt = lastDownlinkAt > tInterrupt ? lastDownlinkAt - tInterrupt : 0;
+ok(afterInterrupt === 0, 'no audio packet arrived after the interrupt',
+  `last packet landed ${afterInterrupt}ms AFTER the interrupt`);
+console.log(`\n  downlink total ${downlink} RTP | 0 packets after the interrupt | `
+  + `quiet for ${(quietFor / 1000).toFixed(1)}s`);
 console.log(`\n${pass} passed, ${fail} failed`);
 try { pc.close(); } catch {}
 try { s.close?.(); } catch {}

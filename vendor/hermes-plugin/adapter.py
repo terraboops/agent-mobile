@@ -1687,6 +1687,10 @@ class AgentMobAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="render could not be delivered to the phone",
                               message_id=secrets.token_hex(6))
         logger.info("agentmob: ui published: keys=%s comps=%s", list(ui.keys()), comp_types)
+        # Say something. A purely visual reply otherwise lands in total silence on a
+        # voice-first surface (see _narrate_components).
+        if self._tts_voice:
+            await self._schedule_speak(self._narrate_components([c for c in comp_types if c]))
         return SendResult(success=True, message_id=secrets.token_hex(6))
 
     @staticmethod
@@ -1913,7 +1917,34 @@ class AgentMobAdapter(BasePlatformAdapter):
                               error="surface ops could not be delivered to the phone",
                               message_id=secrets.token_hex(6))
         logger.info("agentmob: surface ops=%s keys=%s", opkinds, keys)
+        # Only when something became VISIBLE. register/test ops are plumbing and narrating them
+        # would have the phone announce work the user cannot see.
+        if self._tts_voice and any(o in ("publish", "add_widget", "update_widget") for o in opkinds):
+            await self._schedule_speak("I've put that on the screen.")
         return SendResult(success=True, message_id=secrets.token_hex(6))
+
+    @staticmethod
+    def _narrate_components(kinds) -> str:
+        """One short line to say out loud when a reply is purely visual.
+
+        A render-only answer used to arrive in silence: the phone showed the component and said
+        nothing, no TTS and no speaking indicator. On a VOICE-FIRST surface that is a gap — the
+        user asked out loud and got no acknowledgement that anything happened, which is
+        indistinguishable from the request being lost.
+
+        Deliberately short, and it goes through _schedule_speak, which COALESCES: if the agent
+        also sends text for the same turn the two are joined and spoken once, rather than the
+        phone saying two things.
+        """
+        seen = [k for k in ("chart", "list", "image", "svg", "viz", "title", "text") if k in kinds]
+        head = seen[0] if seen else None
+        return {
+            "chart": "Here's the chart.",
+            "list": "Here's the list.",
+            "image": "Here's the image.",
+            "svg": "Here's the diagram.",
+            "viz": "Here's the visual.",
+        }.get(head, "I've put that on the screen.")
 
     async def _publish_image(self, chat_id, data, mime, caption) -> SendResult:
         return await self._publish_ui(chat_id, {
