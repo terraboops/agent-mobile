@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import androidx.activity.result.ActivityResult;
+import androidx.annotation.RequiresPermission;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioManager;
@@ -933,6 +934,32 @@ public class AgentChannelPlugin extends Plugin {
     /** Mic is live on EITHER path: libwebrtc track attached, or the raw Concentus loop. */
     private boolean micOn() { return audioRunning; }
 
+    /**
+     * Open the mic and run the capture/playback loops.
+     *
+     * <p>DECLARED, not suppressed. Android lint flagged the {@code new AudioRecord(...)} below as
+     * MissingPermission because the RECORD_AUDIO check lives in the CALLERS, one frame up, and
+     * lint does not follow that. Silencing it with a bare {@code @SuppressLint} would hide the
+     * real question — is every path here actually gated? — behind an annotation that asserts
+     * nothing and is never re-examined.
+     *
+     * <p>{@code @RequiresPermission} states the contract instead: this method may only be entered
+     * with RECORD_AUDIO held. Lint then propagates that obligation to the callers and verifies
+     * THEM, so the guarantee is checked rather than asserted, and a future caller that forgets the
+     * check becomes a new lint error instead of inheriting a blanket suppression.
+     *
+     * <p>Both existing callers — {@link #startAudio(PluginCall)} and
+     * {@link #audioPermissionCallback(PluginCall)} — test
+     * {@code checkSelfPermission(RECORD_AUDIO) == PERMISSION_GRANTED} immediately before calling.
+     * The method is private, nothing reaches it by reflection, and {@code startAudio} is a
+     * {@code @PluginMethod} invoked only from bridge.js.
+     *
+     * <p>Defence in depth, since this is the microphone: if it were ever entered without the
+     * permission, {@code startRecording()} throws and the catch below reports
+     * {@code audio: false} with the error rather than leaving the UI claiming a live mic — the
+     * failure mode that matters on a surface where a badge says whether you are being heard.
+     */
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     private void startAudioActual() {
         if (audioRunning) return; // reentry guard (session event can double-fire)
         if (webRtc != null) {

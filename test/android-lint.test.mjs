@@ -91,16 +91,35 @@ ok('no Java code calls an API above minSdk (NewApi)', newApi.length === 0,
 ok('no newer-API constants are being inlined (InlinedApi)', inlined.length === 0,
   `${inlined.length}: ${[...new Set(locsFor('InlinedApi'))].join(', ')}`);
 
-/* ---- reported, not enforced ----------------------------------------------------------------
- * Adopting every lint error at once would mean either fixing or suppressing unrelated findings
- * in the same change, and a suppression added to make a gate green is how a gate stops meaning
- * anything. These are printed every run so they cannot be forgotten, and left for a decision. */
-if (otherErrors.length) {
-  console.log('\n  lint errors NOT gated here (reported so they are not forgotten):');
-  for (const i of otherErrors) {
-    console.log(`    [${i.id}] ${(i.message || '').slice(0, 110)}`);
-    console.log(`      at ${[...new Set(locsFor(i.id))].slice(0, 3).join(', ')}`);
-  }
+/* ---- every lint ERROR is fatal now ---------------------------------------------------------
+ * This began as "NewApi is fatal, the rest is printed", because adopting every issue class at
+ * once would have meant fixing or suppressing unrelated findings in the same change, and a
+ * suppression added to make a gate green is how a gate stops meaning anything.
+ *
+ * There was exactly one other error: MissingPermission on the AudioRecord construction. It is
+ * resolved — see AgentChannelPlugin.startAudioActual, where @RequiresPermission DECLARES the
+ * contract so lint propagates it and verifies the callers, rather than a @SuppressLint that
+ * asserts nothing and is never re-examined. With the count at zero, the reason for deferring is
+ * gone, and a zero baseline is the cheap moment to gate: nothing has to be suppressed to get
+ * there, so the gate starts honest.
+ *
+ * MissingPermission especially belongs here rather than in a printed list. It guards the
+ * MICROPHONE, and code that opens the mic without checking is the failure this surface can least
+ * afford — the badge would say one thing while the hardware did another.
+ *
+ * Warnings stay unenforced: adopting 36 of them today would be exactly what the first paragraph
+ * warns against. They are printed by class so the number cannot grow unnoticed. */
+ok('lint reports no errors of any class', otherErrors.length === 0,
+  `${otherErrors.length} error(s):\n       `
+  + otherErrors.map((i) => `[${i.id}] ${(i.message || '').slice(0, 120)}`
+      + `\n       at ${[...new Set(locsFor(i.id))].slice(0, 3).join(', ')}`).join('\n       ')
+  + '\n       Fix it, or exclude that issue id here with a stated reason. Do not reach for '
+  + '@SuppressLint just to get this green.');
+
+if (warnings.length) {
+  const byId = warnings.reduce((m, i) => (m[i.id] = (m[i.id] || 0) + 1, m), {});
+  console.log('  warnings (not gated): ' + Object.entries(byId)
+    .sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(' '));
 }
 
 console.log(`\n${pass} passed, ${fails.length} failed`);
