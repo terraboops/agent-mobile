@@ -28,13 +28,19 @@ export const DEVICE_ACCEPTANCE = [
       + 'so a permission or OEM restriction makes the mute a no-op while the badge still renders '
       + 'muted. Only `adb shell dumpsys audio` can say whether the hardware actually went quiet. '
       + 'The STATE MACHINE around it no longer needs the phone — see hostProof.',
-    hostProof: 'mic-mute (16 assertions, no device: muting does not stop the reply, sends no '
-             + 'interrupt, flatlines the meter, and unmutes again; Stop interrupts the reply and '
-             + 'leaves the mic alone; a double tap causes exactly one native transition — the '
-             + 'wedge this issue is named for); android-lint + @RequiresPermission (the callers '
-             + 'are verified to hold RECORD_AUDIO); apk-installable (MODIFY_AUDIO_SETTINGS is in '
-             + 'the built APK, without which the mute silently no-ops); ctrlbar-geometry (the '
-             + 'button is 48dp+ at every width and cannot collide with Stop)',
+    hostProof: 'mute-webrtc (the FALSIFIABLE one: on the paced WebRTC downlink the sidecar '
+             + 'checks the cancel token before every frame, so dropping the VAD threshold makes '
+             + 'a muted mic read as speech onset, barge-in truncates the reply, and the sidecar '
+             + 'records "cut short ... superseded or interrupted" — mutation CAUGHT); '
+             + 'mute-midreply (the same claim end to end over the WS downlink, where it holds by '
+             + 'construction because that path is burst-sent); mic-mute (20 assertions, no '
+             + 'device: muting does not stop the reply, sends no interrupt, flatlines the meter, '
+             + 'unmutes again, survives a reconnect — reverting __ensureMicOn fails it; Stop '
+             + 'interrupts the reply and leaves the mic alone; a double tap causes exactly one '
+             + 'native transition); android-lint + @RequiresPermission (the callers are verified '
+             + 'to hold RECORD_AUDIO); apk-installable (MODIFY_AUDIO_SETTINGS is in the built '
+             + 'APK, without which the mute silently no-ops); ctrlbar-geometry (the button is '
+             + '48dp+ at every width and cannot collide with Stop)',
     stages: ['mute mid-sentence (issue #1)',
              'mute mid-sentence: the device reports the mic muted (issue #1)',
              'mute mid-sentence: the reply KEPT playing (muting the mic must not stop it)',

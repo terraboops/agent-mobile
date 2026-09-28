@@ -228,6 +228,18 @@ export const MUTANTS = [
     from: 'const SILENCE_MS = 5000;',
     to: 'const SILENCE_MS = 9999999;' },
 
+  /* THE falsifiable version of issue #1, and the reason this suite exists alongside
+     mute-midreply. Drop the VAD threshold and digital silence from a muted mic reads as speech
+     onset; maybeBargeIn() then cancels the in-flight reply. On the PACED WebRTC downlink the
+     sidecar re-checks that cancel token before every frame, so the reply is genuinely truncated
+     and the truncation is recorded — "cut short after i/n frames: superseded or interrupted".
+     The same mutation MISSED against mute-midreply, because the WS downlink is burst-sent and
+     there is no pacing left to cancel. Same bug, same mutation, and only this path can see it. */
+  { suite: 'mute-webrtc', file: SCOPED_SC, scope: 'gateway',
+    why: 'the VAD threshold that stops a muted mic being heard as speech onset',
+    from: 'const SPEECH_RMS = 700;',
+    to: 'const SPEECH_RMS = -1;' },
+
   { suite: 'identity-pin', file: SCOPED_SC, scope: 'gateway',
     why: 'the sidecar honouring AGENTMOB_ALLOWED_CLIENTS at all',
     from: 'const clientAllow = _allowSet.size',

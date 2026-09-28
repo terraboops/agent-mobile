@@ -62,7 +62,8 @@
     "discover-live": "node test/discover-live.test.mjs",
     "adb-isolation": "node test/adb-isolation.test.mjs",
     "identity-pin": "node test/identity-pin.test.mjs",
-    "mute-midreply": "node test/mute-midreply.test.mjs"
+    "mute-midreply": "node test/mute-midreply.test.mjs",
+    "mute-webrtc": "node test/mute-webrtc.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
