@@ -54,12 +54,16 @@ export const DEVICE_ACCEPTANCE = [
     issue: 2,
     claim: 'A phone whose ONLY route to this Mac is the tailnet completes an ICE pair.',
     whyDeviceOnly:
-      'ice-tailnet filters the sidecar\'s answer to the tailnet candidate alone and reaches '
-      + 'connected, which proves that candidate is CONNECTABLE. But its own comment records that '
-      + 'the LOCAL side could not be forced onto the tailnet — werift still enumerates the '
-      + 'default interface — so it is not a simulation of a single-egress phone.',
-    hostProof: 'ice-tailnet (the advertised tailnet candidate is connectable, not merely '
-             + 'advertised)',
+      'Both peers run on THIS host, and the route to this host\'s own tailnet address is a LOCAL '
+      + 'host route — route -n get reports flags <UP,HOST,DONE,LOCAL>, against a plain '
+      + '100.64.0.0/10 tunnel route for a remote peer. The kernel short-circuits it, so not one '
+      + 'byte crosses WireGuard or DERP. No arrangement of two processes on one machine fixes '
+      + 'that; it needs a second host, and standing one up means deploying. ice-tailnet now pins '
+      + 'the LOCAL flag as an assertion so the limitation is stated, not remembered.',
+    hostProof: 'ice-tailnet (both ends are genuinely ON the tailnet address — our socket binding '
+             + 'is verified against lsof and the offer advertises the address it is really bound '
+             + 'to, not werift\'s default-interface guess — and ICE completes with no LAN or '
+             + 'srflx path available)',
     stages: [],
   },
   {
