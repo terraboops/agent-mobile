@@ -14,3 +14,6 @@ __pycache__/
 *.pyc
 .DS_Store
 test/audit/out/
+
+# mutation harness backups — never commit these
+*.mutation-backup

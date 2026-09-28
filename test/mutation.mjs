@@ -219,13 +219,23 @@ try {
   restoreAll();
 }
 
-/* Prove the live plugin is exactly as we found it. */
+/* Prove every file is exactly as we found it, then remove the backups.
+ *
+ * They used to be left behind: ten .mutation-backup files sitting in the tree and in the live
+ * plugin directory, which git then reported as untracked. A harness that tidies up only when
+ * you remember to is one more thing to remember. They are deleted ONLY after the hash check
+ * passes — if a restore failed they are the recovery path and must survive. */
 let clean = true;
 for (const [f, { hash }] of backups) {
   const now = sha(f);
   if (now !== hash) { clean = false; console.log(`  !! ${f} NOT RESTORED (${hash.slice(0, 8)} -> ${now.slice(0, 8)})`); }
 }
 console.log(`\nrestore verified: ${clean ? 'every mutated file is byte-identical to before' : 'FAILED — see above'}`);
+if (clean) {
+  for (const [, { backup }] of backups) { try { rmSync(backup, { force: true }); } catch {} }
+} else {
+  console.log('backups KEPT for recovery: ' + [...backups.values()].map((b) => b.backup).join(', '));
+}
 
 const missed = results.filter((r) => r.verdict === 'MISSED');
 const stale = results.filter((r) => r.verdict === 'STALE');
