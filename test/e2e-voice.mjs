@@ -26,6 +26,7 @@ const pcm = Buffer.concat([sil(600), speech, sil(6000)]); // >SILENCE_MS trailin
 console.log(`utterance: "${UTT}" (${(speech.length / 2 / RATE).toFixed(1)}s speech, ${(pcm.length / 2 / RATE).toFixed(1)}s total)`);
 
 const events = [];
+const chartColourViolations = [];
 const s = new AgentStream({ url: 'ws://127.0.0.1:8123', onPair: async (id, agentId) => { console.log('TOFU pair: agent', agentId, 'identity', Buffer.from(id).toString('base64').slice(0, 24) + '…'); return true; } });
 let audioFrames = 0;
 // Capture EVERY inbound cmd (the stock client only resolves its own pending ids).
@@ -45,6 +46,7 @@ s._onFrame = function (raw) {
     else if (kind === 'render') { console.log(`  ← render: ${JSON.stringify(d.ui || d).slice(0, 160)}`);
       const comps = ((d.ui || d).components || []); comps.forEach((c) => { if (c.t === 'chart') { const o = c.options || {}; const bad = [];
         if (o.colors) bad.push('colors'); if (o.chart && (o.chart.background || o.chart.foreColor)) bad.push('chart.background/foreColor'); if (o.grid && o.grid.borderColor) bad.push('grid.borderColor'); if (o.theme) bad.push('theme');
+        if (bad.length) chartColourViolations.push(...bad);
         console.log(`     chart: type=${o.chart && o.chart.type} points=${(o.series && o.series[0] && o.series[0].data || []).length} hard-coded colours: ${bad.length ? bad.join(', ') : 'NONE (themed by the surface)'}`); } }); }
     else if (kind === 'surface') console.log(`  ← surface ops: ${(d.ops || []).map(o => o.op).join(',')}`);
     else if (kind === 'status') { if (d.heard || d.working !== undefined || d.speaking !== undefined) console.log(`  ← status: ${JSON.stringify(d).slice(0, 160)}`); }
@@ -78,5 +80,48 @@ while (Date.now() < deadline) {
 console.log(`\nsummary: ${events.length} cmd events, ${audioFrames} TTS audio frames`);
 const texts = events.filter((d) => d.type === 'text').map((d) => d.text);
 const renders = events.filter((d) => d.type === 'render' || d.type === 'surface');
-console.log(`texts: ${texts.length}  renders: ${renders.length}  heard: ${events.filter((d) => d.type === 'status' && d.heard).map((d) => d.heard).join(' | ') || '(none)'}`);
-s.close(); process.exit(texts.length && audioFrames ? 0 : 1);
+const heard = events.filter((d) => d.type === 'status' && d.heard);
+console.log(`texts: ${texts.length}  renders: ${renders.length}  heard: ${heard.map((d) => d.heard).join(' | ') || '(none)'}`);
+
+/* ---- ASSERTIONS ---------------------------------------------------------------------------
+ * This script used to have none. Its entire verdict was
+ *   process.exit(texts.length && audioFrames ? 0 : 1)
+ * — one implicit claim (something was said and something was spoken) with everything else
+ * merely PRINTED. The chart-colour audit was the worst of it: it computed the violations and
+ * then logged them, so a render full of hard-coded hex passed exactly like a clean one. A
+ * check that reports a violation without failing is decoration.
+ *
+ * Each claim the script already makes in its output is now a claim it will fail on. */
+let pass = 0; const fails = [];
+const ok = (name, cond, detail = '') => {
+  if (cond) { pass++; console.log(`  ok   ${name}`); }
+  else { fails.push(name); console.log(`  FAIL ${name}${detail ? ' — ' + detail : ''}`); }
+};
+
+/* A reply may be TEXT (spoken) or a RENDER (shown). Asking for a chart produces a render with
+ * no narration at all — observed: "texts: 0 renders: 1", no TTS, no speaking status. My first
+ * version asserted text AND speech unconditionally and failed on a perfectly ordinary turn.
+ * So the guarantee is "the agent responded", and the speech claims apply only when there was
+ * something to speak. (Whether a chart SHOULD be narrated on a voice-first surface is a
+ * product question, flagged rather than silently encoded here as an assertion either way.) */
+ok('the agent responded at all (text or a render)', texts.length > 0 || renders.length > 0,
+  'nothing came back — the utterance never reached the agent, or it produced nothing');
+ok('the sidecar reported hearing the utterance (status.heard)', heard.length > 0,
+  'no heard status — the transcript never made it to the dispatch path');
+if (texts.length) {
+  ok('a text reply was spoken (TTS audio frames arrived)', audioFrames > 0, `${audioFrames} frames`);
+  ok('the speaking indicator was raised and then cleared',
+    events.some((d) => d.type === 'status' && d.speaking === true)
+    && events.some((d) => d.type === 'status' && d.speaking === false),
+    'the phone would be left with a stuck speaking pill');
+} else {
+  console.log('  note  render-only reply: no text, so the speech claims do not apply. '
+    + 'The phone shows the component and stays silent.');
+}
+ok('no chart carried hard-coded colours (the surface themes them)',
+  chartColourViolations.length === 0,
+  chartColourViolations.join(', '));
+
+console.log(`\n${pass} passed, ${fails.length} failed`);
+s.close();
+process.exit(fails.length ? 1 : 0);

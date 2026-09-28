@@ -131,9 +131,14 @@ export const MUTANTS = [
     from: '        if (tok.cancelled || !target.webrtc || !target.webrtc.connected) {',
     to: '        if (false) {' },
 
-  { suite: 'e2e-voice', file: AD, restart: true, why: 'dispatching the transcript to the agent',
-    from: '            await self.dispatch_text(text)',
-    to: '            pass  # dispatch removed' },
+  /* Deliberately NARROW. Removing dispatch_text kills the whole pipeline, which only proves
+   * the suite notices a dead one — a script with no assertions at all would catch that too,
+   * and this one had none until it was given some. Removing the `heard` status leaves the
+   * pipeline fully working (text replies, TTS, speaking indicator all fine) and breaks exactly
+   * one of e2e-voice's stated claims. */
+  { suite: 'e2e-voice', file: AD, restart: true, why: 'reporting that the utterance was heard',
+    from: '        self._push_status(heard=True)',
+    to: '        pass  # heard status removed' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
