@@ -59,7 +59,8 @@
     "android-lint": "node test/android-lint.test.mjs",
     "mic-mute": "node test/mic-mute.test.mjs",
     "discover-live": "node test/discover-live.test.mjs",
-    "adb-isolation": "node test/adb-isolation.test.mjs"
+    "adb-isolation": "node test/adb-isolation.test.mjs",
+    "identity-pin": "node test/identity-pin.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

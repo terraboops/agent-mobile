@@ -29,6 +29,8 @@ const GRADLE_VARS = join(REPO, 'android/variables.gradle');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
  * instance's own copy, so the production adapter is never modified and never needs restoring. */
 const SCOPED_AD = join(homedir(), '.hermes/profiles/agentmobtest/plugins/agentmob/adapter.py');
+const SCOPED_SC = join(homedir(),
+  '.hermes/profiles/agentmobtest/plugins/agentmob/sidecar/index.mjs');
 
 /** suite -> the one edit that removes the behaviour it claims to test.
  *
@@ -206,6 +208,15 @@ export const MUTANTS = [
   /* The private adb server. Dropping -P puts device-verify back on the shared default server,
      where any listener on the machine enters its device list and gets described to the operator
      as their phone — which is exactly what happened during the 2-hour armed wait. */
+  /* The allowlist gate, at the sidecar end of the chain. Forcing clientAllow to null puts the
+     sidecar into pairing mode regardless of configuration — so a pinned gateway would silently
+     accept ANY client, which is the failure that makes pinning worthless while looking fine.
+     proto.js's `allow` callback itself is covered separately by the pairing suite. */
+  { suite: 'identity-pin', file: SCOPED_SC, scope: 'gateway',
+    why: 'the sidecar honouring AGENTMOB_ALLOWED_CLIENTS at all',
+    from: 'const clientAllow = _allowSet.size',
+    to: 'const clientAllow = 0 && _allowSet.size' },
+
   { suite: 'adb-isolation', file: DV,
     why: 'device-verify using its OWN adb server rather than the shared default one',
     from: "  const r = spawnSync(ADB, ['-P', String(ADB_PORT), ...args],",

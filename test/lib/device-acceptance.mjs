@@ -115,10 +115,18 @@ export const DEVICE_ACCEPTANCE = [
     issue: null,
     claim: 'The installed app presents client_id 42c55608, so allowed_clients can be pinned.',
     whyDeviceOnly:
-      'The id comes from the IdentityStore keypair in app-private storage. Only a connection '
-      + 'from the installed app can show which id it holds.',
-    hostProof: 'apk-installable (the APK is debug-keystore signed, so `adb install -r` replaces '
-             + 'in place and does NOT rotate the identity — an uninstall would)',
+      'Narrowed to the VALUE. The mechanism is proven (see hostProof); what no host can supply '
+      + 'is which id this phone actually holds — it comes from the IdentityStore keypair in '
+      + 'app-private storage, and only a connection from the installed app reveals it. Until '
+      + 'then 42c55608 is a number from the archives, and pinning an unconfirmed value is the '
+      + 'one way to lock the handset out of its own gateway.',
+    hostProof: 'identity-pin (the allowlist MECHANISM, proven on the scoped gateway against live '
+             + 'AEAD handshakes in three directions: a wrong id is rejected specifically with '
+             + 'unknown_client rather than a hang or a generic failure, the pinned id is '
+             + 'admitted, and removing the allowlist lets the previously-rejected client in — so '
+             + 'the rejection came from the gate and not from unrelated breakage); '
+             + 'apk-installable (debug-keystore signed, so `adb install -r` replaces in place and '
+             + 'does NOT rotate the identity — an uninstall would); pairing (proto.js allow gate)',
     stages: ['live client identity', 'identity matches the archived id (42c55608)',
              'AEAD handshake'],
   },
