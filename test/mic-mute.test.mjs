@@ -61,6 +61,7 @@ const page = await ctx.newPage();
  * the device can. Both halves named so neither is mistaken for the other. */
 await page.addInitScript(() => {
   window.__calls = { sent: [], startAudio: 0, stopAudio: 0 };
+  window.__listeners = {};
   let running = true;                       // mic live at boot, as after __ensureMicOn
   window.Capacitor = { Plugins: { AgentChannel: {
     isAudioRunning: () => Promise.resolve({ running }),
@@ -69,7 +70,10 @@ await page.addInitScript(() => {
     send: ({ payload }) => { window.__calls.sent.push(String(payload)); return Promise.resolve({}); },
     connect: () => Promise.resolve({}),
     identify: () => Promise.resolve({}),
-    addListener: () => ({ remove() {} }),
+    /* Capture the 'session' callback so the test can fire it — that is how a connect and an
+     * auto-reconnect reach the page, and it is the path issue #1 was actually about. */
+    addListener: (name, cb) => { (window.__listeners[name] = window.__listeners[name] || []).push(cb);
+                                 return { remove() {} }; },
   } } };
   window.AGENT_URL = 'ws://127.0.0.1:1/never';
 });
@@ -174,6 +178,49 @@ ok('a double tap causes exactly ONE native transition', transitions === 1,
   + 'keeps the label from drifting off the hardware');
 ok('the ring agrees with the native state after a double tap',
   (await ringClass()).includes('muted'), await ringClass());
+
+/* ---- ISSUE #1's ACTUAL FIX: a reconnect must not flip the mic --------------------------------
+ * This is the regression the issue was filed for, and until now nothing tested it.
+ *
+ * The session listener used to call toggleAudio() on every connect. That is a FLIP, so an
+ * auto-reconnect — which happens on its own, unprompted, whenever the channel blips — turned the
+ * mic OFF under the user, and the on-screen label drifted from the hardware. From the user's
+ * side the control had "wedged": tapping it appeared to do nothing, because it was now fighting
+ * a state nobody had asked for.
+ *
+ * The fix was to make it IDEMPOTENT: __ensureMicOn() starts the mic only if it is not already
+ * running, and never stops it. The native button became the only thing that mutes.
+ *
+ * Firing the captured 'session' callback is exactly how a reconnect reaches this code, so
+ * reverting __ensureMicOn to a toggle makes these two assertions fail — which is the point.
+ * Everything above proves the mute BEHAVES; this proves it survives the event that broke it. */
+{
+  await page.evaluate(() => window.__agent.audioToggle());   // ensure a known-on state
+  await page.waitForTimeout(250);
+  const before = await calls();
+  const onBefore = (await ringClass()).includes('unmuted');
+  ok('the mic is live before the reconnect', onBefore, await ringClass());
+
+  const fired = await page.evaluate(() => {
+    const cbs = (window.__listeners && window.__listeners.session) || [];
+    /* Twice: the first connect, then an auto-reconnect. One flip could pass by luck of parity. */
+    cbs.forEach((cb) => { try { cb({ agentId: 'testagent' }); } catch (_) {} });
+    cbs.forEach((cb) => { try { cb({ agentId: 'testagent' }); } catch (_) {} });
+    return cbs.length;
+  });
+  ok('the page registered a session listener to fire', fired > 0,
+    'no session listener was captured, so this case proves nothing about reconnects');
+  await page.waitForTimeout(600);
+
+  const after = await calls();
+  ok('a reconnect did NOT stop the mic (issue #1)', after.stopAudio === before.stopAudio,
+    `stopAudio ${before.stopAudio} -> ${after.stopAudio} — the session handler is flipping the `
+    + 'mic instead of ensuring it, so an auto-reconnect mutes the user without being asked');
+  ok('the mic ring still reads UNMUTED after two reconnects',
+    (await ringClass()).includes('unmuted'),
+    `${await ringClass()} — the label has drifted from the hardware, which is how the control `
+    + '"wedges": the next tap fights a state the user never chose');
+}
 
 /* ---- 7. and the reply is still unaffected by any of it --------------------------------------- */
 ok('the reply survived every mic operation', await speaking(),

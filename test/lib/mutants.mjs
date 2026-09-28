@@ -212,6 +212,22 @@ export const MUTANTS = [
      sidecar into pairing mode regardless of configuration — so a pinned gateway would silently
      accept ANY client, which is the failure that makes pinning worthless while looking fine.
      proto.js's `allow` callback itself is covered separately by the pairing suite. */
+  /* mute-midreply drives the whole pipeline: VAD -> whisper -> adapter -> agent -> TTS ->
+     downlink. SILENCE_MS is the end-of-utterance pause that closes a turn so the agent can
+     answer at all; stretch it past the run and no utterance ever flushes, so the suite never
+     gets a reply to mute into and fails at its first real precondition.
+
+     Four earlier entries MISSED, and each was the harness doing its job rather than being
+     awkward. The hallucination filter is unreachable (the VAD never opens a capture on zeros).
+     SPEECH_RMS = -1 fired barge-in but truncated nothing, because the WS downlink is burst-sent.
+     `if self._tts_voice:` hit the narration branch, not the speak path, since the replacement
+     takes the FIRST match. And before all of those, the suite modelled the mute as "send
+     nothing", which is not what setMicrophoneMute does. The suite header records the lot. */
+  { suite: 'mute-midreply', file: SCOPED_SC, scope: 'gateway',
+    why: 'the end-of-utterance pause that lets a turn close and be answered',
+    from: 'const SILENCE_MS = 5000;',
+    to: 'const SILENCE_MS = 9999999;' },
+
   { suite: 'identity-pin', file: SCOPED_SC, scope: 'gateway',
     why: 'the sidecar honouring AGENTMOB_ALLOWED_CLIENTS at all',
     from: 'const clientAllow = _allowSet.size',

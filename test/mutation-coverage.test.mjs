@@ -40,6 +40,7 @@ const UTILITIES = {
   gateway: 'runs the dev gateway; not a test',
   'device-watch': 'a long-running watcher that waits for a phone to connect',
   'device-verify': 'the on-device run; blocked on hardware and asserts nothing without it',
+  'device-arm': 'device-verify with a long unattended wait; same code, no assertions of its own',
   'ctrlbar-shot': 'renders screenshots for a human to look at; makes no assertions',
   'ice-candidates': 'a reachability report; exits 0 by design whatever it finds',
   'vendor-refresh': 'copies the installed plugin into vendor/; one-way, no assertions',

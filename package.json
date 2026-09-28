@@ -26,6 +26,7 @@
     "ice-candidates": "node test/ice-candidates.mjs",
     "ice-config": "node test/ice-config.test.mjs",
     "device-verify": "node test/device-verify.mjs",
+    "device-arm": "node test/device-verify.mjs --wait 21600 --scan-every 900000",
     "adb-state": "node test/adb-state.test.mjs",
     "ux-audit": "node test/audit/ux-audit.mjs",
     "port-in-use": "node test/port-in-use.test.mjs",
@@ -60,7 +61,8 @@
     "mic-mute": "node test/mic-mute.test.mjs",
     "discover-live": "node test/discover-live.test.mjs",
     "adb-isolation": "node test/adb-isolation.test.mjs",
-    "identity-pin": "node test/identity-pin.test.mjs"
+    "identity-pin": "node test/identity-pin.test.mjs",
+    "mute-midreply": "node test/mute-midreply.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

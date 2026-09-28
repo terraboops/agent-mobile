@@ -366,9 +366,23 @@ let current = null;
  */
 export function startScoped({ home = SCOPED_HOME, timeoutMs = 180000, log = () => {} } = {}) {
   assertScopedSafe(home);
+  /* A leftover instance is NOT reusable, and treating it as such was a silent correctness bug.
+   *
+   * This used to log "reusing it" and return ok. But every caller has just rewritten config.yaml
+   * and wants an instance running THAT config — identity-pin rewrites the allowlist between
+   * directions. Reusing a process started under the previous config makes the rewrite a no-op,
+   * and the suite then measures the old configuration while believing it measured the new one.
+   * It surfaced as identity-pin failing "a client not on the allowlist is REJECTED": the gate
+   * was not enforcing because the gateway had never read the allowlist.
+   *
+   * So: refuse. stopScoped() below now waits for the ports to clear, so reaching this state
+   * means something outside our control holds the port, and saying so beats quietly measuring
+   * the wrong thing. */
   if (portListening(SCOPED_PORT)) {
-    log(`something is already listening on ${SCOPED_PORT}; reusing it`);
-    return { ok: true, pid: null, reused: true };
+    return { ok: false, pid: null,
+      note: `something is already listening on ${SCOPED_PORT} that stopScoped could not clear. `
+          + 'Refusing to reuse it: it is running an older config, and every caller here has just '
+          + 'rewritten one.' };
   }
   const logPath = join(home, 'scoped-gateway.log');
   const fd = openSync(logPath, 'a');
@@ -442,7 +456,42 @@ export function logTail(p, n = 40) {
 }
 
 /** Stop the scoped gateway and its sidecar. Signals the GROUP: the sidecar is a grandchild. */
+/**
+ * The scoped GATEWAY's pid, from its own pidfile.
+ *
+ * `current` only knows about a gateway THIS process started. Across suites — and across the
+ * mutation harness, which spawns each suite separately — it is null, and stopScoped was then
+ * reaping only the PORTS. Ports belong to the sidecar; the gateway is a python process that
+ * survives, notices its child died, and respawns it FROM ITS ORIGINAL CONFIG. The result was a
+ * scoped gateway from an earlier run quietly outliving every "restart", so identity-pin's
+ * allowlist rewrites were never read (sidecar banner: "PAIRING MODE — accepting any client")
+ * and the sidecar logged "FLAPPING: 13 restarts in the last 600s" as we killed it in a loop.
+ *
+ * The pidfile is authoritative and process-independent. hermes_home is checked so we can never
+ * kill the live gateway by reading the wrong file.
+ */
+function scopedGatewayPidFromFile(home = SCOPED_HOME) {
+  try {
+    const raw = readFileSync(join(home, 'gateway.pid'), 'utf8');
+    const rec = JSON.parse(raw);
+    if (resolve(String(rec.hermes_home || '')) !== resolve(home)) return null;
+    const pid = Number(rec.pid);
+    return pid && pidAlive(pid) ? pid : null;
+  } catch { return null; }
+}
+
 export function stopScoped({ log = () => {} } = {}) {
+  /* The gateway FIRST. Killing the sidecar while its parent lives just makes the parent respawn
+   * it — which is what produced the flapping. */
+  const filePid = scopedGatewayPidFromFile();
+  if (filePid && (!current || current.pid !== filePid)) {
+    for (const sig of ['SIGTERM', 'SIGKILL']) {
+      try { process.kill(-filePid, sig); } catch { try { process.kill(filePid, sig); } catch {} }
+      for (let i = 0; i < 10; i++) { if (!pidAlive(filePid)) break; spawnSync('sleep', ['1']); }
+      if (!pidAlive(filePid)) break;
+    }
+    log(`stopped scoped gateway ${filePid} (from pidfile)`);
+  }
   const pid = current && current.pid;
   if (pid) {
     for (const sig of ['SIGTERM', 'SIGKILL']) {
@@ -453,13 +502,32 @@ export function stopScoped({ log = () => {} } = {}) {
     log(`stopped ${pid}`);
   }
   /* A sidecar on the scoped port can outlive its parent — that is the orphan case this project
-   * already knows about. Reap it by port so the next run does not inherit a stale listener. */
-  const r = spawnSync('bash', ['-c',
-    `lsof -nP -iTCP:${SCOPED_PORT} -sTCP:LISTEN -t 2>/dev/null; `
-    + `lsof -nP -iTCP:${SCOPED_SIDECAR_PORT} -sTCP:LISTEN -t 2>/dev/null`],
-    { encoding: 'utf8' });
-  for (const p of (r.stdout || '').split('\n').map((x) => Number(x.trim())).filter(Boolean)) {
-    try { process.kill(p, 'SIGTERM'); } catch {}
+   * already knows about. Reap it by port so the next run does not inherit a stale listener.
+   *
+   * And WAIT for the port to clear. Signalling without waiting was the whole defect: the caller
+   * would immediately startScoped(), find the dying process still listening, and reuse it —
+   * running the previous config while believing it had applied a new one. A stop that has not
+   * finished stopping is not a stop. */
+  const reap = (sig) => {
+    const r = spawnSync('bash', ['-c',
+      `lsof -nP -iTCP:${SCOPED_PORT} -sTCP:LISTEN -t 2>/dev/null; `
+      + `lsof -nP -iTCP:${SCOPED_SIDECAR_PORT} -sTCP:LISTEN -t 2>/dev/null`],
+      { encoding: 'utf8' });
+    const pids = (r.stdout || '').split('\n').map((x) => Number(x.trim())).filter(Boolean);
+    for (const p of pids) { try { process.kill(p, sig); } catch {} }
+    return pids.length;
+  };
+  reap('SIGTERM');
+  const deadline = Date.now() + 30000;
+  let escalated = false;
+  while (Date.now() < deadline) {
+    if (!portListening(SCOPED_PORT) && !portListening(SCOPED_SIDECAR_PORT)) break;
+    if (!escalated && Date.now() - (deadline - 30000) > 12000) { reap('SIGKILL'); escalated = true; }
+    spawnSync('sleep', ['1']);
+  }
+  if (portListening(SCOPED_PORT)) {
+    log(`WARNING: ${SCOPED_PORT} is still held after stop — the next start will refuse rather `
+      + 'than reuse it');
   }
   current = null;
   return true;
