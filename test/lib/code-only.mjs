@@ -13,6 +13,17 @@
  * string containing a Python one. A naive strip mangles both and reports a difference where
  * there is none, or none where there is one.
  *
+ * REGEX LITERALS are handled explicitly, because not handling them was a real bug with real
+ * consequences. `/[&<>"']/` — an ordinary HTML-escaping regex, present in both www/renderer.js
+ * and www/surface-host.js — made the scanner treat the apostrophe inside the character class as
+ * the START of a string. Everything after it desynced, so comments survived into the "code"
+ * projection. surface-host.js is a mutation target, which means the gate that exists to REJECT
+ * comment-only mutations was reading a corrupted view of it and would have accepted one.
+ *
+ * Telling a regex from a division needs context, so the last significant character is tracked:
+ * after a value (identifier, number, `)`, `]`) a slash is division; otherwise it opens a regex.
+ * Inside a regex, a `/` within a [...] class is literal and does not end it.
+ *
  * KNOWN LIMIT, recorded rather than hidden: a Python docstring is a string LITERAL, not a
  * comment, so a docstring-only edit reads as a code change here and would be accepted. That is
  * the conservative direction — it risks accepting a weak mutation, never rejecting a real one.
@@ -27,6 +38,18 @@ export function codeOnly(text, lang) {
   const isJs = lang === 'js';
   const isPy = lang === 'py';
   const isHtml = lang === 'html';
+
+  /* The last character that could END a value. A `/` after one of these is division; a `/`
+   * anywhere else opens a regex literal. Keywords that can precede a regex (`return`, `typeof`,
+   * `case`, ...) end in a letter and would look like a value, so they are checked by name. */
+  let lastSig = '';
+  const VALUE_END = /[\w$)\]]/;
+  const KEYWORD_BEFORE_REGEX = /(?:^|[^\w$])(return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await)\s*$/;
+  const regexCanStartHere = () => {
+    if (!lastSig) return true;
+    if (!VALUE_END.test(lastSig)) return true;
+    return KEYWORD_BEFORE_REGEX.test(out);
+  };
 
   while (i < n) {
     const c = s[i];
@@ -52,7 +75,31 @@ export function codeOnly(text, lang) {
         if (s[i] === quote) { i++; break; }
         i++;
       }
+      lastSig = quote;   // a completed string is a VALUE, so a following / is division
       continue;
+    }
+
+    /* ---- regex literals: copied through, never scanned for quotes or comment markers ---- */
+    if ((isJs || isHtml) && c === '/' && next !== '/' && next !== '*' && regexCanStartHere()) {
+      let j = i + 1;
+      let inClass = false;
+      let closed = false;
+      while (j < n) {
+        const d = s[j];
+        if (d === '\\') { j += 2; continue; }
+        if (d === '\n') break;             // an unterminated regex: it was division after all
+        if (d === '[') inClass = true;
+        else if (d === ']') inClass = false;
+        else if (d === '/' && !inClass) { closed = true; j++; break; }
+        j++;
+      }
+      if (closed) {
+        out += s.slice(i, j);
+        lastSig = '/';
+        i = j;
+        continue;
+      }
+      /* Not a regex after all — fall through and treat the slash as an ordinary character. */
     }
 
     /* ---- comments: dropped ---- */
@@ -90,6 +137,7 @@ export function codeOnly(text, lang) {
       continue;
     }
     out += c;
+    lastSig = c;
     i++;
   }
 

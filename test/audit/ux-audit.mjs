@@ -234,16 +234,44 @@ const MODERN_CSS = [
   { re: /@scope[\s{]/, name: '@scope', needs: 'Chrome 118' },
   { re: /\btext-wrap\s*:\s*balance/, name: 'text-wrap: balance', needs: 'Chrome 114' },
 ];
+// The same question applies to the JAVASCRIPT, and nothing was asking it. The CSS scan was
+// added first because that is where the open comment was; the surface's JS had never been
+// checked against any engine baseline at all. It turned out clean (nothing newer than arrow
+// functions and class syntax, both Chrome 49), which is worth KEEPING clean — one `?.` typed
+// tomorrow would break the same devices, silently, with no rule to stop it.
+const MODERN_JS = [
+  { re: /\?\?/, name: 'nullish coalescing (??)', needs: 'Chrome 80' },
+  /* `?.` glued to what follows. My first attempt used a negative lookbehind for a word char,
+   * meaning to exclude ternaries — and it excluded `foo?.bar`, the commonest form there is, so
+   * the gate silently passed a file I had just salted with optional chaining. A ternary writes
+   * `a ? .5 : b` WITH a space, so the absence of one is the real distinguisher. */
+  { re: /\?\.(?=[A-Za-z_$[(])/, name: 'optional chaining (?.)', needs: 'Chrome 80' },
+  { re: /\bstructuredClone\s*\(/, name: 'structuredClone()', needs: 'Chrome 98' },
+  { re: /\.at\s*\(\s*-?\d/, name: 'Array.prototype.at()', needs: 'Chrome 92' },
+  { re: /\bObject\.hasOwn\s*\(/, name: 'Object.hasOwn()', needs: 'Chrome 93' },
+  { re: /\.replaceAll\s*\(/, name: 'String.replaceAll()', needs: 'Chrome 85' },
+  { re: /\bqueueMicrotask\s*\(/, name: 'queueMicrotask()', needs: 'Chrome 71' },
+  { re: /\bglobalThis\b/, name: 'globalThis', needs: 'Chrome 71' },
+  { re: /\{\s*\.\.\.[\w$]/, name: 'object spread', needs: 'Chrome 60' },
+];
 const baselineFindings = [];
 {
   const { readdirSync } = await import('node:fs');
+  const { codeOnly } = await import('../lib/code-only.mjs');
   const wwwDir = join(ROOT, 'www');
-  const files = readdirSync(wwwDir).filter((f) => /\.(html|css)$/.test(f));
+  const files = readdirSync(wwwDir).filter((f) => /\.(html|css|js)$/.test(f));
   for (const f of files) {
     const raw = readFileSync(join(wwwDir, f), 'utf8');
-    // Strip CSS /* */ comments and HTML <!-- --> comments before matching.
-    const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '');
-    for (const { re, name, needs } of MODERN_CSS) {
+    const isJs = f.endsWith('.js');
+    /* JS goes through codeOnly, which understands strings AND regex literals — an earlier
+     * version of that scanner read the apostrophe inside `/[&<>"']/` as a string start and
+     * desynced for the rest of the file. CSS/HTML use a plain comment strip, which is enough
+     * for them and avoids treating CSS as JavaScript. */
+    const code = isJs
+      ? codeOnly(raw, 'js')
+      : raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '');
+    const checks = isJs ? MODERN_JS : MODERN_CSS;
+    for (const { re, name, needs } of checks) {
       if (re.test(code)) {
         baselineFindings.push({ sev: 'high', cat: 'webview-baseline', el: f,
           msg: `${f} uses ${name}, which needs ${needs}. minSdk is 24 (Android 7 ships `
@@ -254,7 +282,7 @@ const baselineFindings = [];
   }
   results['00-webview-baseline'] = { issues: baselineFindings, stats: {
     filesScanned: files.length,
-    featuresChecked: MODERN_CSS.length,
+    featuresChecked: MODERN_CSS.length + MODERN_JS.length,
     /* Recorded so the report says what the AUDIT browser supports — which is NOT the phone,
      * and is labelled that way so the two are never confused. */
     auditBrowserSupportsContainer: AUDIT_BROWSER.supportsContainer,

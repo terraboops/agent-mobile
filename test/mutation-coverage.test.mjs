@@ -118,6 +118,54 @@ ok('no suite is listed twice', dupes.length === 0, dupes.join(', '));
     `stale: ${inapplicable.join(', ')} — the code moved and the entry did not`);
 }
 
+/* ---- 6b. the scanner the cosmetic check depends on ------------------------------------------
+ * Check 6 asks whether a mutation changes EXECUTABLE code, and it answers by comparing codeOnly()
+ * projections. So codeOnly is load-bearing for this gate, and it was quietly broken.
+ *
+ * `/[&<>"']/` — an ordinary HTML-escaping regex — appears in www/renderer.js and
+ * www/surface-host.js. The scanner had no notion of regex literals, so it read the apostrophe
+ * inside that character class as the start of a string and desynced for the rest of the file:
+ * comments after it survived into the "code" projection. surface-host.js IS a mutation target,
+ * which means this gate was reading a corrupted view of it and would have accepted a
+ * comment-only mutation there as real coverage — the exact failure it exists to prevent.
+ *
+ * These cases pin the regex-vs-division distinction, because getting it wrong in either
+ * direction breaks the gate: treat a regex as division and quotes inside it desync the scanner;
+ * treat division as a regex and real code gets swallowed. */
+{
+  const cases = [
+    ['a regex containing a quote does not open a string',
+      "const re = /['\"]/g; // marker\nconst after = 1;", /marker/],
+    ['division is not mistaken for a regex',
+      'const a = 10 / 2; // marker\nconst b = a / 2;', /marker/],
+    ['a slash inside a character class does not end the regex',
+      'const r = /a[/]b/; // marker\nconst z = 1;', /marker/],
+    ['a regex may follow `return`',
+      "return /x'y/.test(s); // marker\nconst q = 1;", /marker/],
+    ['a regex may follow `typeof`',
+      "typeof /a'b/; // marker\nlet u = 1;", /marker/],
+    ['division may follow a string literal',
+      "const s = 'a'; const d = s.length / 2; // marker\nconst w = 1;", /marker/],
+    ['division may follow a closing bracket',
+      'const x = arr[0] / 2; // marker\nlet y = 1;', /marker/],
+    ['division may follow a closing paren',
+      'const f = (a) / 2; // marker\nlet g = 1;', /marker/],
+  ];
+  for (const [name, src, leak] of cases) {
+    ok(`codeOnly: ${name}`, !leak.test(codeOnly(src, 'js')),
+      `the comment survived the strip: ${JSON.stringify(codeOnly(src, 'js').slice(0, 80))}`);
+  }
+  /* And the real files that exposed it — a projection that still contains a comment marker
+   * means the scanner desynced somewhere in a file this gate actually reads. */
+  for (const f of ['www/renderer.js', 'www/surface-host.js']) {
+    const full = join(REPO, f);
+    if (!existsSync(full)) continue;
+    const proj = codeOnly(readFileSync(full, 'utf8'), 'js');
+    ok(`codeOnly leaves no // comment in ${f}`, !/(^|[^:])\/\/\s/.test(proj),
+      'a surviving comment means the scanner desynced; this file contains /[&<>"\']/');
+  }
+}
+
 /* ---- 7. the numbers, stated ---------------------------------------------------------------- */
 const suites = all.filter((s) => !(s in UTILITIES));
 ok('the covered count matches the suite count', covered.size === suites.length,
