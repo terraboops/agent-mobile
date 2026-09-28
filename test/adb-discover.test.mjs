@@ -15,8 +15,8 @@
  * Run: npm run adb-discover
  */
 import { createServer } from 'node:net';
-import { parseMdnsServices, pickAdbEndpoints, scanPorts, discover, DEFAULT_SCAN_RANGES }
-  from './lib/adb-discover.mjs';
+import { parseMdnsServices, pickAdbEndpoints, scanPorts, discover, DEFAULT_SCAN_RANGES,
+         parseTailscalePeer, classifyConnect } from './lib/adb-discover.mjs';
 
 let pass = 0; const fails = [];
 const ok = (name, cond, detail = '') => {
@@ -165,6 +165,66 @@ console.log(`\n  stood up a stand-in endpoint on 127.0.0.1:${realPort} (nothing 
 }
 
 try { server.close(); } catch {}
+/* ---- the LAN path -------------------------------------------------------------------------
+ * These cases are REAL output, captured 2026-09-27 while the Pixel was on the tailnet. The bug
+ * they encode: device-verify scanned only 100.112.255.69 and concluded "nothing is listening"
+ * from a timeout. Tailscale knew the whole time that the phone was on this very LAN, and the LAN
+ * path answers with CONNECTION REFUSED — which proves the phone is up and adbd is not, where a
+ * tailnet timeout proves nothing. */
+{
+  const real = 'Logged in as terra@\n'
+    + '100.125.53.51    macbook    terra@   macOS    -\n'
+    + '100.112.255.69   pixel-7    terra@   android  active; direct 192.168.10.53:38864, tx 564 rx 124\n';
+  const peer = parseTailscalePeer(real, '100.112.255.69');
+  ok('the peer row is found by its tailnet address', peer.found, JSON.stringify(peer));
+  ok('the direct LAN address is extracted', peer.lan === '192.168.10.53', peer.lan);
+  ok('the peer reads as online', peer.online && !peer.offline);
+  ok('a peer that is not in the status output reports not-found',
+    parseTailscalePeer(real, '100.99.99.99').found === false);
+
+  /* A relayed peer is NOT on this LAN, so there must be no address to scan — inventing one would
+   * send the sweep at a stranger's machine. */
+  const relayed = '100.112.255.69   pixel-7   terra@   android   active; relay "tor", tx 1 rx 1\n';
+  const rp = parseTailscalePeer(relayed, '100.112.255.69');
+  ok('a relayed peer yields no LAN address', rp.lan === null && rp.relay === 'tor', JSON.stringify(rp));
+
+  const off = '100.112.255.69   pixel-7   terra@   android   offline\n';
+  ok('an offline peer is reported offline', parseTailscalePeer(off, '100.112.255.69').offline);
+}
+
+/* The distinction that carries the diagnosis. */
+ok('a refused connection is classified refused',
+  classifyConnect("failed to connect to '192.168.10.53:5555': Connection refused") === 'refused');
+ok('a timed-out connection is classified timeout',
+  classifyConnect("failed to connect to '100.112.255.69:5555': Operation timed out") === 'timeout');
+ok('a successful connection is classified connected',
+  classifyConnect('connected to 192.168.10.53:37129') === 'connected');
+ok('refused and timeout are not conflated',
+  classifyConnect('Connection refused') !== classifyConnect('Operation timed out'),
+  'treating them alike is what made a timeout read as proof that the phone was idle');
+
+/* discover() must sweep BOTH addresses, in LAN-first order, not just the one it was given. */
+{
+  const seen = [];
+  const res = await discover({
+    hosts: ['192.168.10.53', '100.112.255.69'],
+    runMdns: async () => 'List of discovered mdns services\n',
+    scan: async (h) => { seen.push(h); return []; },
+    ranges: [[1, 1]],
+  });
+  ok('both hosts are swept when the LAN path exists',
+    seen.join(',') === '192.168.10.53,100.112.255.69', seen.join(','));
+  ok('each swept host is reported', res.scanned && '192.168.10.53' in res.scanned
+    && '100.112.255.69' in res.scanned);
+  ok('no endpoint is invented when nothing is open', res.endpoint === null);
+}
+{
+  const seen = [];
+  await discover({ hosts: ['a', 'b'], runMdns: async () => '',
+    scan: async (h) => { seen.push(h); return h === 'a' ? [5555] : []; }, ranges: [[1, 1]] });
+  ok('sweeping stops at the first host that answers', seen.join(',') === 'a', seen.join(','));
+}
+
 console.log(`\n${pass} passed, ${fails.length} failed`);
 if (fails.length) process.exit(1);
 console.log('ALL PASS');

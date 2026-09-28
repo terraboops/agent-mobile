@@ -39,7 +39,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyDevices, stateLabel, describeBlocked, connectErrorOf } from './lib/adb-state.mjs';
-import { discover, scanPorts, DEFAULT_SCAN_RANGES } from './lib/adb-discover.mjs';
+import { discover, scanPorts, DEFAULT_SCAN_RANGES, parseTailscalePeer } from './lib/adb-discover.mjs';
 import { typedTurn } from './lib/aead-trigger.mjs';
 import { logStamp, logSince as logSinceReal } from './lib/gateway-log.mjs';
 
@@ -162,6 +162,15 @@ const TS_BIN = (() => {
 })();
 
 /** Is the phone even on the tailnet? Separates "not on the network" from "port is shut". */
+/** `tailscale status`, cached for the run — the peer's LAN address comes out of it. */
+let _tsStatus = null;
+function tailscaleStatus() {
+  if (_tsStatus !== null) return _tsStatus;
+  if (!TS_BIN) return (_tsStatus = '');
+  _tsStatus = spawnSync(TS_BIN, ['status'], { encoding: 'utf8', timeout: 15000 }).stdout || '';
+  return _tsStatus;
+}
+
 function tailnetProbe(target) {
   const host = String(target || '').split(':')[0];
   if (!/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)) return { checked: false };
@@ -205,8 +214,13 @@ if (DRY) {
   while (Date.now() < deadline) {
     if (!target && Date.now() - lastDiscover > DISCOVER_EVERY_MS) {
       lastDiscover = Date.now();
+      /* Sweep the LAN address too when Tailscale says the peer is direct on this network.
+       * Scanning only 100.x reported "nothing is listening" from a TIMEOUT, which proves nothing;
+       * the LAN path returns CONNECTION REFUSED, which proves the phone is up and adbd is not. */
+      const peer = parseTailscalePeer(tailscaleStatus(), PHONE_HOST);
+      if (peer.lan) console.log(`  [discover] tailscale reports a direct LAN path: ${peer.lan}`);
       const found = await discover({
-        host: PHONE_HOST,
+        hosts: peer.lan ? [peer.lan, PHONE_HOST] : [PHONE_HOST],
         runMdns: async () => adb(['mdns', 'services'], { timeout: 20000 }).stdout,
         scan: (h, ranges) => scanPorts(h, ranges, { concurrency: 500, timeoutMs: 2000 }),
         log: (m) => console.log(`  [discover] ${m}`),

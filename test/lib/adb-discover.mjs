@@ -91,6 +91,54 @@ export async function scanPorts(host, ranges, { concurrency = 400, timeoutMs = 2
   return open.sort((a, b) => a - b);
 }
 
+/**
+ * The peer's LAN address, read out of `tailscale status`.
+ *
+ * WHY THIS EXISTS. device-verify scanned only the tailnet address (100.x) and reported "nothing is
+ * listening" from a timeout. But when the phone and this Mac are on the same LAN, Tailscale says
+ * so — the status line carries `active; direct 192.168.10.53:38864` — and the LAN path answers
+ * very differently: a closed port there returns CONNECTION REFUSED, which proves the host is up
+ * and adbd is not, where a tailnet timeout proves nothing at all. Scanning only the tailnet threw
+ * away the one measurement that distinguishes "phone off" from "toggle off".
+ *
+ * A line looks like:
+ *   100.112.255.69   pixel-7   terra@   android   active; direct 192.168.10.53:38864, tx 564 rx 124
+ * or, when relayed, `active; relay "tor"` — with no LAN address to extract, which is correct:
+ * a relayed peer is not on this LAN.
+ */
+export function parseTailscalePeer(stdout, tailnetIp) {
+  for (const raw of String(stdout || '').split('\n')) {
+    const line = raw.trim();
+    if (!line.startsWith(String(tailnetIp))) continue;
+    const online = /\bactive\b/.test(line) || /\bidle\b/.test(line);
+    const direct = /\bdirect\s+(\d{1,3}(?:\.\d{1,3}){3}):(\d+)/.exec(line);
+    const relay = /\brelay\s+"?([\w-]+)"?/.exec(line);
+    return {
+      found: true,
+      online,
+      offline: /\boffline\b/.test(line),
+      lan: direct ? direct[1] : null,
+      relay: relay ? relay[1] : null,
+      line,
+    };
+  }
+  return { found: false, online: false, offline: false, lan: null, relay: null, line: '' };
+}
+
+/**
+ * Classify one TCP connect attempt. The distinction is the whole diagnostic value:
+ *   refused  -> the host answered and nothing is on that port (adbd is not running)
+ *   timeout  -> nothing answered; says nothing about the host
+ */
+export function classifyConnect(stderrOrStdout) {
+  const t = String(stderrOrStdout || '');
+  if (/refused/i.test(t)) return 'refused';
+  if (/timed out|timeout/i.test(t)) return 'timeout';
+  if (/no route to host|unreachable/i.test(t)) return 'unreachable';
+  if (/connected to/i.test(t)) return 'connected';
+  return 'unknown';
+}
+
 /** Ports worth sweeping: adb tcpip's fixed 5555, then the ephemeral range wireless debugging uses. */
 export const DEFAULT_SCAN_RANGES = [[5555, 5555], [30000, 49999], [50000, 65535]];
 
@@ -98,9 +146,14 @@ export const DEFAULT_SCAN_RANGES = [[5555, 5555], [30000, 49999], [50000, 65535]
  * Find an endpoint, mDNS first then scan.
  * @returns {Promise<{endpoint: string|null, via: string, tried: string[], services: object[]}>}
  */
-export async function discover({ host, runMdns, scan, ranges = DEFAULT_SCAN_RANGES,
+export async function discover({ host, hosts, runMdns, scan, ranges = DEFAULT_SCAN_RANGES,
                                  log = () => {} } = {}) {
   const tried = [];
+  /* `hosts` supersedes `host`: the phone can be reachable at a tailnet address AND a LAN one, and
+   * only sweeping both tells them apart. Order matters — LAN first, because it answers fastest
+   * and its refusals are informative. */
+  const targets = (hosts && hosts.length ? hosts : [host]).filter(Boolean)
+    .filter((h, i, a) => a.indexOf(h) === i);
 
   tried.push('mdns');
   let services = [];
@@ -109,25 +162,30 @@ export async function discover({ host, runMdns, scan, ranges = DEFAULT_SCAN_RANG
   } catch (e) {
     log(`mdns lookup failed (${e && e.message || e}) — falling back to a scan`);
   }
-  const picks = pickAdbEndpoints(services, { host });
+  const picks = pickAdbEndpoints(services, { host: targets[0] });
   if (picks.length) {
     const p = picks[0];
     log(`found ${p.type} at ${p.host}:${p.port} via mDNS`);
     return { endpoint: `${p.host}:${p.port}`, via: 'mdns', tried, services };
   }
-  if (!host) {
+  if (!targets.length) {
     log('no mDNS service and no host to scan — nothing to discover');
     return { endpoint: null, via: 'none', tried, services };
   }
 
   /* mDNS is link-local, so a remote phone is invisible to it. That is not an error. */
   log(`no mDNS service (expected when the phone is remote — mDNS does not cross Tailscale); `
-    + `scanning ${host}`);
+    + `scanning ${targets.join(', ')}`);
   tried.push('scan');
-  const open = await scan(host, ranges);
-  if (open.length) {
-    log(`found an open port at ${host}:${open[0]}`);
-    return { endpoint: `${host}:${open[0]}`, via: 'scan', tried, services, open };
+  const scanned = {};
+  for (const h of targets) {
+    const open = await scan(h, ranges);
+    scanned[h] = open;
+    if (open.length) {
+      log(`found an open port at ${h}:${open[0]}`);
+      return { endpoint: `${h}:${open[0]}`, via: 'scan', tried, services, open, scanned };
+    }
+    log(`nothing open on ${h}`);
   }
-  return { endpoint: null, via: 'none', tried, services, open: [] };
+  return { endpoint: null, via: 'none', tried, services, open: [], scanned };
 }
