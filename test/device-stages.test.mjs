@@ -175,6 +175,34 @@ const ok = (name, cond, detail = '') => {
     + 'nothing)');
 }
 
+/* ---- local checks must not sit behind the device gate --------------------------------------
+ * APK presence and freshness need no handset, but they lived AFTER the wait loop — which
+ * finish()es at "no device" — so they never ran at all. A stale bundle was therefore only
+ * discoverable once a phone was connected, i.e. during the one scarce resource this harness
+ * spends its life waiting for. Every blocked run reported "0 verified" while three local facts
+ * were sitting there unchecked.
+ *
+ * Pinned by POSITION, because the fix is an ordering one and ordering is what regresses. */
+{
+  const dv = readFileSync(join(HERE, 'device-verify.mjs'), 'utf8');
+  const preflight = dv.indexOf('localApkPreflight()');
+  const gate = dv.indexOf('---- 1. reach a device');
+  ok('device-verify runs a local preflight', preflight > 0,
+    'nothing calls localApkPreflight; a blocked run establishes nothing');
+  ok('the local preflight runs BEFORE the device gate', preflight > 0 && preflight < gate,
+    `preflight at ${preflight}, device gate at ${gate} — behind the gate it never executes, `
+    + 'because a run with no device finishes first');
+
+  /* The wait must actually bound the run. `--wait 5` printed "waiting up to 5s" and then sat for
+   * 144s completing a port sweep, because the while() condition is only checked BETWEEN
+   * iterations. scanPorts honours an AbortSignal; nothing was passing one. */
+  ok('the port sweep is bounded by the run deadline', /signal:\s*deadlineSignal\(\)/.test(dv),
+    'scanPorts is called without a signal, so one discovery pass can outlast --wait entirely — '
+    + 'a bounded wait that is not bounded makes a healthy run look hung');
+  ok('the mDNS lookup is bounded too', /Math\.min\(20000, remaining\(\)\)/.test(dv),
+    'a 20s mdns timeout can outlast a short --wait on its own');
+}
+
 /* ---- the acceptance list must account for every stage --------------------------------------
  * The danger with a device leg that has never run is not a failing stage. It is a stage quietly
  * ceasing to be counted as unproven — someone reads 900+ green assertions, assumes the phone is
@@ -187,9 +215,18 @@ const ok = (name, cond, detail = '') => {
 {
   const { DEVICE_ACCEPTANCE, coveredStages, BLOCKER } = await import('./lib/device-acceptance.mjs');
   const dv = readFileSync(join(HERE, 'device-verify.mjs'), 'utf8');
-  /* Stage names as device-verify actually emits them. */
+  /* Stage names as device-verify actually emits them.
+   *
+   * TWO sources, which this check originally got wrong. Most stages are string literals at the
+   * stage() call site, but the local preflight loops over entries from apk-facts.mjs —
+   * `for (const p of localApkPreflight()) stage(p.name, ...)` — so those names never appear in
+   * device-verify at all. Scanning only the call sites reported them as stages the list had
+   * invented, when in fact they are stages the extraction could not see. A gate that models
+   * "what exists" has to cover every place the names come from. */
   const emitted = [...dv.matchAll(/stage\(\s*'((?:[^'\\]|\\.)*)'/g)].map((x) => x[1].replace(/\\'/g, "'"));
-  const unique = [...new Set(emitted)];
+  const factsSrc = readFileSync(join(HERE, 'lib', 'apk-facts.mjs'), 'utf8');
+  const fromFacts = [...factsSrc.matchAll(/name:\s*'((?:[^'\\]|\\.)*)'/g)].map((x) => x[1].replace(/\\'/g, "'"));
+  const unique = [...new Set([...emitted, ...fromFacts])];
   ok('device-verify emits stages to check', unique.length > 10, `${unique.length} stage names`);
 
   const covered = coveredStages();

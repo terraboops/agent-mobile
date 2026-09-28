@@ -19,6 +19,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { bundleMatchesWww, declaredMinSdk } from './lib/apk-facts.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const APK = join(REPO, 'android/app/build/outputs/apk/debug/app-debug.apk');
@@ -83,14 +84,10 @@ ok('targetSdk is 36 (the edge-to-edge assumption the bottom bar is built on)',
  * wrong — a stale build carrying a different floor than the source declares — and lets the
  * number move when the code's real requirements move. android-lint is what keeps the number
  * itself honest. */
-const declaredMinSdk = (() => {
-  const g = readFileSync(join(REPO, 'android', 'variables.gradle'), 'utf8');
-  const m = /minSdkVersion\s*=\s*(\d+)/.exec(g);
-  return m ? Number(m[1]) : null;
-})();
-ok('the project declares a minSdkVersion', Number.isInteger(declaredMinSdk), String(declaredMinSdk));
-ok('the APK\'s minSdk matches android/variables.gradle', minSdk === declaredMinSdk,
-  `APK says ${minSdk}, variables.gradle says ${declaredMinSdk} — the APK predates the change, `
+const declared = declaredMinSdk();
+ok('the project declares a minSdkVersion', Number.isInteger(declared), String(declared));
+ok('the APK\'s minSdk matches android/variables.gradle', minSdk === declared,
+  `APK says ${minSdk}, variables.gradle says ${declared} — the APK predates the change, `
   + 'so it would install on devices the current code cannot run on');
 ok('it carries arm64-v8a, which is what a Pixel 7 runs', /arm64-v8a/.test(abis), abis);
 
@@ -157,55 +154,24 @@ console.log(`\n  package ${pkg} | minSdk ${minSdk} target ${targetSdk} | signer 
 /* ---- does this APK actually carry the CURRENT surface? -------------------------------------
  * Everything above says the file would install and would replace in place. None of it says the
  * file is the one you meant to install. That gap was not hypothetical: on 2026-09-27 this suite
- * passed 17/17 against an APK built BEFORE commit 16e58df — the issue #2 fix itself. The mic-band
- * reservation, the Stop geometry and container-type were all absent from the bundle, so the
- * handset would have received the surface the fix replaced, and every assertion here would still
- * have been green.
+ * passed 17/17 against an APK built BEFORE commit 16e58df — the issue #2 fix itself — so the
+ * handset would have received the surface the fix replaced, with every assertion green.
  *
- * "Installable" and "current" are different claims and only one of them was being made. A stale
- * bundle is worse than a missing one, because it installs cleanly and then behaves like the bug
- * you already fixed.
- *
- * Capacitor copies www/ verbatim into assets/public/, so the check is a byte comparison — no
- * build step to trust, no mtime to be fooled by (the mutation harness rewrites www/ files on
- * restore, which makes mtime useless here). */
+ * The comparison itself lives in test/lib/apk-facts.mjs because device-verify needs the same
+ * check for its pre-device preflight. It was inline here first; two copies of a staleness check
+ * drift, and then one of them goes green on a stale bundle and nobody knows which. */
 {
-  const { execFileSync: ex } = await import('node:child_process');
-  const { mkdtempSync, rmSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const { createHash } = await import('node:crypto');
-  const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
-
-  const tmp = mkdtempSync(join(tmpdir(), 'apk-assets-'));
-  let extracted = false;
-  try { ex('unzip', ['-q', '-o', APK, 'assets/public/*', '-d', tmp]); extracted = true; }
-  catch { /* reported below */ }
-  ok('the APK bundle could be read', extracted, 'unzip failed; the asset check cannot run');
-
-  if (extracted) {
-    /* Every www/ file the bundle carries must match. Files the bundle adds (cordova shims,
-     * capacitor config) are not ours and are ignored; files www/ has that the bundle lacks are
-     * reported, since a missing asset is a broken surface. */
-    const { readdirSync } = await import('node:fs');
-    const wwwDir = join(REPO, 'www');
-    const want = readdirSync(wwwDir).filter((f) => /\.(html|js|css)$/.test(f));
-    const mismatched = [];
-    const missing = [];
-    for (const f of want) {
-      const inApk = join(tmp, 'assets', 'public', f);
-      if (!existsSync(inApk)) { missing.push(f); continue; }
-      if (sha(inApk) !== sha(join(wwwDir, f))) mismatched.push(f);
-    }
-    ok('checked a meaningful number of web assets', want.length >= 3, `${want.length} files`);
-    ok('every bundled web asset matches the current www/ source', mismatched.length === 0,
-      `stale in the APK: ${mismatched.join(', ')}\n`
-      + `       rebuild before installing: npx cap sync android && (cd android && ./gradlew assembleDebug)\n`
-      + '       this APK would install cleanly and show the OLD surface, which is the failure '
-      + 'mode that looks like the bug came back');
-    ok('no www/ asset is missing from the bundle', missing.length === 0,
-      `absent from the APK: ${missing.join(', ')}`);
-  }
-  try { rmSync(tmp, { recursive: true, force: true }); } catch {}
+  const bundle = bundleMatchesWww();
+  ok('the APK bundle could be read', !bundle.reason, bundle.reason || '');
+  ok('checked a meaningful number of web assets', bundle.checked >= 3, `${bundle.checked} files`);
+  ok('every bundled web asset matches the current www/ source', bundle.mismatched.length === 0,
+    `stale in the APK: ${bundle.mismatched.join(', ')}\n`
+    + '       rebuild before installing (npx cap sync android, then assembleDebug through a JDK '
+    + 'gradle supports — see test/lib/android-build.mjs)\n'
+    + '       this APK would install cleanly and show the OLD surface, which is the failure mode '
+    + 'that looks like the bug came back');
+  ok('no www/ asset is missing from the bundle', bundle.missing.length === 0,
+    `absent from the APK: ${bundle.missing.join(', ')}`);
 }
 
 console.log(`\n${pass} passed, ${fails.length} failed`);

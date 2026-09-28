@@ -129,7 +129,13 @@ export const DEVICE_ACCEPTANCE = [
              + 'stale surface)',
     stages: ['APK present', 'install APK', 'install APK (-r, keeps IdentityStore)',
              'app launched', 'adb present', 'device authorised',
-             'wireless-debugging endpoint discovered'],
+             'wireless-debugging endpoint discovered',
+             /* Local preflight — these need NO handset and now run BEFORE the device gate, so a
+              * blocked run still establishes them. They are listed here because they belong to
+              * this acceptance item, not because they are still unproven. */
+             'APK declares its SDK levels',
+             'APK minSdk matches the project declaration',
+             'bundled web assets match www/'],
   },
 ];
 

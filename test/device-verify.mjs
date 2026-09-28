@@ -41,6 +41,7 @@ import { fileURLToPath } from 'node:url';
 import { classifyDevices, stateLabel, describeBlocked, connectErrorOf } from './lib/adb-state.mjs';
 import { discover, scanPorts, DEFAULT_SCAN_RANGES, parseTailscalePeer } from './lib/adb-discover.mjs';
 import { typedTurn } from './lib/aead-trigger.mjs';
+import { localApkPreflight } from './lib/apk-facts.mjs';
 import { logStamp, logSince as logSinceReal } from './lib/gateway-log.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -139,6 +140,22 @@ const finish = (code) => {
 if (!ADB) { stage('adb present', 'blocked', 'adb not found on PATH or in the Android SDK'); finish(2); }
 console.log(`adb: ${ADB}${DRY ? '   (DRY RUN — no device will be touched)' : ''}`);
 
+/* ---- 0. local preflight: everything knowable WITHOUT the phone ----------------------------
+ *
+ * These ran after the device gate, which meant they never ran at all — every blocked run
+ * finish()es at "no device" long before reaching the install section. So a missing or STALE APK
+ * was only discoverable once a handset was connected, i.e. during the one scarce thing this
+ * whole harness is waiting for. Finding out then that the bundle is stale wastes the session.
+ *
+ * Nothing here touches adb. Moving it in front of the gate means a blocked run still reports
+ * something useful, and the numbers stop reading "0 verified" when three local facts were in
+ * fact established.
+ *
+ * The checks come from test/lib/apk-facts.mjs, shared with apk-installable rather than copied:
+ * two implementations of a staleness check drift, and then one of them goes green on a stale
+ * bundle and nobody knows which. */
+for (const p of localApkPreflight()) stage(p.name, p.status, p.detail);
+
 /* ---- 1. reach a device -------------------------------------------------------------------
  * Every non-ready outcome is reported as ITSELF. Collapsing them into "no device" is what made
  * this loop lie: an `unauthorized` device means the phone is showing an "Allow wireless
@@ -219,10 +236,27 @@ if (DRY) {
        * the LAN path returns CONNECTION REFUSED, which proves the phone is up and adbd is not. */
       const peer = parseTailscalePeer(tailscaleStatus(), PHONE_HOST);
       if (peer.lan) console.log(`  [discover] tailscale reports a direct LAN path: ${peer.lan}`);
+      /* Bound the sweep by the RUN's deadline, not just by the loop condition.
+       *
+       * The while() check happens between iterations, so a single discovery pass ran to
+       * completion however long it took: `--wait 5` printed "waiting up to 5s" and then sat for
+       * 144s finishing a port scan. A bounded wait that is not actually bounded is exactly the
+       * kind of thing that makes a healthy run look hung — the failure class this whole harness
+       * exists to remove. scanPorts already honours an AbortSignal; nothing was passing one. */
+      const remaining = () => Math.max(0, deadline - Date.now());
+      const deadlineSignal = () => {
+        const ac = new AbortController();
+        const ms = remaining();
+        if (ms <= 0) ac.abort();
+        else { const t = setTimeout(() => ac.abort(), ms); t.unref?.(); }
+        return ac.signal;
+      };
       const found = await discover({
         hosts: peer.lan ? [peer.lan, PHONE_HOST] : [PHONE_HOST],
-        runMdns: async () => adb(['mdns', 'services'], { timeout: 20000 }).stdout,
-        scan: (h, ranges) => scanPorts(h, ranges, { concurrency: 500, timeoutMs: 2000 }),
+        runMdns: async () => adb(['mdns', 'services'],
+          { timeout: Math.max(1000, Math.min(20000, remaining())) }).stdout,
+        scan: (h, ranges) => scanPorts(h, ranges,
+          { concurrency: 500, timeoutMs: 2000, signal: deadlineSignal() }),
         log: (m) => console.log(`  [discover] ${m}`),
       });
       if (found.endpoint) {
