@@ -76,7 +76,18 @@ ok('it carries arm64-v8a, which is what a Pixel 7 runs', /arm64-v8a/.test(abis),
 
 /* ---- permissions the voice path cannot work without ------------------------------------- */
 const perms = [...badging.matchAll(/uses-permission: name='([^']+)'/g)].map((m) => m[1]);
+/* MODIFY_AUDIO_SETTINGS is load-bearing for issue #1 and easy to drop by accident.
+ *
+ * The native mic toggle calls AudioManager.setMicrophoneMute(), which REQUIRES this permission.
+ * The call site wraps it in `catch (Exception e) { Log.w(...) }` and sets the `micMuted` field
+ * BEFORE attempting it, so without the permission the mute silently does nothing while the badge
+ * still renders "muted" — the UI would claim the mic is off while it is live. That is the worst
+ * shape of failure this project has: a control that lies about a microphone.
+ *
+ * Asserted against the built APK's own manifest, not the source, because the source declaring it
+ * and the shipped artifact carrying it are different claims. */
 for (const p of ['android.permission.RECORD_AUDIO', 'android.permission.INTERNET',
+                 'android.permission.MODIFY_AUDIO_SETTINGS',
                  'android.permission.FOREGROUND_SERVICE',
                  'android.permission.FOREGROUND_SERVICE_MICROPHONE']) {
   ok(`declares ${p.replace('android.permission.', '')}`, perms.includes(p));

@@ -175,6 +175,53 @@ const ok = (name, cond, detail = '') => {
     + 'nothing)');
 }
 
+/* ---- the acceptance list must account for every stage --------------------------------------
+ * The danger with a device leg that has never run is not a failing stage. It is a stage quietly
+ * ceasing to be counted as unproven — someone reads 900+ green assertions, assumes the phone is
+ * covered, and ships. None of those assertions has touched a handset.
+ *
+ * test/lib/device-acceptance.mjs is the written record of what the device still has to prove.
+ * These checks keep it honest: every stage device-verify can report must be accounted for there,
+ * and every entry must say what the host DID prove, so "unproven on device" is never mistaken
+ * for "nothing is known". */
+{
+  const { DEVICE_ACCEPTANCE, coveredStages, BLOCKER } = await import('./lib/device-acceptance.mjs');
+  const dv = readFileSync(join(HERE, 'device-verify.mjs'), 'utf8');
+  /* Stage names as device-verify actually emits them. */
+  const emitted = [...dv.matchAll(/stage\(\s*'((?:[^'\\]|\\.)*)'/g)].map((x) => x[1].replace(/\\'/g, "'"));
+  const unique = [...new Set(emitted)];
+  ok('device-verify emits stages to check', unique.length > 10, `${unique.length} stage names`);
+
+  const covered = coveredStages();
+  const unaccounted = unique.filter((n) => !covered.has(n));
+  ok('every device-verify stage is accounted for in the acceptance list',
+    unaccounted.length === 0,
+    `not listed: ${unaccounted.join(' | ')}\n`
+    + '       add it to the matching entry in test/lib/device-acceptance.mjs, or add an entry. '
+    + 'A stage nobody has classified is a stage somebody will assume is covered.');
+
+  /* And the reverse: a listed stage that no longer exists means the list has gone stale. */
+  const ghosts = [...covered].filter((n) => !unique.includes(n));
+  ok('the acceptance list names no stage that device-verify has dropped', ghosts.length === 0,
+    `stale entries: ${ghosts.join(' | ')}`);
+
+  for (const a of DEVICE_ACCEPTANCE) {
+    ok(`acceptance '${a.id}' states why the host cannot settle it`,
+      typeof a.whyDeviceOnly === 'string' && a.whyDeviceOnly.length > 60, a.whyDeviceOnly);
+    ok(`acceptance '${a.id}' names what WAS proved on the host`,
+      typeof a.hostProof === 'string' && a.hostProof.length > 0,
+      'say NONE explicitly rather than leaving it blank — blank reads as an oversight');
+  }
+  /* The mic toggle is issue #1 and the one most likely to be assumed done, so it is pinned by
+   * name rather than left to the generic checks. */
+  const mic = DEVICE_ACCEPTANCE.find((a) => a.id === 'native-mic-toggle');
+  ok('the native mic toggle (issue #1) is listed first and still unproven',
+    !!mic && DEVICE_ACCEPTANCE[0].id === 'native-mic-toggle' && mic.issue === 1);
+  ok('the blocker is stated once, in one place', BLOCKER.includes('Wireless debugging'));
+  console.log(`  acceptance: ${DEVICE_ACCEPTANCE.length} items still unproven without the handset, `
+    + `covering ${covered.size} device-verify stages`);
+}
+
 console.log(`\n${pass} passed, ${fails.length} failed`);
 if (fails.length) process.exit(1);
 console.log('ALL PASS');
