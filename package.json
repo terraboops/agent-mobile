@@ -55,7 +55,8 @@
     "mutation-coverage": "node test/mutation-coverage.test.mjs",
     "ice-tailnet": "node test/ice-tailnet.test.mjs",
     "webrtc-pt": "node test/webrtc-pt.test.mjs",
-    "e2e-webrtc-pt111": "AGENTMOB_OPUS_PT=111 node test/e2e-webrtc.mjs"
+    "e2e-webrtc-pt111": "AGENTMOB_OPUS_PT=111 node test/e2e-webrtc.mjs",
+    "android-lint": "node test/android-lint.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

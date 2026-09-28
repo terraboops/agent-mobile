@@ -91,7 +91,7 @@ ok((await keys()).join(',') === 'weather,clock', 'viewports are keyed (weather,c
 /* The idle placeholder must get out of the way when the surface is occupied.
  *
  * This was `body:has(#surface .swidget) #ui .idle { display: none; }` — and :has() needs
- * Chrome 105+ while minSdk is 24 (Android 7 ships WebView Chrome 51). An old WebView drops an
+ * Chrome 105+ and minSdk claimed 24 at the time (Android 7, WebView Chrome 51). An old WebView drops an
  * unknown selector WHOLESALE, so the placeholder would have stayed on screen behind live
  * widgets: a visible bug, not a cosmetic one, and nothing tested it either way. Replaced with a
  * class that surface-host toggles, which works on every WebView the app can install on — and

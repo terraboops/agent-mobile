@@ -294,10 +294,15 @@
      narrower than X" and "viewport narrower than 2(X+66)" are the same condition, and the
      media form needs no CSS feature newer than 2012.
      
-     That matters because @container needs Chrome 105+, minSdk is 24 (Android 7, whose stock
-     WebView is Chrome 51), and the Pixel 7's actual WebView version could not be read — the
-     handset was reachable but adbd was not running, and nothing had ever recorded its UA. The
-     honest fix was to stop the question from mattering rather than to guess the answer.
+     The original reason was a version worry: @container needs Chrome 105+, minSdk claimed 24
+     (Android 7, stock WebView Chrome 51), and the Pixel's real WebView version could not be read.
+     That premise turned out to be FALSE — Android lint had never run, and the Java was already
+     calling API 33, so minSdk is now 33 and the WebView floor is ~Chrome 107. @container would
+     have been fine.
+     
+     The media form still stands, on better grounds: it expresses the identical condition, needs
+     no modern feature at all, and the @container threshold it replaced was mistuned — 96px fired
+     at 320px, hiding a label that fit exactly. Kept deliberately, not by inertia.
      
      Threshold measured, not eyeballed: the label needs 92px and the bar offers W/2 - 66, so it
      fits at 320px exactly (94 >= 92) and clips at 300 and below (82 < 87). Hiding at <= 319px

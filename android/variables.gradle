@@ -1,5 +1,28 @@
 ext {
-    minSdkVersion = 24
+    /* 33 (Android 13), because that is what the code ACTUALLY requires.
+     *
+     * This said 24 for months and it was never true. Android lint's NewApi check — which nothing
+     * ran — reports 24 violations, and the deepest are in KoCrypto.java, the AEAD handshake
+     * path: Arrays.compareUnsigned and ByteArrayOutputStream.writeBytes are both API 33. Below
+     * that level the app does not misbehave, it throws at the first handshake. java.util.Base64
+     * (API 26) and Service#startForeground with a type (API 29) sit in the same bucket.
+     *
+     * minSdk is a PROMISE about which devices may install. Declaring 24 meant the Play/adb
+     * install path would happily put this on a phone where it cannot complete a single
+     * connection. Raising it to the real floor is the safe direction: strictly fewer devices,
+     * none of which could have worked.
+     *
+     * The target hardware is a Pixel 7, which shipped with Android 13 and cannot run below it,
+     * so nothing that works today stops working.
+     *
+     * TO LOWER IT AGAIN, the work is small and enumerated rather than vague:
+     *   API 33 -> 29: replace Arrays.compareUnsigned with a constant-time byte loop and
+     *                 ByteArrayOutputStream.writeBytes(b) with write(b, 0, b.length)
+     *   API 29 -> 26: guard Service#startForeground(int, Notification, int)
+     *   API 26 -> 24: swap java.util.Base64 for android.util.Base64, or enable core library
+     *                 desugaring, and guard NotificationChannel + startForegroundService
+     * The lint gate (npm run android-lint) is what keeps this number honest from here. */
+    minSdkVersion = 33
     compileSdkVersion = 36
     targetSdkVersion = 36
     androidxActivityVersion = '1.11.0'

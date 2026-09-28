@@ -24,6 +24,7 @@ const INDEX = join(REPO, 'www/index.html');
 const DWATCH = join(REPO, 'test/device-watch.mjs');
 const WSF = join(REPO, 'transport/wsframes.js');
 const GS = join(REPO, 'test/lib/gateway-scope.mjs');
+const GRADLE_VARS = join(REPO, 'android/variables.gradle');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
  * instance's own copy, so the production adapter is never modified and never needs restoring. */
 const SCOPED_AD = join(homedir(), '.hermes/profiles/agentmobtest/plugins/agentmob/adapter.py');
@@ -186,6 +187,16 @@ export const MUTANTS = [
   /* The answer must carry the offerer's payload-type mapping back unchanged. Renumbering it —
      here by rewriting opus to 96 on the way out — leaves a well-formed answer that negotiates a
      codec the phone never offered. */
+  /* The Java version floor. Dropping minSdk back to 24 reinstates 24 NewApi violations — the
+     deepest being Arrays.compareUnsigned (API 33) in the AEAD handshake path, which throws
+     rather than degrades. If android-lint does not notice that, it is not gating anything.
+     Note this mutates the DECLARED floor rather than adding a bad call: it is the honest
+     inverse of the fix, and it exercises the gate's own minSdk resolution too. */
+  { suite: 'android-lint', file: GRADLE_VARS,
+    why: 'minSdkVersion matching the API level the Java actually requires',
+    from: '    minSdkVersion = 33',
+    to: '    minSdkVersion = 24' },
+
   { suite: 'webrtc-pt', file: SC, restart: true,
     why: 'returning the answer SDP unmodified, with the offerer\'s payload types intact',
     from: "      ack({ webrtc: { rtype: 'answer', sdp: ans.sdp } });",

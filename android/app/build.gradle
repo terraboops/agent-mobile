@@ -16,6 +16,27 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    /* Lint, wired so a CHECK can read it rather than a human squinting at stdout.
+     *
+     * The gap this closes: compileSdk is 36 and minSdk is far lower, so javac accepts any modern
+     * API without a murmur and only lint's NewApi check knows the difference. Nothing ran lint,
+     * and it had 24 NewApi errors waiting — including Arrays.compareUnsigned (API 33) in the AEAD
+     * handshake path, which does not degrade on an older device, it throws.
+     *
+     * abortOnError false on purpose: the gate is `npm run android-lint`, which parses the XML and
+     * decides. Letting gradle abort would make the failure a build error with no structure, and
+     * would also fail on issues the gate has deliberately not adopted yet. The decision about
+     * what is fatal belongs in the test, where it can be explained.
+     *
+     * A fixed XML path so the check never reads a stale report from a previous run. */
+    lint {
+        abortOnError false
+        xmlReport true
+        htmlReport false
+        textReport false
+        xmlOutput = file("$projectDir/build/reports/agentmob-lint.xml")
+    }
+
     buildTypes {
         release {
             minifyEnabled false

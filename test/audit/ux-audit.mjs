@@ -205,34 +205,53 @@ await page.waitForTimeout(500); await snap('20-errors-matrix', null);
 writeFileSync(join(OUT,'findings.json'), JSON.stringify({errors, results}, null, 2));
 await browser.close(); server.close();
 // summary
-// ---- WebView baseline: no CSS the target WebView might not have ----------------------------
+// ---- WebView baseline: no CSS or JS the target WebView might not have ----------------------
 // This gate exists because a question sat open as a COMMENT for weeks: index.html used
-// `container-type: inline-size` + `@container`, which need Chrome 105+, while minSdk is 24
-// (Android 7, stock WebView Chrome 51). The note said an old WebView "ignores @container" and
-// left it there. A flag is not a finding, and nothing failed while it was unresolved.
+// `container-type: inline-size` + `@container` and `:has()`, all Chrome 105+, with no check of
+// any kind. A flag is not a finding, and nothing failed while it was unresolved.
 //
-// It is resolved by REMOVAL: the container query was replaced with an equivalent media query,
-// because the bar's content box is a pure function of viewport width (W/2 - 66), so the two
-// express the same condition and the media form needs nothing newer than 2012. Measured before
-// and after — no overlap and a 48px target at every width from 240 to 412, with and without
-// container-query support.
+// THE FLOOR IS DERIVED FROM minSdk, not hardcoded — and that correction matters, because the
+// first version of this gate hardcoded "minSdk 24, Android 7, WebView Chrome 51" and that premise
+// turned out to be false. Android lint had never been run; when it was, the Java was calling API
+// 33 (Arrays.compareUnsigned in the AEAD handshake path), so minSdk 24 was a promise the code
+// could not keep and is now 33. Deriving the floor means this gate cannot be left arguing from a
+// version nobody ships.
 //
-// What this gate enforces is that it STAYS resolved. Any of these reappearing fails the audit
-// until someone either removes it or establishes, from the device's own report, that the
-// WebView in the field supports it. That is the difference between a gate and a TODO.
+// WebView is updatable and only moves FORWARD, so the version in the system image is the floor a
+// device can have. Mapping below.
 //
-// The scan runs over CSS with COMMENTS STRIPPED. The prose above says "@container" several
-// times, and an early version of this check matched inside a comment — the same class of error
-// that, in the probe that produced these measurements, silently ate the #ctl-stop rule and
-// reported a 44px button against min-height:48px.
+// Consequence worth stating plainly: at minSdk 33 the floor is Chrome ~107, so @container and
+// :has() would in fact have been safe. Removing them was still right on its own merits — the
+// media query is exactly equivalent (the bar's content box is W/2 - 66, a pure function of
+// viewport width) and the old @container threshold was mistuned, hiding a label at 320px that
+// fit exactly. But the VERSION argument for removing them was wrong, and saying so here is
+// cheaper than someone re-deriving it.
+const WEBVIEW_FLOOR = [
+  // [minSdk, Chrome version in that release's system WebView]
+  [34, 115], [33, 107], [32, 96], [31, 93], [30, 83], [29, 74], [28, 66], [26, 58], [24, 51],
+];
+function chromeFloorFor(minSdk) {
+  for (const [api, chrome] of WEBVIEW_FLOOR) if (minSdk >= api) return chrome;
+  return 51;
+}
+const MIN_SDK = (() => {
+  try {
+    const gradle = readFileSync(join(ROOT, 'android', 'variables.gradle'), 'utf8');
+    const m = /minSdkVersion\s*=\s*(\d+)/.exec(gradle);
+    return m ? Number(m[1]) : 24;
+  } catch { return 24; }
+})();
+const CHROME_FLOOR = chromeFloorFor(MIN_SDK);
+
 const MODERN_CSS = [
-  { re: /@container[\s(]/, name: '@container', needs: 'Chrome 105' },
-  { re: /container-type\s*:/, name: 'container-type', needs: 'Chrome 105' },
-  { re: /:has\(/, name: ':has()', needs: 'Chrome 105' },
-  { re: /@layer[\s{]/, name: '@layer', needs: 'Chrome 99' },
-  { re: /\bcolor-mix\s*\(/, name: 'color-mix()', needs: 'Chrome 111' },
-  { re: /@scope[\s{]/, name: '@scope', needs: 'Chrome 118' },
-  { re: /\btext-wrap\s*:\s*balance/, name: 'text-wrap: balance', needs: 'Chrome 114' },
+  { re: /@container[\s(]/, name: '@container', chrome: 105 },
+  { re: /container-type\s*:/, name: 'container-type', chrome: 105 },
+  { re: /:has\(/, name: ':has()', chrome: 105 },
+  { re: /@layer[\s{]/, name: '@layer', chrome: 99 },
+  { re: /\bcolor-mix\s*\(/, name: 'color-mix()', chrome: 111 },
+  { re: /@scope[\s{]/, name: '@scope', chrome: 118 },
+  { re: /\btext-wrap\s*:\s*balance/, name: 'text-wrap: balance', chrome: 114 },
+  { re: /\bfield-sizing\s*:/, name: 'field-sizing', chrome: 123 },
 ];
 // The same question applies to the JAVASCRIPT, and nothing was asking it. The CSS scan was
 // added first because that is where the open comment was; the surface's JS had never been
@@ -240,19 +259,19 @@ const MODERN_CSS = [
 // functions and class syntax, both Chrome 49), which is worth KEEPING clean — one `?.` typed
 // tomorrow would break the same devices, silently, with no rule to stop it.
 const MODERN_JS = [
-  { re: /\?\?/, name: 'nullish coalescing (??)', needs: 'Chrome 80' },
+  { re: /\?\?/, name: 'nullish coalescing (??)', chrome: 80 },
   /* `?.` glued to what follows. My first attempt used a negative lookbehind for a word char,
    * meaning to exclude ternaries — and it excluded `foo?.bar`, the commonest form there is, so
    * the gate silently passed a file I had just salted with optional chaining. A ternary writes
    * `a ? .5 : b` WITH a space, so the absence of one is the real distinguisher. */
-  { re: /\?\.(?=[A-Za-z_$[(])/, name: 'optional chaining (?.)', needs: 'Chrome 80' },
-  { re: /\bstructuredClone\s*\(/, name: 'structuredClone()', needs: 'Chrome 98' },
-  { re: /\.at\s*\(\s*-?\d/, name: 'Array.prototype.at()', needs: 'Chrome 92' },
-  { re: /\bObject\.hasOwn\s*\(/, name: 'Object.hasOwn()', needs: 'Chrome 93' },
-  { re: /\.replaceAll\s*\(/, name: 'String.replaceAll()', needs: 'Chrome 85' },
-  { re: /\bqueueMicrotask\s*\(/, name: 'queueMicrotask()', needs: 'Chrome 71' },
-  { re: /\bglobalThis\b/, name: 'globalThis', needs: 'Chrome 71' },
-  { re: /\{\s*\.\.\.[\w$]/, name: 'object spread', needs: 'Chrome 60' },
+  { re: /\?\.(?=[A-Za-z_$[(])/, name: 'optional chaining (?.)', chrome: 80 },
+  { re: /\bstructuredClone\s*\(/, name: 'structuredClone()', chrome: 98 },
+  { re: /\.at\s*\(\s*-?\d/, name: 'Array.prototype.at()', chrome: 92 },
+  { re: /\bObject\.hasOwn\s*\(/, name: 'Object.hasOwn()', chrome: 93 },
+  { re: /\.replaceAll\s*\(/, name: 'String.replaceAll()', chrome: 85 },
+  { re: /\bqueueMicrotask\s*\(/, name: 'queueMicrotask()', chrome: 71 },
+  { re: /\bglobalThis\b/, name: 'globalThis', chrome: 71 },
+  { re: /\{\s*\.\.\.[\w$]/, name: 'object spread', chrome: 60 },
 ];
 const baselineFindings = [];
 {
@@ -271,12 +290,15 @@ const baselineFindings = [];
       ? codeOnly(raw, 'js')
       : raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '');
     const checks = isJs ? MODERN_JS : MODERN_CSS;
-    for (const { re, name, needs } of checks) {
-      if (re.test(code)) {
+    for (const { re, name, chrome } of checks) {
+      /* Only flag what is ABOVE the floor this minSdk guarantees. A feature the floor already
+       * supports is not a finding, and treating it as one trains people to ignore the gate. */
+      if (chrome > CHROME_FLOOR && re.test(code)) {
         baselineFindings.push({ sev: 'high', cat: 'webview-baseline', el: f,
-          msg: `${f} uses ${name}, which needs ${needs}. minSdk is 24 (Android 7 ships `
-             + `WebView Chrome 51) and the Pixel 7's actual WebView version has never been `
-             + `recorded. Remove it, or establish support from the device's own report first.` });
+          msg: `${f} uses ${name}, which needs Chrome ${chrome}. minSdk ${MIN_SDK} guarantees `
+             + `only Chrome ${CHROME_FLOOR} (the WebView in that release's system image), and `
+             + `the Pixel's actual WebView version has never been recorded. Remove it, raise `
+             + `minSdk, or establish support from the device's own report first.` });
       }
     }
   }
@@ -287,11 +309,12 @@ const baselineFindings = [];
      * and is labelled that way so the two are never confused. */
     auditBrowserSupportsContainer: AUDIT_BROWSER.supportsContainer,
     auditBrowserUA: AUDIT_BROWSER.ua,
+    minSdk: MIN_SDK,
+    chromeFloor: CHROME_FLOOR,
     deviceWebViewUA: 'UNRECORDED — no handset has reported one; see test/audit/out/device/',
   } };
-  console.log(`webview baseline: ${files.length} file(s) scanned, `
-    + `${baselineFindings.length} finding(s) — the surface must not need a WebView newer than `
-    + 'the minSdk floor');
+  console.log(`webview baseline: ${files.length} file(s) scanned, ${baselineFindings.length} `
+    + `finding(s) — minSdk ${MIN_SDK} => WebView floor Chrome ${CHROME_FLOOR}`);
 }
 
 const all=[]; for(const [st,r] of Object.entries(results)) r.issues.forEach(i=>all.push({state:st,...i}));

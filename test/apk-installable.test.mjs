@@ -71,7 +71,27 @@ ok('the launch activity exists and is the one device-verify starts',
   `${launch} — device-verify runs am start -n ${dvPkg}/.MainActivity`);
 ok('targetSdk is 36 (the edge-to-edge assumption the bottom bar is built on)',
   targetSdk === 36, String(targetSdk));
-ok('minSdk 24 (the @container fallback reasoning depends on this)', minSdk === 24, String(minSdk));
+/* The SHIPPED minSdk must match what the project declares.
+ *
+ * This used to assert `minSdk === 24` with the note "the @container fallback reasoning depends
+ * on this" — a hardcoded number propping up a premise that turned out to be false. Android lint
+ * had never run; when it did, the Java was calling API 33 inside the AEAD handshake path, so 24
+ * was a promise the code could not keep. Pinning the literal meant this assertion would have
+ * FOUGHT the correction.
+ *
+ * Comparing the APK against variables.gradle instead checks the thing that can actually go
+ * wrong — a stale build carrying a different floor than the source declares — and lets the
+ * number move when the code's real requirements move. android-lint is what keeps the number
+ * itself honest. */
+const declaredMinSdk = (() => {
+  const g = readFileSync(join(REPO, 'android', 'variables.gradle'), 'utf8');
+  const m = /minSdkVersion\s*=\s*(\d+)/.exec(g);
+  return m ? Number(m[1]) : null;
+})();
+ok('the project declares a minSdkVersion', Number.isInteger(declaredMinSdk), String(declaredMinSdk));
+ok('the APK\'s minSdk matches android/variables.gradle', minSdk === declaredMinSdk,
+  `APK says ${minSdk}, variables.gradle says ${declaredMinSdk} — the APK predates the change, `
+  + 'so it would install on devices the current code cannot run on');
 ok('it carries arm64-v8a, which is what a Pixel 7 runs', /arm64-v8a/.test(abis), abis);
 
 /* ---- permissions the voice path cannot work without ------------------------------------- */

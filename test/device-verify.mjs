@@ -294,7 +294,7 @@ else {
 /* ---- 2b. the WebView version, from the DEVICE's own report --------------------------------
  *
  * The open question this closes: index.html used `container-type` / `@container` and `:has()`,
- * all of which need Chrome 105+, while minSdk is 24 — Android 7 ships WebView Chrome 51. The
+ * all of which need Chrome 105+. At the time minSdk claimed 24 (Android 7, WebView Chrome 51). The
  * note in the CSS said an old WebView "ignores @container" and left it at that for weeks.
  *
  * Both were removed rather than gambled on (a media query and a JS-toggled class express the

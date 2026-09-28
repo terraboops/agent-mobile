@@ -54,10 +54,14 @@ import { createSurface } from './surface-core.js';
   /* Mirror "the surface has widgets" onto <body> as a class.
    *
    * This used to be `body:has(#surface .swidget) #ui .idle { display: none; }` in the CSS. :has()
-   * needs Chrome 105+, minSdk is 24 (Android 7 ships WebView Chrome 51), and unlike the container
-   * query this rule was load-bearing: an old WebView drops the whole selector, so the idle
-   * placeholder would stay on screen behind rendered widgets. A class toggled here works on every
-   * WebView the app can install on, and is exactly as declarative from the CSS side.
+   * needs Chrome 105+ and minSdk claimed 24 at the time (Android 7 ships WebView Chrome 51), so
+   * an old WebView would drop the whole selector and leave the idle placeholder on screen behind
+   * rendered widgets.
+   *
+   * That premise was wrong — minSdk is now 33 (the Java was already calling API 33), so the floor
+   * is ~Chrome 107 and :has() would have worked. The class stays anyway: it is testable on BOTH
+   * edges, which a selector never was, and surface-live now asserts set, partial-teardown and
+   * clear. The version argument was wrong; the change earns its place regardless.
    *
    * Called after every add AND every removal, because the state is "any widget present", not
    * "a widget was once added". */
