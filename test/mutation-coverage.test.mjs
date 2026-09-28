@@ -20,6 +20,8 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MUTANTS } from './lib/mutants.mjs';
+import { codeOnly, langOf } from './lib/code-only.mjs';
+import { existsSync } from 'node:fs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scripts = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).scripts || {};
@@ -88,7 +90,35 @@ ok('every table entry names a suite, file, mutation and reason', malformed.lengt
 const dupes = [...covered].filter((s) => MUTANTS.filter((m) => m.suite === s).length > 1);
 ok('no suite is listed twice', dupes.length === 0, dupes.join(', '));
 
-/* ---- 6. the numbers, stated ---------------------------------------------------------------- */
+/* ---- 6. every mutation must change EXECUTABLE CODE -----------------------------------------
+ * An entry that edits a comment still applies cleanly, still changes the file, and still counts
+ * as covered — while testing nothing. One of mine literally appended `// ` to a declaration and
+ * changed no behaviour, and it sat in the table looking like coverage. Comparing the code-only
+ * projection of before and after is what separates a real edit from a cosmetic one. */
+{
+  const cosmetic = [];
+  const inapplicable = [];
+  for (const m of MUTANTS) {
+    if (!existsSync(m.file)) continue;
+    const before = readFileSync(m.file, 'utf8');
+    if (!before.includes(m.from)) { inapplicable.push(m.suite); continue; }
+    const after = before.replace(m.from, m.to);
+    const lang = langOf(m.file);
+    if (codeOnly(before, lang) === codeOnly(after, lang)) cosmetic.push(m.suite);
+  }
+  ok('every mutation alters executable code, not a comment or whitespace',
+    cosmetic.length === 0,
+    cosmetic.length
+      ? `cosmetic mutation(s): ${cosmetic.join(', ')}\n`
+        + `       these apply cleanly and count as covered while changing no behaviour — the `
+        + `suite would pass and be recorded as MISSED, sending you to audit a test that is fine.`
+      : '');
+  ok('every mutation still matches its target (no stale entries)',
+    inapplicable.length === 0,
+    `stale: ${inapplicable.join(', ')} — the code moved and the entry did not`);
+}
+
+/* ---- 7. the numbers, stated ---------------------------------------------------------------- */
 const suites = all.filter((s) => !(s in UTILITIES));
 ok('the covered count matches the suite count', covered.size === suites.length,
   `${covered.size} covered vs ${suites.length} suites`);
