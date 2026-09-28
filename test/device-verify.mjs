@@ -199,14 +199,47 @@ function tailnetProbe(target) {
     return { checked: false, noBinary: true };
   }
   try {
-    const r = spawnSync(TS_BIN, ['ping', '-c', '1', '--timeout', '3s', host],
-      { encoding: 'utf8', timeout: 15000 });
-    const out = `${r.stdout || ''}${r.stderr || ''}`;
-    if (/pong from/i.test(out)) return { checked: true, reachable: true, note: out.trim().split('\n')[0] };
-    const status = spawnSync(TS_BIN, ['status'], { encoding: 'utf8', timeout: 15000 }).stdout || '';
-    const row = status.split('\n').find((l) => l.includes(host)) || '';
-    const seen = (row.match(/last seen [^,]*/i) || [])[0];
-    return { checked: true, reachable: false, note: seen || 'no reply to tailscale ping' };
+    /* STATUS FIRST, ping second — and that order is the whole fix.
+     *
+     * This used to decide reachability on ONE `tailscale ping`, and it produced a false negative
+     * that sent the operator after entirely the wrong thing: "the phone is NOT REACHABLE ... it
+     * is powered off, asleep, or off the tailnet", while `tailscale status` said
+     * `active; direct 192.168.10.53, tx 3380716 rx 872412` and a manual ping returned a pong in
+     * 414ms.
+     *
+     * The cause is self-inflicted. Discovery sweeps ~35,000 ports at the tailnet address, which
+     * pushes every one of those connection attempts through the tunnel; a probe packet racing
+     * that loses. Measured directly: ping idle -> PONG, ping during our own sweep -> NO REPLY,
+     * then PONG again on the next attempt, and PONG once the sweep finished. So the verdict was
+     * a coin flip on timing, and it was being reported as a fact about the hardware.
+     *
+     * The peer row does not race our traffic: it is local daemon state, and it says `active` or
+     * `offline` outright. Ping stays as corroboration and as the source of the latency detail,
+     * retried so a single lost packet cannot overrule the row. */
+    const peer = parseTailscalePeer(tailscaleStatus(), host);
+    const pingOnce = () => {
+      const r = spawnSync(TS_BIN, ['ping', '-c', '1', '--timeout', '5s', host],
+        { encoding: 'utf8', timeout: 20000 });
+      const out = `${r.stdout || ''}${r.stderr || ''}`;
+      return /pong from/i.test(out) ? out.trim().split('\n')[0] : null;
+    };
+    let pong = null;
+    for (let i = 0; i < 3 && !pong; i++) pong = pingOnce();
+
+    if (peer.found && peer.online) {
+      return { checked: true, reachable: true,
+        note: pong || `tailscale status says active (${peer.relay ? `relay ${peer.relay}`
+          : peer.lan ? `direct ${peer.lan}` : 'no path detail'}); ping did not answer, which our `
+          + 'own port sweep can cause' };
+    }
+    if (peer.found && peer.offline) {
+      return { checked: true, reachable: false, note: 'tailscale status says offline' };
+    }
+    /* No usable row: the ping is all there is. */
+    if (pong) return { checked: true, reachable: true, note: pong };
+    const seen = (peer.line.match(/last seen [^,]*/i) || [])[0];
+    return { checked: true, reachable: false,
+      note: seen || 'no reply to tailscale ping and no active row in tailscale status' };
   } catch { return { checked: false }; }
 }
 

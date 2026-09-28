@@ -175,6 +175,33 @@ const ok = (name, cond, detail = '') => {
     + 'nothing)');
 }
 
+/* ---- the reachability verdict must not race our own sweep ----------------------------------
+ * tailnetProbe decided reachability on ONE `tailscale ping`, and reported a loss as a fact about
+ * the hardware: "the phone is NOT REACHABLE ... powered off, asleep, or off the tailnet" — while
+ * status said `active; direct 192.168.10.53, tx 3380716 rx 872412` and a manual ping answered in
+ * 414ms. That sends whoever reads it to check the battery instead of the toggle.
+ *
+ * Self-inflicted: discovery sweeps ~35,000 ports at the tailnet address, all of it through the
+ * tunnel, and a probe packet racing that loses. Measured: ping idle -> PONG, during our own
+ * sweep -> NO REPLY, next attempt -> PONG, after the sweep -> PONG. The verdict was a coin flip
+ * on timing.
+ *
+ * So the peer row (local daemon state, does not race our traffic) is primary and the ping is
+ * corroboration. Pinned here because "simplify it back to one ping" is an easy, plausible edit. */
+{
+  const dv = readFileSync(join(HERE, 'device-verify.mjs'), 'utf8');
+  const probe = dv.slice(dv.indexOf('function tailnetProbe'), dv.indexOf('let serial = null;'));
+  ok('tailnetProbe consults the tailscale status row', /parseTailscalePeer\(/.test(probe),
+    'deciding on ping alone makes the verdict depend on whether our own port sweep is in flight');
+  ok('an ACTIVE peer row is treated as reachable', /peer\.found && peer\.online/.test(probe),
+    'a row saying active must not be overruled by a lost probe packet');
+  ok('an OFFLINE peer row is treated as unreachable', /peer\.found && peer\.offline/.test(probe),
+    'the offline case must still be reported as offline');
+  ok('the ping is retried rather than trusted once',
+    /for \(let i = 0; i < 3 && !pong; i\+\+\)/.test(probe),
+    'one lost packet must not decide the verdict');
+}
+
 /* ---- local checks must not sit behind the device gate --------------------------------------
  * APK presence and freshness need no handset, but they lived AFTER the wait loop — which
  * finish()es at "no device" — so they never ran at all. A stale bundle was therefore only
