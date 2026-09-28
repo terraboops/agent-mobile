@@ -20,6 +20,7 @@ const ADIS = join(REPO, 'test/lib/adb-discover.mjs');
 const PROTO = join(REPO, 'proto.js');
 const SCORE = join(REPO, 'www/surface-core.js');
 const SHOST = join(REPO, 'www/surface-host.js');
+const BRIDGE = join(REPO, 'www/bridge.js');
 const INDEX = join(REPO, 'www/index.html');
 const DWATCH = join(REPO, 'test/device-watch.mjs');
 const WSF = join(REPO, 'transport/wsframes.js');
@@ -192,6 +193,14 @@ export const MUTANTS = [
      rather than degrades. If android-lint does not notice that, it is not gating anything.
      Note this mutates the DECLARED floor rather than adding a bad call: it is the honest
      inverse of the fix, and it exercises the gate's own minSdk resolution too. */
+  /* Issue #1's state machine. The re-entrancy guard in audioToggle is what stopped the control
+     wedging: without it a double tap flips twice and the label drifts off the hardware, which is
+     the original symptom. Deleting it must make the suite notice. */
+  { suite: 'mic-mute', file: BRIDGE,
+    why: 'the re-entrancy guard that stops a double tap double-flipping the mic',
+    from: '      if (self._busy) return Promise.resolve(false);',
+    to: '      // guard removed' },
+
   { suite: 'android-lint', file: GRADLE_VARS,
     why: 'minSdkVersion matching the API level the Java actually requires',
     from: '    minSdkVersion = 33',

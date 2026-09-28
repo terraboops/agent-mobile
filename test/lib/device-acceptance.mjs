@@ -23,14 +23,18 @@ export const DEVICE_ACCEPTANCE = [
     claim: 'Tapping the NATIVE mic button actually silences the microphone on the device, and the '
          + 'badge reflects real audio state rather than an assumption.',
     whyDeviceOnly:
-      'AudioManager.setMicrophoneMute() is the whole mechanism and it has no host equivalent. '
-      + 'Worse, the call site sets the micMuted field BEFORE the call and wraps the call in '
-      + 'catch { Log.w }, so a permission or OEM restriction makes the mute a no-op while the '
-      + 'badge still renders muted. Only `adb shell dumpsys audio` can say whether the mic is '
-      + 'really muted; nothing on this machine can.',
-    hostProof: 'apk-installable (MODIFY_AUDIO_SETTINGS is declared in the built APK, without '
-             + 'which the mute silently no-ops); ctrlbar-geometry (the button is reachable and '
-             + '48dp+ at every width, and cannot collide with Stop)',
+      'Narrowed to ONE mechanism. AudioManager.setMicrophoneMute() has no host equivalent, and '
+      + 'the call site sets the micMuted field BEFORE the call and wraps it in catch { Log.w }, '
+      + 'so a permission or OEM restriction makes the mute a no-op while the badge still renders '
+      + 'muted. Only `adb shell dumpsys audio` can say whether the hardware actually went quiet. '
+      + 'The STATE MACHINE around it no longer needs the phone — see hostProof.',
+    hostProof: 'mic-mute (16 assertions, no device: muting does not stop the reply, sends no '
+             + 'interrupt, flatlines the meter, and unmutes again; Stop interrupts the reply and '
+             + 'leaves the mic alone; a double tap causes exactly one native transition — the '
+             + 'wedge this issue is named for); android-lint + @RequiresPermission (the callers '
+             + 'are verified to hold RECORD_AUDIO); apk-installable (MODIFY_AUDIO_SETTINGS is in '
+             + 'the built APK, without which the mute silently no-ops); ctrlbar-geometry (the '
+             + 'button is 48dp+ at every width and cannot collide with Stop)',
     stages: ['mute mid-sentence (issue #1)',
              'mute mid-sentence: the device reports the mic muted (issue #1)',
              'mute mid-sentence: the reply KEPT playing (muting the mic must not stop it)',
