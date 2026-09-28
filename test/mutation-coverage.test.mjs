@@ -45,6 +45,7 @@ const UTILITIES = {
   'ice-candidates': 'a reachability report; exits 0 by design whatever it finds',
   'vendor-refresh': 'copies the installed plugin into vendor/; one-way, no assertions',
   mutation: 'the mutation harness itself',
+  suite: 'the suite runner; it executes the others and asserts nothing of its own',
   'mutation-coverage': 'this gate itself; mutating it would only test the test',
 };
 
@@ -88,8 +89,33 @@ const malformed = MUTANTS.filter((m) => !m.suite || !m.file || !m.from || m.to =
 ok('every table entry names a suite, file, mutation and reason', malformed.length === 0,
   malformed.map((m) => m.suite || '(unnamed)').join(', '));
 
-const dupes = [...covered].filter((s) => MUTANTS.filter((m) => m.suite === s).length > 1);
-ok('no suite is listed twice', dupes.length === 0, dupes.join(', '));
+/* A suite MAY have several entries, and forbidding that was a real ceiling on what this table
+ * means.
+ *
+ * The rule used to be "no suite is listed twice". With one entry per suite, a full green run
+ * proves each suite is not ENTIRELY scaffolding — and nothing more. Measured: 564 assertions sit
+ * behind a single entry each; adb-discover has 56 behind one, surface-live 42. Those other 41
+ * assertions could all be vacuous and the table would still read 51/51.
+ *
+ * What must stay unique is the MUTATION, not the suite: two entries that make the same edit are
+ * one entry with extra steps, and would inflate the count without testing anything new. */
+const seen = new Map();
+const sameEdit = [];
+for (const m of MUTANTS) {
+  const key = `${m.file}::${m.from}::${m.to}`;
+  if (seen.has(key)) sameEdit.push(`${seen.get(key)} & ${m.suite}`); else seen.set(key, m.suite);
+}
+ok('no two entries make the identical edit', sameEdit.length === 0, sameEdit.join(', '));
+
+/* Within ONE suite, two entries must target different code, or the second proves nothing the
+ * first did not. */
+const perSuite = {};
+for (const m of MUTANTS) (perSuite[m.suite] = perSuite[m.suite] || []).push(m);
+const samePlace = Object.entries(perSuite)
+  .filter(([, ms]) => ms.length > 1 && new Set(ms.map((m) => `${m.file}::${m.from}`)).size !== ms.length)
+  .map(([s]) => s);
+ok('a suite with several entries mutates a different place each time', samePlace.length === 0,
+  samePlace.join(', '));
 
 /* ---- 6. every mutation must change EXECUTABLE CODE -----------------------------------------
  * An entry that edits a comment still applies cleanly, still changes the file, and still counts

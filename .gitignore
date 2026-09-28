@@ -18,3 +18,5 @@ test/audit/out/
 # mutation harness backups — never commit these
 *.mutation-backup
 .device-arm.log
+.full-mutation.log
+test/audit/out/suite-failures/

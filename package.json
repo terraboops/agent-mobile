@@ -64,7 +64,8 @@
     "identity-pin": "node test/identity-pin.test.mjs",
     "mute-midreply": "node test/mute-midreply.test.mjs",
     "mute-webrtc": "node test/mute-webrtc.test.mjs",
-    "webview-baseline": "node test/webview-baseline.test.mjs"
+    "webview-baseline": "node test/webview-baseline.test.mjs",
+    "suite": "node test/run-suite.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

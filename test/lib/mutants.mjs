@@ -275,6 +275,27 @@ export const MUTANTS = [
     from: "      ack({ webrtc: { rtype: 'answer', sdp: ans.sdp } });",
     to: "      ack({ webrtc: { rtype: 'answer', sdp: ans.sdp.replace(/a=rtpmap:\\d+ opus/gi, 'a=rtpmap:96 opus') } });" },
 
+  /* SECOND entries, now that the table allows them. One entry per suite proved only that a suite
+     is not entirely scaffolding; these target a DIFFERENT claim in the two suites carrying the
+     most assertions behind a single mutation (56 and 42). */
+
+  /* surface-live #2 — the sandbox realm strip. Its first entry covers the per-frame message
+     queue; this covers the security claim: widget code must not be able to reach WebRTC, which
+     is the one API CSP cannot close. Leave the list empty and RTCPeerConnection is defined
+     inside the frame. */
+  { suite: 'surface-live', file: BRIDGE,
+    why: 'stripping WebRTC from the widget sandbox realm',
+    from: "    + 'var N=[\"RTCPeerConnection\",",
+    to: "    + 'var N=[\"__NothingStripped\",\"RTCPeerConnection_disabled\"," },
+
+  /* adb-discover #2 — its first entry covers mDNS + scan discovery; this covers reading the
+     peer's LAN address out of tailscale status, which is what stopped a reachable handset being
+     reported as "powered off" when our own sweep drowned the probe. */
+  { suite: 'adb-discover', file: ADIS,
+    why: 'extracting the peer LAN address from a tailscale status row',
+    from: "    const direct = /\\bdirect\\s+(\\d{1,3}(?:\\.\\d{1,3}){3}):(\\d+)/.exec(line);",
+    to: '    const direct = null;' },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',
