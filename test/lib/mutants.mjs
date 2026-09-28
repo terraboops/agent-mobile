@@ -22,6 +22,7 @@ const SCORE = join(REPO, 'www/surface-core.js');
 const SHOST = join(REPO, 'www/surface-host.js');
 const BRIDGE = join(REPO, 'www/bridge.js');
 const INDEX = join(REPO, 'www/index.html');
+const WVB = join(REPO, 'test/lib/webview-baseline.mjs');
 const DWATCH = join(REPO, 'test/device-watch.mjs');
 const WSF = join(REPO, 'transport/wsframes.js');
 const GS = join(REPO, 'test/lib/gateway-scope.mjs');
@@ -235,6 +236,15 @@ export const MUTANTS = [
      and the truncation is recorded — "cut short after i/n frames: superseded or interrupted".
      The same mutation MISSED against mute-midreply, because the WS downlink is burst-sent and
      there is no pacing left to cancel. Same bug, same mutation, and only this path can see it. */
+  /* The floor comparison IS the gate. Break it and nothing above the floor is ever flagged,
+     which looks exactly like a clean surface — the failure mode this gate already had once, when
+     it printed a finding and still reported ALL PASS. The suite's positive control (a fixture of
+     known-modern features that must be flagged) is what notices. */
+  { suite: 'webview-baseline', file: WVB,
+    why: 'flagging a feature that needs a newer WebView than minSdk guarantees',
+    from: '    if (chrome > floor && re.test(code)) found.push({ file: name, feature: feat, chrome });',
+    to: '    if (false) found.push({ file: name, feature: feat, chrome });' },
+
   { suite: 'mute-webrtc', file: SCOPED_SC, scope: 'gateway',
     why: 'the VAD threshold that stops a muted mic being heard as speech onset',
     from: 'const SPEECH_RMS = 700;',
