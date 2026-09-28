@@ -50,7 +50,8 @@
     "aead-trigger": "node test/aead-trigger.test.mjs",
     "apk-installable": "node test/apk-installable.test.mjs",
     "mutation": "node test/mutation.mjs",
-    "mutation-coverage": "node test/mutation-coverage.test.mjs"
+    "mutation-coverage": "node test/mutation-coverage.test.mjs",
+    "ice-tailnet": "node test/ice-tailnet.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
