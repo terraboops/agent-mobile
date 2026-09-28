@@ -200,7 +200,11 @@ export async function discover({ host, hosts, runMdns, scan, ranges = DEFAULT_SC
     log(`scanned ${h}`);
     if (open.length) {
       log(`found an open port at ${h}:${open[0]}`);
-      return { endpoint: `${h}:${open[0]}`, via: 'scan', tried, services, open, scanned };
+      /* didScan belongs on THIS return too. It was only on the final one, so a successful
+       * discovery reported `didScan: undefined` — the caller could not tell a real sweep from a
+       * skipped one precisely when it had found something. Caught by discover-live. */
+      return { endpoint: `${h}:${open[0]}`, via: 'scan', tried, services, open, scanned,
+               didScan: true };
     }
     log(`nothing open on ${h}`);
   }

@@ -201,6 +201,13 @@ export const MUTANTS = [
     from: '      if (self._busy) return Promise.resolve(false);',
     to: '      // guard removed' },
 
+  /* The sweep must be able to say DETECTED, or every "nothing open" it prints is unfalsifiable.
+     Making scanPorts never report an open port is the honest inverse. */
+  { suite: 'discover-live', file: ADIS,
+    why: 'the port sweep actually reporting a listener it found',
+    from: '      if (hit) open.push(port);',
+    to: '      if (false) open.push(port);' },
+
   { suite: 'android-lint', file: GRADLE_VARS,
     why: 'minSdkVersion matching the API level the Java actually requires',
     from: '    minSdkVersion = 33',

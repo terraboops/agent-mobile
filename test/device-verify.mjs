@@ -276,6 +276,12 @@ if (DRY) {
    * Discover it instead: mDNS when the phone is local, a bounded scan when it is remote. */
   let target = CONNECT;
   let lastDiscover = 0;
+  /* Kept across iterations: the connect step below walks every open port the sweep found, not
+   * just the one discover() chose. */
+  let found = null;
+  /* Set when every open port was tried and none spoke adb — so the blocked message does not
+   * tell the operator to toggle a setting that may already be correct. */
+  let notAdbNote = null;
   while (Date.now() < deadline) {
     if (!target && Date.now() - lastDiscover > DISCOVER_EVERY_MS) {
       lastDiscover = Date.now();
@@ -302,7 +308,7 @@ if (DRY) {
       /* Decided once per pass, so both hosts in a pass share the same answer. */
       const doScan = Date.now() - lastScan >= SCAN_EVERY_MS;
       if (doScan) lastScan = Date.now();
-      const found = await discover({
+      found = await discover({
         hosts: peer.lan ? [peer.lan, PHONE_HOST] : [PHONE_HOST],
         runMdns: async () => adb(['mdns', 'services'],
           { timeout: Math.max(1000, Math.min(20000, remaining())) }).stdout,
@@ -321,8 +327,64 @@ if (DRY) {
       }
     }
     if (target) {
-      const r = adb(['connect', String(target)], { timeout: 15000 });
-      connectError = connectErrorOf(r.stdout, r.stderr);
+      /* Try EVERY open port the sweep found, not just the lowest.
+       *
+       * discover() answers with the first open port it meets, and on any host running something
+       * else in the ephemeral range that is a stranger. Proven, not theorised: a loopback run
+       * with a stub on :50094 latched onto :49152 — an unrelated service — and then reported
+       * "device is OFFLINE, toggle Wireless debugging off/on", which is confident, actionable,
+       * and wrong. On the Pixel that would have burned the first real device session chasing a
+       * toggle that was already correct.
+       *
+       * So walk the candidates and stop at the first that yields an adb device row of any state.
+       * `unauthorized` counts: it means adb reached adbd and the phone is showing the "Allow
+       * wireless debugging?" dialog, which is a real endpoint and a two-second fix. */
+      const ports = (found && Array.isArray(found.open) && found.open.length)
+        ? found.open : [Number(String(target).split(':').pop())];
+      const host = String(target).split(':').slice(0, -1).join(':') || String(target);
+      let connected = false;
+      let weak = null;          // an endpoint that connects but never identifies as adb
+      for (const p of ports) {
+        const ep = `${host}:${p}`;
+        const r = adb(['connect', ep], { timeout: 15000 });
+        connectError = connectErrorOf(r.stdout, r.stderr);
+        const seen = classifyDevices(adb(['devices', '-l']).stdout);
+        /* ONLY ready or unauthorized prove adbd is on the other end.
+         *
+         * `offline` does NOT. A non-adb service accepts the TCP connection, fails the adb
+         * handshake, and adb files it as offline — which is exactly what a stranger looks like.
+         * My first version of this walk accepted offline and therefore stopped on the stranger
+         * anyway, reporting "device is OFFLINE, toggle Wireless debugging off/on": confident,
+         * actionable, and wrong.
+         *
+         * `unauthorized` is kept because it is a REAL endpoint — adb reached adbd and the phone
+         * is showing the "Allow wireless debugging?" dialog, a two-second fix. */
+        if (seen.ready.length || seen.unauthorized.length) {
+          if (ep !== target) console.log(`  [discover] ${target} was not adb; using ${ep}`);
+          target = ep;
+          connected = true;
+          break;
+        }
+        if (seen.offline.length && !weak) weak = ep;
+        /* Drop it so a stale entry cannot masquerade as the device on the next pass. */
+        adb(['disconnect', ep], { timeout: 10000 });
+      }
+      if (!connected && ports.length) {
+        /* Nothing identified as adb. Keep the offline one as the reported target so the blocked
+         * message can still name an address, but say plainly that it never answered adb — rather
+         * than sending someone to toggle a setting that may already be correct. */
+        if (weak) {
+          target = weak;
+          adb(['connect', weak], { timeout: 15000 });
+          notAdbNote = `${ports.length} open port(s) on ${host} were tried and NONE completed an `
+            + `adb handshake — ${weak} accepts TCP but is not adbd, so the "offline" state above `
+            + 'is a stranger answering, not the phone refusing. Do not toggle anything on that '
+            + 'basis.';
+          console.log(`  [discover] ${notAdbNote}`);
+        } else {
+          console.log(`  [discover] none of ${ports.length} open port(s) on ${host} answered adb`);
+        }
+      }
     }
     classified = classifyDevices(adb(['devices', '-l']).stdout);
     if (classified.ready.length) { serial = classified.ready[0]; break; }
@@ -341,9 +403,13 @@ if (DRY) {
   }
   if (!serial) {
     if (!tailnet.checked) tailnet = tailnetProbe(target || PHONE_HOST);
+    const blockedWhy = describeBlocked({ classified, connectTarget: target || PHONE_HOST,
+      connectError, tailnet, waitedS: Math.round((Date.now() - t0) / 1000) });
+    /* A generic "it is offline, toggle it" is wrong when we know the endpoint never spoke adb.
+     * Correcting it here rather than in describeBlocked keeps that helper a pure function of the
+     * adb state, which its own suite tests. */
     stage('device authorised', 'blocked',
-      describeBlocked({ classified, connectTarget: target || PHONE_HOST, connectError, tailnet,
-                        waitedS: Math.round((Date.now() - t0) / 1000) }));
+      notAdbNote ? `${blockedWhy}\n           NOTE: ${notAdbNote}` : blockedWhy);
     finish(1);
   }
   stage('device authorised', 'verified', serial);

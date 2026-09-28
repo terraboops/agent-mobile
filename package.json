@@ -57,7 +57,8 @@
     "webrtc-pt": "node test/webrtc-pt.test.mjs",
     "e2e-webrtc-pt111": "AGENTMOB_OPUS_PT=111 node test/e2e-webrtc.mjs",
     "android-lint": "node test/android-lint.test.mjs",
-    "mic-mute": "node test/mic-mute.test.mjs"
+    "mic-mute": "node test/mic-mute.test.mjs",
+    "discover-live": "node test/discover-live.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
