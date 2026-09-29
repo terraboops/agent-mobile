@@ -13,7 +13,8 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { isTailnetAddr, classifyIcePath, sidecarCgnatRange } from './lib/ice-path.mjs';
+import { isTailnetAddr, classifyIcePath, sidecarCgnatRange, classifyTailnetPath,
+         isPrivateAddr } from './lib/ice-path.mjs';
 import { REPO } from './lib/apk-facts.mjs';
 
 let pass = 0; const fails = [];
@@ -115,6 +116,68 @@ if (reSrc && logsIt) {
   ok('the UNKNOWN line matches too, so the run does not sit out the timeout', !!un,
     'matching only remote= made the no-pair case burn 20s reaching a conclusion already logged');
   ok('and it classifies as unknown, not lan', classifyIcePath(un && un[1]).via === 'unknown');
+}
+
+/* ---- what is UNDERNEATH the tailnet address ------------------------------------------------
+ * The assertions above settle which candidate pair carried the media. They say nothing about
+ * where those packets actually went: Tailscale will set up a DIRECT path to a LAN-local
+ * endpoint, and then 100.x traffic never leaves the subnet. Measured on this machine while
+ * writing this — `direct 192.168.10.53:38864` — so a device run here would report "ICE over the
+ * Tailscale TUN" truthfully and prove nothing about reaching this Mac from elsewhere. */
+const peerDirectLan = { found: true, online: true, offline: false, lan: '192.168.10.53',
+                        relay: null, line: '' };
+const peerDirectPub = { ...peerDirectLan, lan: '108.175.227.79' };
+const peerRelay = { ...peerDirectLan, lan: null, relay: 'tor' };
+const peerOffline = { found: true, online: false, offline: true, lan: null, relay: null, line: '' };
+const peerMissing = { found: false, online: false, offline: false, lan: null, relay: null, line: '' };
+
+ok('tailnet path: a direct LAN path does NOT exercise the remote case',
+  classifyTailnetPath(peerDirectLan).kind === 'direct-lan'
+  && classifyTailnetPath(peerDirectLan).exercisesRemote === false,
+  JSON.stringify(classifyTailnetPath(peerDirectLan)));
+ok('tailnet path: and says how to exercise it',
+  /mobile data/.test(classifyTailnetPath(peerDirectLan).note),
+  'the operator is told the run was weak but not what would make it strong');
+ok('tailnet path: a direct PUBLIC endpoint does exercise it',
+  classifyTailnetPath(peerDirectPub).kind === 'direct-remote'
+  && classifyTailnetPath(peerDirectPub).exercisesRemote === true,
+  JSON.stringify(classifyTailnetPath(peerDirectPub)));
+ok('tailnet path: a DERP relay exercises it too',
+  classifyTailnetPath(peerRelay).kind === 'relay'
+  && classifyTailnetPath(peerRelay).exercisesRemote === true,
+  JSON.stringify(classifyTailnetPath(peerRelay)));
+ok('tailnet path: an offline peer is not reported as remote',
+  classifyTailnetPath(peerOffline).kind === 'offline'
+  && classifyTailnetPath(peerOffline).exercisesRemote === false);
+ok('tailnet path: a peer that is not in the status output is unknown, not remote',
+  classifyTailnetPath(peerMissing).kind === 'unknown'
+  && classifyTailnetPath(peerMissing).exercisesRemote === false,
+  'absent read as remote would claim a path nobody observed');
+ok('tailnet path: an active peer with neither endpoint nor relay is unknown',
+  classifyTailnetPath({ found: true, online: true, lan: null, relay: null }).kind === 'unknown');
+
+/* the private-address test the classification turns on, at its edges */
+for (const a of ['10.0.0.1', '172.16.0.1', '172.31.255.254', '192.168.10.53', '127.0.0.1',
+                 '169.254.1.1']) {
+  ok(`private: ${a}`, isPrivateAddr(a));
+}
+for (const a of ['172.15.0.1', '172.32.0.1', '108.175.227.79', '8.8.8.8']) {
+  ok(`public: ${a}`, !isPrivateAddr(a));
+}
+/* Named literally rather than built in the loop above, because this one is the hinge: if a
+ * tailnet address reads as private, EVERY path classifies as local, the remote case can never
+ * be reported as exercised, and the stage becomes a permanent red that people route around. */
+ok('a tailnet address is not a LAN address', !isPrivateAddr('100.112.255.69'),
+  'treating 100.64/10 as private classifies every tailnet path as local');
+ok('private: junk is not private', !isPrivateAddr('') && !isPrivateAddr(null)
+  && !isPrivateAddr('192.168.10') && !isPrivateAddr('999.1.1.1'));
+
+/* and the wiring */
+{
+  const dv = readFileSync(join(REPO, 'test/device-verify.mjs'), 'utf8');
+  ok('device-verify reports the tailnet path KIND, not only the ICE pair',
+    /classifyTailnetPath\(/.test(dv) && /exercises the REMOTE case/.test(dv),
+    'a same-network run would report the tailnet claim with nothing qualifying it');
 }
 
 console.log(`\n${pass} passed, ${fails.length} failed`);

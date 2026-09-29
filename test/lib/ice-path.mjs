@@ -52,3 +52,67 @@ export function sidecarCgnatRange(src) {
   const m = /o\[0\]\s*===\s*(\d+)\s*&&\s*o\[1\]\s*>=\s*(\d+)\s*&&\s*o\[1\]\s*<=\s*(\d+)/.exec(String(src || ''));
   return m ? { first: Number(m[1]), lo: Number(m[2]), hi: Number(m[3]) } : null;
 }
+
+/**
+ * What KIND of tailnet path is underneath, which "ICE over the Tailscale TUN" does not say.
+ *
+ * WHY THIS MATTERS AND WHY IT IS HERE. The ICE stage checks that the nominated pair used the
+ * 100.x address. That rules out the LAN candidate winning on priority — but it does not rule out
+ * the 100.x traffic itself travelling over the same Wi-Fi, because Tailscale will happily set up
+ * a DIRECT path to a LAN-local endpoint. Measured on this machine right now:
+ *
+ *     100.112.255.69  pixel-7  android  active; direct 192.168.10.53:38864
+ *
+ * So a device run done here would report "ICE over the Tailscale TUN" truthfully, and it would
+ * prove nothing about reaching this Mac from elsewhere — the packets never leave the subnet.
+ * That is the same overclaim the ICE stage exists to prevent, one layer further down, and it is
+ * the part of tailnet-only-egress a single host can actually settle: not "does the remote path
+ * work" (that needs a second host) but "was the remote path exercised at all".
+ *
+ * @returns {{kind:'direct-lan'|'direct-remote'|'relay'|'offline'|'unknown', via:string|null,
+ *            exercisesRemote:boolean, note:string}}
+ */
+export function classifyTailnetPath(peer) {
+  const p = peer || {};
+  if (p.found === false) {
+    return { kind: 'unknown', via: null, exercisesRemote: false,
+             note: 'the peer is not in tailscale status at all' };
+  }
+  if (p.offline || p.online === false) {
+    return { kind: 'offline', via: null, exercisesRemote: false,
+             note: 'the peer is offline, so no path of any kind is in use' };
+  }
+  if (p.relay) {
+    return { kind: 'relay', via: p.relay, exercisesRemote: true,
+             note: `relayed via DERP "${p.relay}" — the packets leave this network, so the `
+                 + 'remote path IS exercised (and WebRTC has no DERP of its own to fall back '
+                 + 'on, which is why the tailnet host candidate exists)' };
+  }
+  if (p.lan) {
+    const priv = isPrivateAddr(p.lan);
+    return priv
+      ? { kind: 'direct-lan', via: p.lan, exercisesRemote: false,
+          note: `direct to ${p.lan}, a private address — the phone is on this same network, so `
+              + 'tailnet traffic never leaves the subnet. A run here cannot show that a remote '
+              + 'phone would reach this Mac; put the phone on mobile data to exercise that' }
+      : { kind: 'direct-remote', via: p.lan, exercisesRemote: true,
+          note: `direct to ${p.lan}, a public address — NAT traversal succeeded across networks, `
+              + 'so the remote path IS exercised' };
+  }
+  return { kind: 'unknown', via: null, exercisesRemote: false,
+           note: 'tailscale reports the peer active but names no direct endpoint or relay' };
+}
+
+/** RFC1918 / CGNAT-adjacent private space, as `tailscale status` would report a same-LAN peer. */
+export function isPrivateAddr(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(host || '').trim());
+  if (!m) return false;
+  const o = m.slice(1).map(Number);
+  if (o.some((n) => n > 255)) return false;
+  if (o[0] === 10) return true;
+  if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true;
+  if (o[0] === 192 && o[1] === 168) return true;
+  if (o[0] === 169 && o[1] === 254) return true;          // link-local
+  if (o[0] === 127) return true;
+  return false;
+}

@@ -1356,6 +1356,37 @@ export const MUTANTS = [
     from: '  if (!endpoint) return null;',
     to:   "  if (!endpoint) return '';" },
 
+  /* ice-path #4 — a DIRECT-LAN tailnet path not counting as the remote case. Tailscale will set
+     up a direct path to a LAN-local endpoint, and then 100.x traffic never leaves the subnet:
+     the ICE stage reports "over the Tailscale TUN" truthfully while proving nothing about
+     reaching this Mac from elsewhere. Measured while writing this — `direct 192.168.10.53`.
+     Counting it as remote is how a run on the sofa closes an acceptance item it never touched. */
+  { suite: 'ice-path', file: ICEPATH,
+    why: 'a same-network direct path not passing as the remote case',
+    breaks: 'a direct LAN path does NOT exercise the remote case',
+    from: '      ? { kind: \'direct-lan\', via: p.lan, exercisesRemote: false,',
+    to:   '      ? { kind: \'direct-lan\', via: p.lan, exercisesRemote: true,' },
+
+  /* ice-path #5 — the private-address test the whole classification turns on. A tailnet address
+     is NOT a LAN address; treat 100.64/10 as private and every path classifies as local, which
+     fails the acceptance item forever and teaches people to ignore the stage. */
+  { suite: 'ice-path', file: ICEPATH,
+    why: 'knowing which addresses are private, and that 100.x is not one',
+    breaks: 'a tailnet address is not a LAN address',
+    from: '  if (o[0] === 10) return true;',
+    to:   '  if (o[0] === 10 || o[0] === 100) return true;' },
+
+  /* ice-path #6 — ABSENT is not REMOTE. A peer missing from tailscale status, or one that is
+     offline, must not read as a path that was exercised: that is a claim about a measurement
+     nobody took, which is the shape this project keeps finding in its own reporting. */
+  { suite: 'ice-path', file: ICEPATH,
+    why: 'an unobserved peer not counting as a remote path',
+    breaks: 'a peer that is not in the status output is unknown, not remote',
+    from: "    return { kind: 'unknown', via: null, exercisesRemote: false,\n"
+        + "             note: 'the peer is not in tailscale status at all' };",
+    to:   "    return { kind: 'direct-remote', via: null, exercisesRemote: true,\n"
+        + "             note: 'assumed remote' };" },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',

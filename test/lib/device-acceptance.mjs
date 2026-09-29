@@ -70,11 +70,26 @@ export const DEVICE_ACCEPTANCE = [
       + 'byte crosses WireGuard or DERP. No arrangement of two processes on one machine fixes '
       + 'that; it needs a second host, and standing one up means deploying. ice-tailnet now pins '
       + 'the LOCAL flag as an assertion so the limitation is stated, not remembered.',
-    hostProof: 'ice-tailnet (both ends are genuinely ON the tailnet address — our socket binding '
-             + 'is verified against lsof and the offer advertises the address it is really bound '
-             + 'to, not werift\'s default-interface guess — and ICE completes with no LAN or '
-             + 'srflx path available)',
-    stages: ['ICE path (tailnet vs LAN)'],
+    hostProof:
+      'ice-tailnet (both ends are genuinely ON the tailnet address — our socket binding and the '
+      + 'sidecar\'s advertised host candidate, with the answer filtered down to that candidate '
+      + 'alone so no other pair can form) + ice-path (which PAIR carried the media, and now what '
+      + 'kind of tailnet path is underneath it).\n\n'
+      + 'NARROWED. The item used to say only that a second host is needed. One host can settle '
+      + 'more than that: whether the remote path was exercised AT ALL. Tailscale sets up a '
+      + 'DIRECT path to a LAN-local endpoint when both machines are on the same network, and '
+      + 'then 100.x traffic never leaves the subnet — measured here 2026-09-29, '
+      + '`direct 192.168.10.53:38864`. A device run in that state reports "ICE over the '
+      + 'Tailscale TUN" truthfully and proves nothing about reaching this Mac from elsewhere, '
+      + 'which is the same overclaim the ICE stage exists to prevent, one layer down. '
+      + 'device-verify now reports the path KIND alongside the pair and refuses to call a '
+      + 'direct-LAN path the remote case; relay and direct-public both count, because in either '
+      + 'the packets leave this network.\n\n'
+      + 'RESIDUE: that a phone on a DIFFERENT network completes the path. The cheap version '
+      + 'needs no second machine — put the Pixel on mobile data, where Tailscale must relay or '
+      + 'punch, and the stage flips to verified on its own. The expensive version, a second '
+      + 'host, is not needed for that and would mean deploying.',
+    stages: ['ICE path (tailnet vs LAN)', 'tailnet path exercises the REMOTE case'],
   },
   {
     id: 'webview-render',

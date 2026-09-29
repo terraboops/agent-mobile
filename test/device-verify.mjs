@@ -43,7 +43,7 @@ import { discover, scanPorts, DEFAULT_SCAN_RANGES, parseTailscalePeer, describeD
   from './lib/adb-discover.mjs';
 import { typedTurn } from './lib/aead-trigger.mjs';
 import { localApkPreflight, APK } from './lib/apk-facts.mjs';
-import { classifyIcePath } from './lib/ice-path.mjs';
+import { classifyIcePath, classifyTailnetPath } from './lib/ice-path.mjs';
 import { parseDensity, parseSize, micTapPoint, stopTapX, parseMicMute, parseVersionName,
          highestMajor, parseNavInset, parseCrash } from './lib/device-probe.mjs';
 import { parseAmStartRefusal, parseInstallFailure } from './lib/manifest-facts.mjs';
@@ -592,6 +592,16 @@ if (!DRY && serial) {
     path.via === 'unknown'
       ? 'the sidecar logged no nominated pair — werift did not expose one'
       : `${path.via.toUpperCase()}: ${path.note}`);
+
+  /* AND WHAT IS UNDERNEATH IT. "ICE over the Tailscale TUN" is true whenever the nominated pair
+   * is the 100.x address — including when Tailscale has a DIRECT path to a LAN-local endpoint,
+   * in which case the packets never leave the subnet and the remote case is not exercised at
+   * all. Reporting the first without the second is the same overclaim the stage above exists to
+   * prevent, one layer down. */
+  const tsPath = classifyTailnetPath(parseTailscalePeer(tailscaleStatus(), PHONE_HOST));
+  stage('tailnet path exercises the REMOTE case',
+    tsPath.exercisesRemote ? 'verified' : 'blocked',
+    `${tsPath.kind}${tsPath.via ? ` (${tsPath.via})` : ''}: ${tsPath.note}`);
 
   stage('screenshot: connected control bar', shot('02-connected.png') ? 'verified' : 'blocked',
     '02-connected.png — check Stop vs the native mic (issue #2)');
