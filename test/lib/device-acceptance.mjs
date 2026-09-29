@@ -164,7 +164,18 @@ export const DEVICE_ACCEPTANCE = [
       + 'already-installed build, insufficient storage, or a crash on first paint.',
     hostProof: 'apk-installable (valid v2 signature, one signer, arm64-v8a, and every bundled '
              + 'web asset byte-matches www/ — an APK can install cleanly and still carry a '
-             + 'stale surface)',
+             + 'stale surface.\n\n'
+             + 'It also settles whether `am start` can REACH the launcher, which was the last '
+             + 'blind spot here: the component is read out of the SHIPPED manifest — not the '
+             + 'source, which is one input to a merge — and checked for android:exported. An '
+             + 'activity that exists but is not exported installs perfectly and then refuses '
+             + 'the start with a SecurityException, so the app never runs and nothing of ours '
+             + 'reaches logcat. Asserted both ways, the negative against the real dump with '
+             + 'exported flipped to false.\n\n'
+             + 'And the launch VERDICT itself: device-verify keeps what am start printed and '
+             + 'names a refusal rather than letting it fall through to "no process", and reads '
+             + 'logcat for a crash ATTRIBUTED to this package — Android restarts an app that '
+             + 'throws in onCreate, so a pid alone was reporting a crash loop as a launch.)',
     stages: ['APK present', 'install APK', 'install APK (-r, keeps IdentityStore)',
              'app launched', 'adb present', 'device authorised',
              'wireless-debugging endpoint discovered',

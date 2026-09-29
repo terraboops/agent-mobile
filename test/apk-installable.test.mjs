@@ -20,6 +20,8 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bundleMatchesWww, declaredMinSdk, APK } from './lib/apk-facts.mjs';
+import { launcherActivity, canAmStart, parseAmStartRefusal }
+  from './lib/manifest-facts.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SDK = process.env.ANDROID_HOME || '/opt/homebrew/share/android-commandlinetools';
@@ -69,6 +71,73 @@ ok('it is the package device-verify installs and launches', pkg === dvPkg,
 ok('the launch activity exists and is the one device-verify starts',
   launch === `${pkg}.MainActivity`,
   `${launch} — device-verify runs am start -n ${dvPkg}/.MainActivity`);
+
+/* ---- EXISTING IS NOT REACHABLE -------------------------------------------------------------
+ * The assertion above proves the activity is in the APK. It does not prove Android will let adb
+ * start it. A launcher that is not exported installs perfectly and then refuses `am start` with
+ * a SecurityException: the process never comes up, nothing of ours runs, and the launch stage
+ * reports "no process and no crash in logcat" — the crash attribution added alongside this
+ * cannot help, because the refusal is a failure of the START, not of the app.
+ *
+ * Read from the SHIPPED manifest rather than android/app/src/main/AndroidManifest.xml: the
+ * source is one input to a merge, and a library manifest can flip an attribute on the way
+ * through. Since targetSdk 31 a missing android:exported on a component with an intent-filter
+ * fails the install outright, so the case that actually gets here is exported="false". */
+const xmltree = run(aapt2, ['dump', 'xmltree', '--file', 'AndroidManifest.xml', APK]);
+const dvComponent = (dvSrc.match(/am', 'start', '-n', `\$\{PKG\}\/(\.[\w.]+)`/) || [])[1]
+  || '.MainActivity';
+const launcher = launcherActivity(xmltree);
+/* `!!launcher` alone was not enough, and a mutation said so: the LAUNCHER category is found by
+ * a line match, not by an attribute, so breaking the ATTRIBUTE parser still produced a record —
+ * with every field null. A record whose name is null is not a parse, it is the shape of one. */
+ok('the shipped manifest was parsed into activities',
+  !!launcher && !!launcher.name,
+  `launcher=${JSON.stringify(launcher)} — no named activity carrying the LAUNCHER category was `
+  + 'found in the APK. Either the attribute parse broke or the app has no launcher, and both '
+  + 'make every assertion below vacuous');
+ok('the launcher activity declares android:exported',
+  launcher && launcher.exported !== null,
+  `exported=${launcher && launcher.exported} — since targetSdk 31 this must be explicit`);
+const reach = canAmStart(xmltree, dvComponent);
+ok(`am start can reach the component device-verify names (${dvComponent})`, reach.ok, reach.reason);
+
+/* Both ways. Every assertion above passes on a manifest that is already correct, so the same
+ * checks are run against dumps that are definitely wrong — otherwise a parser that returned
+ * "exported" for everything would look identical from here. */
+const FIX_NOT_EXPORTED = xmltree.replace(
+  /(:exported\(0x[0-9a-fA-F]+\)=)true/, '$1false');
+ok('control: the shipped dump and the altered one really differ',
+  FIX_NOT_EXPORTED !== xmltree, 'the exported attribute was not found to alter, so the negative '
+  + 'control below proves nothing');
+ok('control: exported=false is REFUSED', !canAmStart(FIX_NOT_EXPORTED, dvComponent).ok,
+  'a non-exported launcher read as startable');
+ok('control: the refusal says WHY, naming exported',
+  /not exported/.test(canAmStart(FIX_NOT_EXPORTED, dvComponent).reason),
+  canAmStart(FIX_NOT_EXPORTED, dvComponent).reason);
+ok('control: a component that is not in the manifest is refused',
+  !canAmStart(xmltree, '.NoSuchActivity').ok
+  && /does not exist/.test(canAmStart(xmltree, '.NoSuchActivity').reason),
+  canAmStart(xmltree, '.NoSuchActivity').reason);
+ok('control: an empty dump does not read as startable',
+  !canAmStart('', dvComponent).ok && launcherActivity('') === null);
+
+/* And the DEVICE-SIDE half of the same blind spot: device-verify keeps what `am start` printed
+ * and names the refusal, instead of letting it fall through to "no process". The parse is here
+ * because this is the suite that owns the exported claim. */
+ok('device-verify keeps what am start printed', /const amOut = adb\(/.test(dvSrc),
+  'the launch stage discards am start output again, so a refusal would read as "no process"');
+ok('am start refusal: a not-exported SecurityException is recognised',
+  parseAmStartRefusal('Starting: Intent { cmp=com.agentmobile.agent/.MainActivity }\n'
+    + 'java.lang.SecurityException: Permission Denial: starting Intent ... not exported from uid 10234')
+  === 'the launch component is not exported — Android refused the start');
+ok('am start refusal: a missing component is told apart from a refusal',
+  parseAmStartRefusal('Error type 3\nError: Activity class {com.x/.Nope} does not exist.')
+  === 'the launch component does not exist under that name');
+ok('am start refusal: an ordinary successful start is NOT a refusal',
+  parseAmStartRefusal('Starting: Intent { cmp=com.agentmobile.agent/.MainActivity }') === null,
+  'every launch would be reported as refused');
+ok('am start refusal: empty output is not a refusal',
+  parseAmStartRefusal('') === null && parseAmStartRefusal(null) === null);
 ok('targetSdk is 36 (the edge-to-edge assumption the bottom bar is built on)',
   targetSdk === 36, String(targetSdk));
 /* The SHIPPED minSdk must match what the project declares.

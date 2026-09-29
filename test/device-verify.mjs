@@ -45,6 +45,7 @@ import { localApkPreflight, APK } from './lib/apk-facts.mjs';
 import { classifyIcePath } from './lib/ice-path.mjs';
 import { parseDensity, parseSize, micTapPoint, stopTapX, parseMicMute, parseVersionName,
          highestMajor, parseNavInset, parseCrash } from './lib/device-probe.mjs';
+import { parseAmStartRefusal } from './lib/manifest-facts.mjs';
 import { logStamp, logSince as logSinceReal } from './lib/gateway-log.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -512,7 +513,13 @@ if (!DRY && serial) {
   const logOff = logSize();
   adb(['-s', serial, 'shell', 'am', 'force-stop', PKG]);
   await sleep(1000);
-  adb(['-s', serial, 'shell', 'am', 'start', '-n', `${PKG}/.MainActivity`]);
+  /* Keep what `am start` SAID. A component that is not exported is refused here with a
+   * SecurityException — the start fails, so the app never runs and nothing of ours reaches
+   * logcat, and the stage below would otherwise report "no process and no crash" for a cause
+   * that was printed on this very line. apk-installable proves the shipped manifest exports it;
+   * this catches the case where the device disagrees with the APK we checked. */
+  const amOut = adb(['-s', serial, 'shell', 'am', 'start', '-n', `${PKG}/.MainActivity`]);
+  const refusal = parseAmStartRefusal(`${amOut.stdout || ''}\n${amOut.stderr || ''}`);
   await sleep(6000);
   const alive = sh(`pidof ${PKG} || true`);
   /* A pid is not a launch. An app that throws in onCreate is restarted by the system, so
@@ -522,10 +529,12 @@ if (!DRY && serial) {
   const crash = parseCrash(adb(['-s', serial, 'logcat', '-d', '-t', '400'],
                                { timeout: 30000 }).stdout, PKG);
   stage('app launched',
-    crash ? 'failed' : (alive ? 'verified' : 'failed'),
-    crash ? `${crash.kind}: ${crash.summary}`
-          : (alive ? `pid ${alive}` : 'no process and no crash in logcat — check the launcher '
-                                    + 'component name'));
+    (refusal || crash) ? 'failed' : (alive ? 'verified' : 'failed'),
+    refusal ? `am start refused: ${refusal}`
+            : crash ? `${crash.kind}: ${crash.summary}`
+            : (alive ? `pid ${alive}`
+                     : 'no process, no crash in logcat and no refusal from am start — the '
+                       + 'component started and the process went away for some other reason'));
   stage('screenshot: boot', shot('01-boot.png') ? 'verified' : 'blocked',
     lastShotError ? `01-boot.png — ${lastShotError}` : '01-boot.png');
 

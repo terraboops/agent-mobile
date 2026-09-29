@@ -37,6 +37,7 @@ const ICEPATH = join(REPO, 'test/lib/ice-path.mjs');
 const LINTRPT = join(REPO, 'test/lib/lint-report.mjs');
 const DPROBE = join(REPO, 'test/lib/device-probe.mjs');
 const FSTACK = join(REPO, 'test/lib/font-stack.mjs');
+const MFACTS = join(REPO, 'test/lib/manifest-facts.mjs');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
  * instance's own copy, so the production adapter is never modified and never needs restoring. */
 const SCOPED_AD = join(homedir(), '.hermes/profiles/agentmobtest/plugins/agentmob/adapter.py');
@@ -1227,6 +1228,40 @@ export const MUTANTS = [
     breaks: 'a FATAL EXCEPTION for our package is found',
     from: "    if (!/\\bFATAL EXCEPTION\\b/.test(lines[i])) continue;",
     to:   '    continue;' },
+
+  /* apk-installable #3 — EXPORTED, the last blind spot in the launch stage. An activity that is
+     present but not exported installs perfectly and refuses `am start` with a SecurityException:
+     the start fails, so the app never runs, nothing of ours reaches logcat, and the crash
+     attribution added alongside this cannot help — there is no crash, because there was no
+     process. Accepting any value for the attribute is the regression. */
+  { suite: 'apk-installable', file: MFACTS,
+    why: 'refusing a launcher that is present but not exported',
+    breaks: 'control: exported=false is REFUSED',
+    from: '  if (byName.exported !== true) {',
+    to:   '  if (false) {' },
+
+  /* apk-installable #4 — reading the attribute at all. The namespace on an aapt2 attribute is a
+     URL, so the name follows the LAST colon; a pattern that stops at the first one matches
+     nothing and every activity comes back with null fields, which reads as "not exported" for a
+     correct manifest and as nothing at all for a broken one. This entry exists because that is
+     exactly what the first version of this parser did. */
+  { suite: 'apk-installable', file: MFACTS,
+    why: 'parsing namespaced manifest attributes',
+    breaks: 'the shipped manifest was parsed into activities',
+    from: "    const attr = /^A: (?:.*:)?([\\w-]+)\\(0x[0-9a-fA-F]+\\)=(.*)$/.exec(t)\n"
+        + "              || /^A: (?:.*:)?([\\w-]+)=(.*)$/.exec(t);",
+    to:   "    const attr = /^A: [^:]*:([\\w-]+)\\([^)]*\\)=(.*)$/.exec(t);" },
+
+  /* apk-installable #5 — telling a REFUSAL apart from an ordinary start. If every am start reads
+     as refused the launch stage fails on a healthy app, which gets the check deleted within a
+     week; if none does, the refusal falls through to "no process" and we are back where we
+     started. Both directions are asserted, so this breaks the useful one. */
+  { suite: 'apk-installable', file: MFACTS,
+    why: 'recognising the not-exported refusal in am start output',
+    breaks: 'a not-exported SecurityException is recognised',
+    from: "  if (/SecurityException[^\\n]*not exported/i.test(t)\n"
+        + "      || /Permission Denial[^\\n]*not exported/i.test(t)) {",
+    to:   '  if (false) {' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
