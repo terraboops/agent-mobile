@@ -555,7 +555,7 @@ export const MUTANTS = [
   { suite: 'e2e-webrtc', file: SC, restart: true,
     why: 'choosing the WebRTC downlink when the peer is ready',
     breaks: 'did NOT fall back to the WebSocket',
-    from: '    const viaW = !!(target.webrtc && target.webrtc.ready);',
+    from: '    const viaW = !forceWsDownlink() && !!(target.webrtc && target.webrtc.ready);',
     to: '    const viaW = false;' },
 
   /* e2e-voice #2 — CLEARING the speaking indicator, where entry #1 covers raising the heard
@@ -1594,6 +1594,44 @@ export const MUTANTS = [
     from: "      var P = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AgentChannel;",
     to:   "      if (true) return window.__agent.send('{\"cmd\":\"interrupt\"}');\n"
         + "      var P = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AgentChannel;" },
+
+  /* ws-fallback #1 — the switch actually gating the DOWNLINK decision. Everything else about
+     it can be present and correct while `viaW` ignores it, and then the device run negotiates
+     WebRTC, exercises the paced path, and reports a pass over the burst case stop-control's
+     flush was written for. */
+  { suite: 'ws-fallback', file: SC, restart: true,
+    why: 'the forced fallback reaching the transport choice',
+    breaks: 'it gates the DOWNLINK decision, not something adjacent',
+    from: '    const viaW = !forceWsDownlink() && !!(target.webrtc && target.webrtc.ready);',
+    to:   '    const viaW = !!(target.webrtc && target.webrtc.ready);' },
+
+  /* ws-fallback #2 — the per-reply [FORCED] tag. A forced WS reply and a genuine fallback are
+     different findings: one is a diagnostic the operator asked for, the other means WebRTC
+     broke. The transport line is what a device run greps, so without the tag those two read
+     identically in the evidence. */
+  { suite: 'ws-fallback', file: SC, restart: true,
+    why: 'marking a forced reply as forced in the transport line',
+    breaks: 'every forced reply is marked in the transport line',
+    from: "          (!viaW && forceWsDownlink() ? ' [FORCED]' : '') +",
+    to:   "          '' +" },
+
+  /* ws-fallback #3 — re-reading the marker rather than latching it at startup. A value read
+     once cannot be turned on for one phase of a run, which is the only way the device pass can
+     use it without bouncing the gateway mid-pass. */
+  { suite: 'ws-fallback', file: SC, restart: true,
+    why: 'the marker being re-read while the sidecar runs',
+    breaks: 'the file is re-read on a timer, not once at startup',
+    from: '  if (now - _forceWsAt > 1000) {',
+    to:   '  if (_forceWsAt === 0) {' },
+
+  /* ws-fallback #4 — the run CLEARING the marker however it ends. Left on disk it silently
+     degrades every later conversation on this machine to the burst path, and nothing would say
+     why. This is the failure mode of a diagnostic switch, not of the diagnosis. */
+  { suite: 'ws-fallback', file: DV,
+    why: 'the device run never leaving the machine in diagnostic mode',
+    breaks: 'finish() clears the marker',
+    from: '  setForcedWs(false);\n  stopAdb();',
+    to:   '  stopAdb();' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

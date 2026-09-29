@@ -50,7 +50,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, writeFileSync, unlinkSync, readFileSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir, networkInterfaces as osNetworkInterfaces } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { genIdentity, identityId, serverHandshake, verifyConfirm, PROTO_VERSION } from '/Users/terra/Developer/agent-mobile/proto.js';
 import { fileURLToPath } from 'node:url';
 import { pack, unpack, T, unpackAudio } from '/Users/terra/Developer/agent-mobile/transport/wsframes.js';
@@ -332,6 +332,46 @@ const ICE_HOST_ADDRS = tailnetAddresses();
 const RX_FAIL_ESCALATE = Number(process.env.AGENTMOB_RX_FAIL_ESCALATE || 5);
 // How long after sending the answer to wait before declaring ICE a failure.
 const ICE_DEADLINE_MS = Number(process.env.AGENTMOB_ICE_DEADLINE_MS || 20000);
+
+/* FORCING THE WS FALLBACK, so the device run can exercise the path that hides a bug.
+ *
+ * The WebRTC downlink is PACED at 20ms/frame; the WS one is BURST (a setImmediate yield every
+ * 128 frames). That difference is why Stop behaved differently on each: on WebRTC the phone's
+ * queue is about one frame deep, on WS the whole remainder of a reply can already be sitting on
+ * the device. The flush fix landed for the WS case, and a device run negotiates WebRTC — so the
+ * run would exercise the easy path and report a pass over the case the fix was for.
+ *
+ * Two ways in, because they serve different callers:
+ *   AGENTMOB_FORCE_WS_DOWNLINK=1  for a scoped instance or an e2e run, read once at startup
+ *   a marker FILE next to this script for the live sidecar, which the device run creates and
+ *     removes around the phase that needs it — no gateway restart, and reversible if the run
+ *     dies holding it.
+ *
+ * Checked at most once a second: a reply is hundreds of frames and this must not become a stat
+ * per frame. */
+const FORCE_WS_FILE = join(dirname(fileURLToPath(import.meta.url)), '.force-ws-downlink');
+const FORCE_WS_ENV = /^(1|true|yes)$/i.test(process.env.AGENTMOB_FORCE_WS_DOWNLINK || '');
+let _forceWsSeen = false;
+let _forceWsAt = 0;
+let _forceWs = FORCE_WS_ENV;
+function forceWsDownlink() {
+  const now = Date.now();
+  if (now - _forceWsAt > 1000) {
+    _forceWsAt = now;
+    let onDisk = false;
+    try { onDisk = existsSync(FORCE_WS_FILE); } catch { /* unreadable == not forced */ }
+    _forceWs = FORCE_WS_ENV || onDisk;
+  }
+  /* Say it once, loudly. A forced fallback that nobody notices is a run whose result means
+   * something other than what the reader thinks. */
+  if (_forceWs && !_forceWsSeen) {
+    _forceWsSeen = true;
+    log(`WS DOWNLINK FORCED (${FORCE_WS_ENV ? 'env' : 'marker file'}) — WebRTC will NOT carry `
+      + 'replies. This is a diagnostic mode: the WS path BURSTS a reply instead of pacing it.');
+  }
+  if (!_forceWs && _forceWsSeen) { _forceWsSeen = false; log('WS downlink no longer forced'); }
+  return _forceWs;
+}
 
 log(`agent id ${identityId(identity)} ws://${BIND}:${PORT} ctl :${CTL_PORT} `
   + `[${clientAllow ? 'allowlist ' + _allowSet.size : 'PAIRING MODE — accepting any client'}]`
@@ -868,7 +908,7 @@ function handleBridgeMessage(m) {
     if (target.pcmCancel) target.pcmCancel.cancelled = true;
     target.pcmCancel = tok;
     let f = 0;
-    const viaW = !!(target.webrtc && target.webrtc.ready);
+    const viaW = !forceWsDownlink() && !!(target.webrtc && target.webrtc.ready);
     // This line is the ONLY record of which transport actually served the downlink, so it has
     // to survive a truncated playback too. Every early return below used to skip it, which is
     // why a reply cut short by a disconnect, an ICE drop or a newer synthesis left no trace of
@@ -880,6 +920,7 @@ function handleBridgeMessage(m) {
       logged = true;
       if (target.pcmCancel === tok) target.pcmCancel = null;
       log(`→ phone pcm ${pcm.length}b -> ${n} opus packets via ${viaW ? 'WebRTC' : (useUdp ? 'UDP' : 'WS')}` +
+          (!viaW && forceWsDownlink() ? ' [FORCED]' : '') +
           (viaW ? '' : ` (webrtc ready=${!!(target.webrtc && target.webrtc.ready)})`) +
           (note ? ` [${note}]` : ''));
     };

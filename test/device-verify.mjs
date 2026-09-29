@@ -34,7 +34,7 @@
  *                                                  # (--dry, not --dry-run: npm eats that)
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -70,6 +70,27 @@ const DRY = argv.includes('--dry') || argv.includes('--dry-run');
  * name EXITS — running everything because a name was misspelled gives the operator the ten
  * minutes they were trying to avoid and a report that looks like the one they asked for. */
 const SELECT = parsePhaseSelector({ only: flag('--only'), from: flag('--from') });
+/* --ws-fallback: make the sidecar refuse the WebRTC downlink for this run.
+ *
+ * stop-control's fix is for the WS path — it BURSTS a reply where WebRTC paces it, so the whole
+ * remainder can already be on the phone when Stop is pressed. A normal device run negotiates
+ * WebRTC and would exercise the easy case, reporting a pass over the one the fix was for. The
+ * marker file is read by the live sidecar within a second, so no gateway restart is needed, and
+ * finish() removes it however the run ends — a forced fallback left behind would silently
+ * degrade every later conversation on this machine. */
+const WS_FALLBACK = argv.includes('--ws-fallback');
+const FORCE_WS_FILE = join(homedir(), '.hermes/plugins/agentmob/sidecar/.force-ws-downlink');
+let forcedWs = false;
+const setForcedWs = (on) => {
+  try {
+    if (on) { writeFileSync(FORCE_WS_FILE, `device-verify ${new Date().toISOString()}\n`); forcedWs = true; }
+    else if (forcedWs || existsSync(FORCE_WS_FILE)) { rmSync(FORCE_WS_FILE, { force: true }); forcedWs = false; }
+    return true;
+  } catch (e) {
+    console.log(`  [ws-fallback] could not ${on ? 'set' : 'clear'} ${FORCE_WS_FILE}: ${e.message}`);
+    return false;
+  }
+};
 if (SELECT.error) {
   console.error(`device-verify: ${SELECT.error}`);
   process.exit(2);
@@ -192,6 +213,9 @@ process.on('unhandledRejection', (e) => {
 process.on('exit', stopAdb);   // last resort for any path not covered above
 
 const finish = (code) => {
+  /* FIRST, before anything that could throw. A forced WS fallback left on disk would make every
+   * later conversation on this machine take the burst path without saying so. */
+  setForcedWs(false);
   stopAdb();
   console.log('\nadb server stopped.');
   /* A DRY run must never overwrite a real one. The stage-select suite spawns this script with
@@ -694,6 +718,14 @@ if (!DRY && serial && phase('launch')) {
    * mid-sentence, and still playing before Stop means anything. So they are selected together —
    * `--only mute` runs the trigger that makes a mute observable, which is the honest reading of
    * what the operator asked for. */
+  if (WS_FALLBACK) {
+    const set = setForcedWs(true);
+    stage('WS fallback forced for this run', set ? 'built' : 'failed',
+      set ? 'the sidecar will refuse the WebRTC downlink, so the reply is BURST rather than '
+          + 'paced — this is the path stop-control\'s flush was written for'
+          : 'could not write the marker, so this run would silently exercise WebRTC instead');
+    await sleep(1500);   // the sidecar re-reads the marker at most once a second
+  }
   const SPEAKING_PHASES = ['speak', 'mute', 'stop'];
   const wantsTurn = SPEAKING_PHASES.some((p) => phase(p));
   if (!wantsTurn) {

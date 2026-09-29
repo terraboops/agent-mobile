@@ -99,6 +99,25 @@ suggestion and a non-zero exit, never quietly turned into a full pass. Skipped p
 as SKIPPED and the run ends with a PARTIAL PASS line, so a report that never attempted the mute
 stages cannot be mistaken tomorrow for one where they passed.
 
+### The WS-fallback run, which is a separate pass
+
+`stop-control`'s flush was written for the WebSocket downlink, which BURSTS a reply where
+WebRTC paces it — so the whole remainder can already be on the phone when Stop is pressed. A
+normal device run negotiates WebRTC and exercises the easy case:
+
+    npm run device-verify -- --ws-fallback --only stop
+
+That writes a marker the live sidecar re-reads within a second (no gateway restart), and the run
+removes it however it ends — `finish()` clears it before anything that could throw, because a
+forced fallback left on disk would quietly degrade every later conversation on this machine.
+Every forced reply is tagged `[FORCED]` in the sidecar's transport line, so a forced fallback
+and a genuine one are never confused in the evidence.
+
+Proved on the host: with the marker set, `e2e-webrtc` fails its "did NOT fall back to the
+WebSocket" assertion with 148 WS audio frames and 0 downlink RTP; with it removed, 128 downlink
+RTP and 0 WS frames. The switch works. Whether the flush truncates audio on the handset is
+what the device run is for.
+
 ### One thing to know before running it
 
 `ICE over the Tailscale TUN` will report **blocked, not verified**, if the Pixel is on the same

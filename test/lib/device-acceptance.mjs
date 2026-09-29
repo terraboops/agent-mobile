@@ -184,7 +184,8 @@ export const DEVICE_ACCEPTANCE = [
              + 'after it, AND — the half that was missing — a NEW reply plays afterwards on the '
              + 'same surviving WebRTC peer, so Stop does not wedge the pipeline); mic-mute '
              + '(Stop sends an interrupt and does not touch the mic)',
-    stages: ['tapped Stop mid-sentence', 'Stop actually stopped the audio'],
+    stages: ['WS fallback forced for this run',
+             'tapped Stop mid-sentence', 'Stop actually stopped the audio'],
   },
   {
     id: 'identity-pinning',
