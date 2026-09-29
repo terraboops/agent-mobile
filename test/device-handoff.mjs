@@ -21,7 +21,10 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { scanPorts, DEFAULT_SCAN_RANGES, parseMdnsServices, pickAdbEndpoints,
          parseTailscalePeer } from './lib/adb-discover.mjs';
-import { tickPlan, passPlan, usableEndpoint, handoffVerdict, TICK_S } from './lib/handoff.mjs';
+import { discoveryPlan, passPlan, usableEndpoint, handoffVerdict, subnetHosts,
+         aliveFromProbe, foundVia, excludedHosts, endpointState, identityMatches,
+         TICK_S } from './lib/handoff.mjs';
+import { createConnection } from 'node:net';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -78,45 +81,141 @@ console.log('  Nothing here can flip it; this only removes the round trip afterw
  *
  * So the last LAN address seen is kept, and --lan seeds it for a cold start. */
 let lastKnownLan = String(flag('--lan', process.env.AGENTMOB_PHONE_LAN || '')) || null;
-let lastLan = -Infinity, lastTailnet = -Infinity, endpoint = null;
+let found = null;                       // {tier, endpoint, note}
+const last = {};                        // tier -> elapsed seconds when it last ran
+let liveHosts = [];
 const deadline = t0 + HOURS * 3600 * 1000;
 
-while (Date.now() < deadline && !endpoint) {
+/** One TCP probe. `alive` means the host answered — refused counts, timeout does not. */
+const probeHost = (host, port, timeoutMs) => new Promise((resolve) => {
+  const sock = createConnection({ host, port });
+  let done = false;
+  const finish = (v) => { if (!done) { done = true; try { sock.destroy(); } catch {} resolve(v); } };
+  sock.setTimeout(timeoutMs);
+  sock.on('connect', () => finish('open'));
+  sock.on('timeout', () => finish(null));
+  sock.on('error', (e) => finish(e.code || 'error'));
+});
+
+/** Which of the /24 answer at all. Cheap, and it makes the expensive tier affordable. */
+async function sweepSubnet(hosts, concurrency = 120) {
+  const alive = [];
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, hosts.length) }, async () => {
+    while (i < hosts.length) {
+      const h = hosts[i++];
+      const r = await probeHost(h, 5555, 1200);
+      if (r === 'open') { alive.push({ host: h, adb: true }); }
+      else if (aliveFromProbe(r)) alive.push({ host: h, adb: false });
+    }
+  }));
+  return alive;
+}
+
+while (Date.now() < deadline && !found) {
   const peer = parseTailscalePeer(tsStatus(), PHONE_HOST);
   if (peer.lan) lastKnownLan = peer.lan;
-  const lanAddr = peer.lan || lastKnownLan;
-  const plan = tickPlan({ elapsedS: elapsed(), lastLanSweepS: lastLan,
-                          lastTailnetSweepS: lastTailnet, hasLan: !!lanAddr });
+  const selfLan = lastKnownLan || '192.168.10.55';
+  const plan = discoveryPlan({ elapsedS: elapsed(), last, liveHosts: liveHosts.map((h) => h.host),
+                               hasTailnet: true });
 
-  if (plan.mdns) {
+  /* --- usb: the only path that works with the toggle off ----------------------------------- */
+  if (plan.tiers.includes('usb')) {
+    last.usb = elapsed();
+    const out = adb(['devices', '-l']).stdout || '';
+    const usb = out.split('\n').slice(1)
+      .map((l) => l.trim()).filter((l) => l && !/^\S+:\d+\s/.test(l))
+      .find((l) => /\sdevice\b/.test(l));
+    if (usb) found = foundVia('usb', usb.split(/\s+/)[0], usb.slice(0, 80));
+  }
+
+  /* --- mdns: the designed mechanism, and this Mac IS on the phone's segment ------------------ */
+  if (!found && plan.tiers.includes('mdns')) {
+    last.mdns = elapsed();
     const picks = pickAdbEndpoints(parseMdnsServices(adb(['mdns', 'services']).stdout),
-                                   { host: lanAddr || PHONE_HOST });
-    if (picks.length) endpoint = `${picks[0].host}:${picks[0].port}`;
+                                   { host: lastKnownLan || PHONE_HOST });
+    if (picks.length) found = foundVia('mdns', `${picks[0].host}:${picks[0].port}`, picks[0].type);
   }
-  if (!endpoint && plan.lanSweep) {
-    lastLan = elapsed();
-    console.log(`  [${Math.round(elapsed())}s] sweeping ${lanAddr}`
-      + `${peer.lan ? '' : ' (last known — tailscale drops the direct endpoint when the phone idles)'}`
-      + ` (${plan.why})`);
-    const open = await scanPorts(lanAddr, DEFAULT_SCAN_RANGES, { concurrency: 800, timeoutMs: 1500 });
-    if (open.length) endpoint = `${lanAddr}:${open[0]}`;
-    else console.log(`  [${Math.round(elapsed())}s] nothing open on ${lanAddr}`);
+
+  /* --- subnet: 254 hosts, one port. Seconds, and it yields the live-host list ---------------- */
+  if (!found && plan.tiers.includes('subnet')) {
+    last.subnet = elapsed();
+    /* NEVER this machine. The first tiered run swept its own address, found rapportd on
+     * 49152, and started installing an APK against localhost. */
+    const skip = excludedHosts({ selfLan });
+    const hosts = (subnetHosts(selfLan) || []).filter((h) => !skip.has(h));
+    if (hosts.length) {
+      const t = Date.now();
+      liveHosts = await sweepSubnet(hosts);
+      console.log(`  [${Math.round(elapsed())}s] swept ${hosts.length} addresses on `
+        + `${selfLan.replace(/\.\d+$/, '.0')}/24 in ${((Date.now() - t) / 1000).toFixed(1)}s — `
+        + `${liveHosts.length} alive (${plan.why})`);
+      const open = liveHosts.find((h) => h.adb);
+      if (open) found = foundVia('subnet', `${open.host}:5555`, 'port 5555 was open');
+    }
   }
-  if (!endpoint && plan.tailnetSweep) {
-    lastTailnet = elapsed();
+
+  /* --- hosts: the full wireless-debug range, aimed only at hosts that answered --------------- */
+  if (!found && plan.tiers.includes('hosts')) {
+    last.hosts = elapsed();
+    for (const h of liveHosts) {
+      const open = await scanPorts(h.host, DEFAULT_SCAN_RANGES,
+                                   { concurrency: 800, timeoutMs: 1200 });
+      if (open.length) { found = foundVia('hosts', `${h.host}:${open[0]}`, `${open.length} port(s) open`); break; }
+    }
+    if (!found) console.log(`  [${Math.round(elapsed())}s] no wireless-debug port on any of `
+      + `${liveHosts.length} live host(s) (${plan.why})`);
+  }
+
+  /* --- tailnet: the phone is not on this network. Slow, and the only path that says so ------- */
+  if (!found && plan.tiers.includes('tailnet')) {
+    last.tailnet = elapsed();
     console.log(`  [${Math.round(elapsed())}s] sweeping ${PHONE_HOST} (${plan.why})`);
     const open = await scanPorts(PHONE_HOST, DEFAULT_SCAN_RANGES, { concurrency: 400, timeoutMs: 2000 });
-    if (open.length) endpoint = `${PHONE_HOST}:${open[0]}`;
+    if (open.length) found = foundVia('tailnet', `${PHONE_HOST}:${open[0]}`, 'over the tailnet');
     else console.log(`  [${Math.round(elapsed())}s] nothing open on ${PHONE_HOST}`);
   }
-  if (!endpoint) await sleep(TICK_S * 1000);
+
+  if (!found) await sleep(TICK_S * 1000);
 }
+const endpoint = found ? found.endpoint : null;
 
 let ran = 0;
 const results = [];
-if (endpoint && usableEndpoint(endpoint)) {
-  console.log(`\n  ENDPOINT FOUND: ${endpoint} after ${Math.round(elapsed())}s — running the passes.\n`);
-  adb(['connect', endpoint], 30000);
+let confirmed = null;
+if (found && (found.tier === 'usb' || usableEndpoint(endpoint))) {
+  console.log(`\n  CANDIDATE ${endpoint} after ${Math.round(elapsed())}s — ${found.note}`);
+  if (found.detail) console.log(`  ${found.detail}`);
+
+  /* A SWEEP HIT IS A CANDIDATE, NOT A PHONE. An open port proves a socket answered; adb has to
+   * say it is a device, and the device has to say it is the right one. Skipping either is how a
+   * run installs this app on a stranger's handset and runs a mute test on it. */
+  if (found.tier !== 'usb') adb(['connect', endpoint], 30000);
+  const st = endpointState(adb(['devices', '-l']).stdout, endpoint);
+  if (!st.present) {
+    console.log(`  REJECTED: adb does not list ${endpoint} as a device — an open port is not `
+      + 'an adb endpoint. Continuing to look.');
+  } else if (!st.ready) {
+    console.log(`  ${endpoint} is present but ${st.state}. If it says unauthorized, accept the `
+      + '"Allow wireless debugging?" prompt on the phone; nothing here can answer it.');
+  } else {
+    const model = adb(['-s', endpoint, 'shell', 'getprop', 'ro.product.model']).stdout.trim();
+    const serialProp = adb(['-s', endpoint, 'shell', 'getprop', 'ro.serialno']).stdout.trim();
+    const id = identityMatches({ model, serial: serialProp,
+                                 expectModel: String(flag('--model', 'Pixel')),
+                                 expectSerial: flag('--serial', null) });
+    if (!id.ok) {
+      console.log(`  REFUSED: ${id.why}`);
+      adb(['disconnect', endpoint], 15000);
+    } else {
+      console.log(`  CONFIRMED: ${id.why}`);
+      confirmed = endpoint;
+    }
+  }
+  console.log('');
+}
+
+if (confirmed) {
   for (const p of passPlan({ apk: APK, wsFallback: WS })) {
     console.log(`\n=== ${p.name} — ${p.why}\n`);
     const r = spawnSync(process.execPath, [join(HERE, 'device-verify.mjs'), ...p.args],
@@ -126,11 +225,12 @@ if (endpoint && usableEndpoint(endpoint)) {
   }
 }
 
-const verdict = handoffVerdict({ found: !!endpoint, ranPasses: ran, elapsedS: elapsed() });
+const verdict = handoffVerdict({ found: !!confirmed, ranPasses: ran, elapsedS: elapsed() });
 console.log(`\n  ${verdict.note}`);
 writeFileSync(join(OUT, 'device-handoff.json'), JSON.stringify({
-  generated: new Date().toISOString(), armedHours: HOURS, endpoint, ranPasses: ran,
-  results, verdict: verdict.note,
+  generated: new Date().toISOString(), armedHours: HOURS, endpoint,
+  foundVia: found ? { tier: found.tier, note: found.note } : null,
+  liveHostsSeen: liveHosts.map((h) => h.host), ranPasses: ran, results, verdict: verdict.note,
 }, null, 2));
 console.log(`  handoff log -> ${join(OUT, 'device-handoff.json')}`);
-process.exit(endpoint ? (results.every((r) => r.exit === 0) ? 0 : 1) : 3);
+process.exit(confirmed ? (results.every((r) => r.exit === 0) ? 0 : 1) : 3);

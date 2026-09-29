@@ -50,7 +50,8 @@ export const DEVICE_ACCEPTANCE = [
              + 'to hold RECORD_AUDIO); apk-installable (MODIFY_AUDIO_SETTINGS is in the built '
              + 'APK, without which the mute silently no-ops); ctrlbar-geometry (the button is '
              + '48dp+ at every width and cannot collide with Stop)',
-    stages: ['the trigger phrase speaks for long enough to tap mid-sentence',
+    stages: ['mute mid-sentence: the APP logged the native mute',
+             'the trigger phrase speaks for long enough to tap mid-sentence',
              'mute mid-sentence (issue #1)',
              'mute mid-sentence: the device reports the mic muted (issue #1)',
              'mute mid-sentence: the reply KEPT playing (muting the mic must not stop it)',
@@ -184,7 +185,8 @@ export const DEVICE_ACCEPTANCE = [
              + 'after it, AND — the half that was missing — a NEW reply plays afterwards on the '
              + 'same surviving WebRTC peer, so Stop does not wedge the pipeline); mic-mute '
              + '(Stop sends an interrupt and does not touch the mic)',
-    stages: ['WS fallback forced for this run',
+    stages: ['Stop flushed the audio already on the phone',
+             'WS fallback forced for this run',
              'tapped Stop mid-sentence', 'Stop actually stopped the audio'],
   },
   {

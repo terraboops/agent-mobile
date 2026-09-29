@@ -21,6 +21,29 @@
  * So: mDNS every tick (free), the LAN sweep on a slow cadence, the tailnet sweep rarely.
  */
 
+/**
+ * DISCOVERY IS TIERED, because "is the phone there" has five answers with five prices and a
+ * loop that only knows one of them is a loop that waits six hours saying "nothing open".
+ *
+ * That is not hypothetical: the first armed run polled ONE remembered address, logged
+ * `nothing open on 192.168.10.53` for its whole life, and would have missed the phone entirely
+ * if DHCP had moved it — while the handset sat on the same /24 answering pings.
+ *
+ *   usb       `adb devices` with no network at all. Instant, and the ONLY path that works when
+ *             wireless debugging is off but the cable is in. It was not checked at all.
+ *   mdns      instant. The designed mechanism for Android 11 wireless debugging, and it works
+ *             here — this Mac is on 192.168.10.0/24 with the phone. Empty means the phone is
+ *             not advertising, i.e. the toggle is off.
+ *   subnet    254 hosts x port 5555. Seconds, because a closed port on a live host REFUSES
+ *             instantly and a dead address times out. It also yields WHICH HOSTS ARE ALIVE,
+ *             which is what makes the next tier affordable.
+ *   hosts     the full wireless-debug range, but only against hosts the subnet tier found
+ *             alive. 254 x 35000 would be nine million probes; a handful x 35000 is a minute.
+ *   tailnet   the 100.x address, full range. Minutes, because a closed port on the userspace
+ *             TUN times out rather than refusing — the same answer, far slower.
+ */
+export const TIERS = ['usb', 'mdns', 'subnet', 'hosts', 'tailnet'];
+
 export const TICK_S = 20;
 export const LAN_SWEEP_EVERY_S = 300;
 export const TAILNET_SWEEP_EVERY_S = 1800;
@@ -45,6 +68,80 @@ export function tickPlan({ elapsedS = 0, lastLanSweepS = -Infinity,
       : tailnetSweep ? 'tailnet sweep due (slow: closed ports time out rather than refusing)'
       : 'mDNS only this tick',
   };
+}
+
+export const SUBNET_SWEEP_EVERY_S = 120;
+export const HOST_SWEEP_EVERY_S = 300;
+
+/**
+ * Which discovery tiers to run this tick.
+ *
+ * usb and mdns every time — they cost nothing and one of them is the only path that works with
+ * the toggle off. The sweeps are priced apart so the slow ones cannot crowd out the fast ones.
+ *
+ * @returns {{tiers: string[], why: string}}
+ */
+export function discoveryPlan({ elapsedS = 0, last = {}, liveHosts = [], hasTailnet = true } = {}) {
+  const due = (tier, every) => (elapsedS - (last[tier] ?? -Infinity)) >= every;
+  const tiers = ['usb', 'mdns'];
+  if (due('subnet', SUBNET_SWEEP_EVERY_S)) tiers.push('subnet');
+  /* Only worth the minute when the cheap tier has found something to aim it at. */
+  else if (liveHosts.length && due('hosts', HOST_SWEEP_EVERY_S)) tiers.push('hosts');
+  /* And the slowest only when nothing faster is scheduled, so it never queues in front. */
+  else if (hasTailnet && due('tailnet', TAILNET_SWEEP_EVERY_S)) tiers.push('tailnet');
+  return {
+    tiers,
+    why: tiers.includes('subnet') ? 'subnet sweep due (254 hosts, one port — refusals are instant)'
+      : tiers.includes('hosts') ? `host sweep due (${liveHosts.length} live host(s) to aim at)`
+      : tiers.includes('tailnet') ? 'tailnet sweep due (slow: closed ports time out)'
+      : 'usb and mDNS only this tick',
+  };
+}
+
+/**
+ * Is a host alive, from one TCP probe?
+ *
+ * REFUSED is the answer that matters. A closed port on a live host sends RST instantly; a
+ * dead address times out. So one probe against a port nothing uses tells you the host exists,
+ * in milliseconds, and that is what makes the expensive tier affordable — measured on this
+ * network: 254 addresses, 12 live hosts, 3.6 seconds.
+ */
+export function aliveFromProbe(result) {
+  if (result === 'open') return true;
+  if (result === 'ECONNREFUSED' || result === 'refused') return true;
+  return false;
+}
+
+/** The /24 an address sits on, as a list of host addresses. Null for anything unparseable. */
+export function subnetHosts(addr) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(addr || '').trim());
+  if (!m) return null;
+  const o = m.slice(1).map(Number);
+  if (o.some((n) => n > 255)) return null;
+  const out = [];
+  for (let i = 1; i <= 254; i++) out.push(`${o[0]}.${o[1]}.${o[2]}.${i}`);
+  return out;
+}
+
+/**
+ * A found endpoint, with the path that found it.
+ *
+ * WHICH PATH MATTERS AS MUCH AS WHETHER. usb means the cable is in and the network is
+ * irrelevant; mdns means the phone is advertising on this segment; subnet means it answered a
+ * sweep, so DHCP may have moved it since anyone last looked; tailnet means it is not on this
+ * network at all, which is the case the remote-path claim needs. A run that says only "found"
+ * throws that away.
+ */
+export function foundVia(tier, endpoint, detail = '') {
+  const notes = {
+    usb: 'over USB — the cable is in, so wireless debugging need not be on at all',
+    mdns: 'via mDNS — the phone is advertising wireless debugging on this segment',
+    subnet: 'by sweeping the local /24 — mDNS did not advertise it, so the address may have moved',
+    hosts: 'by sweeping a live host found on the /24',
+    tailnet: 'at the tailnet address — the phone is NOT on this network, which is the case the '
+           + 'remote-path claim needs',
+  };
+  return { tier, endpoint, note: notes[tier] || `via ${tier}`, detail };
 }
 
 /** Is this endpoint worth handing to `adb connect`? */
@@ -89,4 +186,63 @@ export function handoffVerdict({ found = false, ranPasses = 0, elapsedS = 0 } = 
   }
   return { armed: false, note: `device appeared after ${Math.round(elapsedS)}s; ran ${ranPasses} `
     + `pass(es). Read each report for its own verdict — this line only says they were run.` };
+}
+
+/* ---- AN OPEN PORT IS NOT A PHONE -------------------------------------------------------------
+ *
+ * The first tiered run found `192.168.10.55:49152` — this Mac, running rapportd — and started
+ * installing an APK against it. Two mistakes in one: the sweep included its own address, and a
+ * port being open was treated as proof that adb was behind it.
+ *
+ * The second is the dangerous one. On a network with another Android device exposing adb over
+ * 5555, an unguarded handoff installs this app on a stranger's phone and runs a mute test on it.
+ * A sweep hit is a CANDIDATE. What makes it a device is adb saying so, and what makes it the
+ * RIGHT device is the model and serial.
+ */
+
+/** Addresses the sweep must never treat as the phone. */
+export function excludedHosts({ selfLan = null, extra = [] } = {}) {
+  return new Set([selfLan, '127.0.0.1', '0.0.0.0', ...extra].filter(Boolean));
+}
+
+/**
+ * Does `adb devices -l` actually show this endpoint as a usable device?
+ *
+ * `unauthorized` counts as FOUND — the phone is there and showing a prompt, which is a real
+ * finding with its own instruction — but not as ready to install onto.
+ *
+ * @returns {{present: boolean, ready: boolean, state: string|null}}
+ */
+export function endpointState(devicesOut, endpoint) {
+  const want = String(endpoint || '').trim();
+  for (const raw of String(devicesOut || '').split('\n').slice(1)) {
+    const line = raw.trim();
+    if (!line || !line.startsWith(want + '\t') && !line.startsWith(want + ' ')) continue;
+    const state = (line.slice(want.length).trim().split(/\s+/)[0] || '').toLowerCase();
+    return { present: true, ready: state === 'device', state };
+  }
+  return { present: false, ready: false, state: null };
+}
+
+/**
+ * Is this the phone we meant?
+ *
+ * `getprop ro.product.model` / `ro.serialno`. A sweep can reach any Android on the segment, and
+ * "an Android answered" is not "the Pixel answered" — installing onto the wrong one is not a
+ * test failure, it is somebody else's phone with our app on it.
+ */
+export function identityMatches({ model = '', serial = '', expectModel = 'Pixel',
+                                  expectSerial = null } = {}) {
+  const m = String(model || '').trim();
+  const s = String(serial || '').trim();
+  if (expectSerial) {
+    return { ok: s === expectSerial, why: s === expectSerial
+      ? `serial ${s} matches`
+      : `serial ${s || '(none)'} is not the expected ${expectSerial} — this is a different device` };
+  }
+  if (!m) return { ok: false, why: 'the device reported no model, so it cannot be identified' };
+  const ok = m.toLowerCase().includes(String(expectModel).toLowerCase());
+  return { ok, why: ok ? `model ${m} matches ${expectModel}`
+    : `model ${m} is not a ${expectModel} — refusing to install on a device this run did not `
+      + 'mean to touch' };
 }

@@ -1680,6 +1680,80 @@ export const MUTANTS = [
     from: "      + 'it found nothing, NOT a device pass with no failures.' };",
     to:   "      + 'it completed.' };" },
 
+  /* device-probe #6 — a forced-WS Stop that flushed almost nothing being a FAILURE. This is the
+     one number that distinguishes the two transports: the paced downlink leaves about a frame
+     queued, the burst fallback leaves the remainder of a reply. A run that forced the fallback
+     and came back with a handful did not force anything — and in the audio it looks exactly
+     like success, which is why the evidence has to be the count and not the ear. */
+  { suite: 'device-probe', file: DPROBE,
+    why: 'a forced-WS run proving the burst path was actually in use',
+    breaks: 'a forced-WS run that drops almost nothing is a FAILURE',
+    from: '  return { ok: dropped >= 10, dropped,',
+    to:   '  return { ok: true, dropped,' },
+
+  /* device-probe #7 — NO flush being a failure whatever the transport. If Stop never reached
+     the native layer then whatever the audio did was not this fix doing it, and a run that
+     treats silence from the log as agreement is reporting on something it did not observe. */
+  { suite: 'device-probe', file: DPROBE,
+    why: 'a Stop that never reached the native layer failing',
+    breaks: 'NO flush at all is a failure whatever the transport',
+    from: "    return { ok: false, dropped: null,\n"
+        + "             why: 'the app never logged a playback flush",
+    to:   "    return { ok: true, dropped: 0,\n"
+        + "             why: 'the app never logged a playback flush" },
+
+  /* device-probe #8 — reading the LAST flush, not the first. An earlier turn's Stop would
+     otherwise be quoted as this one's evidence, which is the shape of a report that is true
+     about something nobody asked. */
+  { suite: 'device-probe', file: DPROBE,
+    why: 'the most recent flush being the one read',
+    breaks: 'the LAST flush is the one read, not the first',
+    from: '  const dropped = flushes[flushes.length - 1].dropped;',
+    to:   '  const dropped = flushes[0].dropped;' },
+
+  /* handoff #5 — USB being checked at all. It is the ONLY path that works with wireless
+     debugging off, it costs nothing, and the first version of this loop did not look. Six hours
+     of sweeping a network while a cable would have answered instantly. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'the cable being one of the paths that can find the phone',
+    breaks: 'the USB path is checked on every tick',
+    from: "  const tiers = ['usb', 'mdns'];",
+    to:   "  const tiers = ['mdns'];" },
+
+  /* handoff #6 — AN OPEN PORT IS NOT A PHONE. The first tiered run found this Mac's own rapportd
+     on 49152 and began installing an APK against it. On a network with another Android exposing
+     adb over 5555 the same bug puts this app on a stranger's handset and runs a mute test on
+     it. adb has to say it is a device before anything runs. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'requiring adb to confirm a swept endpoint is a device',
+    breaks: 'an endpoint adb never listed is NOT present',
+    from: '    if (!line || !line.startsWith(want + \'\\t\') && !line.startsWith(want + \' \')) continue;',
+    to:   '    if (!line) continue;' },
+
+  /* handoff #7 — and that it is the RIGHT device. "An Android answered" is not "the Pixel
+     answered", and the difference is somebody else's phone. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'refusing a device that is not the one this run meant',
+    breaks: 'ANOTHER Android on the segment is refused',
+    from: '  const ok = m.toLowerCase().includes(String(expectModel).toLowerCase());',
+    to:   '  const ok = true;' },
+
+  /* handoff #8 — the sweep not finding ITSELF. Excluding this machine is one line and the
+     absence of it is how a local service became a candidate handset. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'the sweep skipping the machine doing the sweeping',
+    breaks: 'the sweep never includes this machine',
+    from: "  return new Set([selfLan, '127.0.0.1', '0.0.0.0', ...extra].filter(Boolean));",
+    to:   "  return new Set(['127.0.0.1', '0.0.0.0', ...extra].filter(Boolean));" },
+
+  /* handoff #9 — UNAUTHORIZED being present but not ready. The phone is there and showing a
+     prompt: a real finding with its own instruction, and not something to install onto. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'an unauthorized device counting as found but not as ready',
+    breaks: 'an UNAUTHORIZED endpoint is present but not ready',
+    from: "    return { present: true, ready: state === 'device', state };",
+    to:   '    return { present: true, ready: true, state };' },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',

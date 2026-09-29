@@ -10,7 +10,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   parseDensity, parseSize, micTapPoint, stopTapX, parseMicMute,
-  parseVersionName, highestMajor, parseNavInset, parseCrash,
+  parseVersionName, highestMajor, parseNavInset, parseCrash, micMuteEvents,
+  stopEvidence, agentChannelLines,
 } from './lib/device-probe.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -139,6 +140,69 @@ ok('crash: empty logcat is not a crash', parseCrash('', PKG) === null && parseCr
 ok('crash: no package named means no verdict, not a false positive',
   parseCrash(FATAL, '') === null && parseCrash(FATAL, null) === null,
   'without a package to attribute to, every crash on the device would be ours');
+
+/* ---- THE PHONE'S OWN LOG AS EVIDENCE --------------------------------------------------------
+ * Several device stages were 'built' — a human comparing screenshots afterwards, which is not a
+ * verdict a run can carry and cannot be re-checked once the phone is gone. The app logs what it
+ * did, so those halves become machine-checkable. */
+const LOG_MUTE = [
+  '09-29 09:10:00.000  1234  1234 I AgentChannel: mic MUTED (native)',
+  '09-29 09:10:01.000  1234  1234 I AgentChannel: audio rx decoded=960 samples',
+].join('\n');
+ok('log: a native mute is read out of logcat',
+  micMuteEvents(LOG_MUTE).length === 1 && micMuteEvents(LOG_MUTE)[0].muted === true);
+ok('log: an UNMUTE is not read as a mute',
+  micMuteEvents('I AgentChannel: mic unmuted (native)')[0].muted === false,
+  'the toggle would report muted on the way back');
+ok('log: the LAST event wins, since the tap may have toggled twice',
+  (() => { const e = micMuteEvents('I AgentChannel: mic MUTED (native)\nI AgentChannel: mic unmuted (native)');
+           return e.length === 2 && e[1].muted === false; })());
+ok('log: another app\'s line is not ours',
+  micMuteEvents('I SomeOtherTag: mic MUTED (native)').length === 0,
+  'a real handset has plenty of audio logging');
+ok('log: nothing logged is no events, not a false mute',
+  micMuteEvents('').length === 0 && micMuteEvents(null).length === 0);
+
+/* stop-control's machine-checkable half: HOW MANY frames were already on the phone. */
+const flush = (n) => `09-29 I AgentChannel: playback flushed (${n} queued frame(s) dropped)`;
+ok('stop: a flush with a big queue proves the BURST path was in use',
+  (() => { const e = stopEvidence(flush(143), { forcedWs: true });
+           return e.ok && e.dropped === 143; })(),
+  JSON.stringify(stopEvidence(flush(143), { forcedWs: true })));
+ok('stop: a forced-WS run that drops almost nothing is a FAILURE, not a pass',
+  !stopEvidence(flush(2), { forcedWs: true }).ok,
+  'a handful of frames is the PACED profile — the force did not take, and the run did not '
+  + 'exercise the case it was for, which otherwise looks identical to success');
+ok('stop: and it says which profile it saw',
+  /PACED profile/.test(stopEvidence(flush(2), { forcedWs: true }).why),
+  stopEvidence(flush(2), { forcedWs: true }).why);
+ok('stop: the same small flush is FINE on the paced downlink',
+  stopEvidence(flush(2), { forcedWs: false }).ok,
+  'one frame deep is what pacing means; failing it would fail every normal run');
+ok('stop: NO flush at all is a failure whatever the transport',
+  !stopEvidence('I AgentChannel: something else', { forcedWs: false }).ok
+  && !stopEvidence('', { forcedWs: true }).ok,
+  'Stop did not reach the native layer, so whatever the audio did was not this fix');
+ok('stop: the no-flush verdict says what it means',
+  /did not reach the native layer/.test(stopEvidence('', {}).why));
+ok('stop: the LAST flush is the one read, not the first',
+  stopEvidence([flush(200), flush(3)].join('\n'), { forcedWs: false }).dropped === 3,
+  'an earlier turn\'s flush would otherwise be quoted as this Stop\'s evidence');
+ok('log: agentChannelLines keeps only our tag',
+  agentChannelLines('I Other: x\nI AgentChannel: y').length === 1);
+
+/* and device-verify has to actually use them */
+{
+  const dvSrc = readFileSync(join(REPO, 'test/device-verify.mjs'), 'utf8');
+  ok('device-verify reads the mute out of logcat', /micMuteEvents\(/.test(dvSrc));
+  ok('device-verify reads the Stop flush out of logcat', /stopEvidence\(/.test(dvSrc));
+  ok('and tells stopEvidence whether the fallback was forced',
+    /stopEvidence\(stopLog, \{ forcedWs: WS_FALLBACK \}\)/.test(dvSrc),
+    'without that it would accept the paced profile on a run that was supposed to be bursting');
+  ok('device-verify SAVES the log, not just greps it',
+    /logcat-stop\.txt/.test(dvSrc),
+    'the evidence has to outlive the phone being unplugged');
+}
 
 console.log(`\n${pass} passed, ${fails.length} failed`);
 if (fails.length) process.exit(1);

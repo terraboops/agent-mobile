@@ -45,7 +45,8 @@ import { typedTurn } from './lib/aead-trigger.mjs';
 import { localApkPreflight, APK } from './lib/apk-facts.mjs';
 import { classifyIcePath, classifyTailnetPath } from './lib/ice-path.mjs';
 import { parseDensity, parseSize, micTapPoint, stopTapX, parseMicMute, parseVersionName,
-         highestMajor, parseNavInset, parseCrash } from './lib/device-probe.mjs';
+         highestMajor, parseNavInset, parseCrash, micMuteEvents, stopEvidence,
+         agentChannelLines } from './lib/device-probe.mjs';
 import { parseAmStartRefusal, parseInstallFailure } from './lib/manifest-facts.mjs';
 import { parsePhaseSelector, runsPhase, describeSelection, PHASE_NAMES }
   from './lib/stage-select.mjs';
@@ -838,6 +839,18 @@ if (!DRY && serial && phase('launch')) {
           : String(micRaw).replace(/\s+/g, ' ').slice(0, 140));
       stage('mute mid-sentence: the reply KEPT playing (muting the mic must not stop it)',
         'built', 'compare 04-speaking.png and 05-after-mute.png — the pill should still be lit');
+
+      /* AND WHAT THE PHONE SAID ABOUT IT. The stage above is a human comparing two images, which
+       * is not a verdict a run can carry and cannot be re-checked once the phone is gone. The
+       * app logs the mute itself, so that half is machine-checkable. */
+      const muteLog = adb(['-s', serial, 'logcat', '-d', '-t', '600'], { timeout: 30000 }).stdout;
+      const muteEvents = micMuteEvents(muteLog);
+      stage('mute mid-sentence: the APP logged the native mute',
+        muteEvents.length && muteEvents[muteEvents.length - 1].muted ? 'verified' : 'failed',
+        muteEvents.length
+          ? muteEvents[muteEvents.length - 1].line.slice(0, 120)
+          : 'no "mic MUTED (native)" in logcat — the tap did not reach setMicMuted, so whatever '
+            + 'the screenshots show, the native mute is not what caused it');
       }   /* end mute phase */
 
       if (!phase('stop')) {
@@ -861,6 +874,19 @@ if (!DRY && serial && phase('launch')) {
           + 'retry with a longer --say');
       }
       shot('06-after-stop.png');
+
+      /* THE MACHINE-CHECKABLE HALF OF stop-control.
+       *
+       * The flush logs how many frames were ALREADY on the phone when Stop was pressed, and that
+       * number is the transport argument made visible: a handful means the paced WebRTC
+       * downlink, dozens or hundreds means the burst WS fallback. A --ws-fallback run that comes
+       * back with a handful did not force anything, and would otherwise look like a pass. */
+      const stopLog = adb(['-s', serial, 'logcat', '-d', '-t', '800'], { timeout: 30000 }).stdout;
+      writeFileSync(join(OUT, 'logcat-stop.txt'), agentChannelLines(stopLog).join('\n') + '\n');
+      const ev = stopEvidence(stopLog, { forcedWs: WS_FALLBACK });
+      stage('Stop flushed the audio already on the phone',
+        ev.ok ? 'verified' : 'failed',
+        `${ev.why} (logcat-stop.txt)`);
       }   /* end stop phase */
     }
   }

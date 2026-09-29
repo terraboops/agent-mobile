@@ -4,4 +4,12 @@ device-handoff — arming for 6h, then two passes
   The phone needs Settings > System > Developer options > Wireless debugging ON.
   Nothing here can flip it; this only removes the round trip afterwards.
 
-  [0s] sweeping 192.168.10.53 (LAN sweep due (refusals are instant, so this is the cheap informative one))
+  [4s] swept 253 addresses on 192.168.10.0/24 in 3.6s — 11 alive (subnet sweep due (254 hosts, one port — refusals are instant))
+
+  CANDIDATE 192.168.10.54:32400 after 29s — by sweeping a live host found on the /24
+  5 port(s) open
+  192.168.10.54:32400 is present but offline. If it says unauthorized, accept the "Allow wireless debugging?" prompt on the phone; nothing here can answer it.
+
+
+  no adb target after 39s — nothing was run. Wireless debugging is still off on the phone; this is the arming loop reporting that it found nothing, NOT a device pass with no failures.
+  handoff log -> /Users/terra/Developer/agent-mobile/test/audit/out/device/device-handoff.json

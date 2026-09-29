@@ -133,3 +133,80 @@ export function parseCrash(logcat, pkg) {
   if (died) return { kind: 'died', summary: died[0].trim().slice(0, 200) };
   return null;
 }
+
+/* ---- THE PHONE'S OWN LOG AS EVIDENCE --------------------------------------------------------
+ *
+ * Several device stages were 'built', meaning a human compares two screenshots afterwards. That
+ * is not a verdict a run can carry, and it is not re-checkable once the phone is gone.
+ *
+ * But the app logs what it did. AgentChannelPlugin prints "mic MUTED (native)" when the mute
+ * lands and "playback flushed (N queued frame(s) dropped)" when Stop flushes — that second line
+ * exists because of the fix this week, and it is exactly the machine-checkable half of
+ * stop-control: how many frames were already on the phone when Stop was pressed, which is the
+ * number that distinguishes the paced downlink from the burst one.
+ *
+ * It does NOT settle whether the audio stopped in the listener's ear. Nothing here can.
+ */
+
+/** Lines from our own tag, oldest first. */
+export function agentChannelLines(logcat) {
+  return String(logcat || '').split('\n')
+    .filter((l) => /\bAgentChannel\b/.test(l))
+    .map((l) => l.trim());
+}
+
+/**
+ * Did the native mute land, and in which direction, most recent last?
+ * @returns {Array<{muted: boolean, line: string}>}
+ */
+export function micMuteEvents(logcat) {
+  return agentChannelLines(logcat)
+    .map((l) => {
+      const m = /\bmic (MUTED|unmuted) \(native\)/.exec(l);
+      return m ? { muted: m[1] === 'MUTED', line: l } : null;
+    })
+    .filter(Boolean);
+}
+
+/**
+ * What Stop flushed.
+ * @returns {Array<{dropped: number, line: string}>}
+ */
+export function flushEvents(logcat) {
+  return agentChannelLines(logcat)
+    .map((l) => {
+      const m = /playback flushed \((\d+) queued frame\(s\) dropped\)/.exec(l);
+      return m ? { dropped: Number(m[1]), line: l } : null;
+    })
+    .filter(Boolean);
+}
+
+/**
+ * Read a Stop out of the phone's log.
+ *
+ * `dropped` is the evidence the transport argument turns on: on the paced WebRTC downlink the
+ * queue is about one frame deep, so a handful; on the burst WS fallback the whole remainder of
+ * a reply can be sitting there, so dozens or hundreds. A run that forced the fallback and still
+ * saw a handful did not force it.
+ */
+export function stopEvidence(logcat, { forcedWs = false } = {}) {
+  const flushes = flushEvents(logcat);
+  if (!flushes.length) {
+    return { ok: false, dropped: null,
+             why: 'the app never logged a playback flush — Stop did not reach the native layer, '
+                + 'so whatever the audio did, it was not this fix doing it' };
+  }
+  const dropped = flushes[flushes.length - 1].dropped;
+  if (!forcedWs) {
+    return { ok: true, dropped,
+             why: `Stop flushed ${dropped} queued frame(s) on the paced downlink` };
+  }
+  /* A forced-WS run that drops almost nothing means the force did not take, not that the fix
+   * is unnecessary — the two look identical in the audio and opposite in the evidence. */
+  return { ok: dropped >= 10, dropped,
+           why: dropped >= 10
+             ? `Stop flushed ${dropped} queued frame(s) — the burst path really was in use, and `
+               + 'this is the audio that used to keep playing'
+             : `only ${dropped} frame(s) were queued, which is the PACED profile: the forced WS `
+               + 'fallback did not take, so this run did not exercise the case it was for' };
+}

@@ -153,6 +153,29 @@ classified itself as a FULL pass (`full: 5 stage(s) attempted`) because "full" m
 rows", and a cold run skips nothing — it just never gets past the gate. Four host-side preflight
 stages and a blocked device gate now read as `not-reached`, which is what they are.
 
+### Discovery runs on five paths, not one
+
+`npm run device-handoff` arms and waits, checking every path that can reach the phone:
+
+    usb       adb devices — the ONLY path that works with wireless debugging off
+    mdns      the designed mechanism; this Mac is on 192.168.10.0/24 with the phone
+    subnet    253 addresses x port 5555, ~3.6s (a closed port on a live host refuses
+              instantly). Measured here: 11 live hosts. This is what makes the next tier
+              affordable
+    hosts     the full wireless-debug range, aimed ONLY at hosts the subnet tier found
+              alive — 254 x 35000 is nine million probes, a handful x 35000 is a minute
+    tailnet   the 100.x address, full range. Minutes, because closed ports on the TUN time
+              out rather than refusing
+
+It logs which path found it, because usb, mdns, a subnet sweep and the tailnet address say four
+different things about where the phone is.
+
+**An open port is not a phone.** The first tiered run found this Mac's own `rapportd` on 49152
+and began installing an APK against it. A sweep hit is now a CANDIDATE: adb has to list it as a
+device, and `getprop ro.product.model` has to match, before any pass runs. On a network with
+another Android exposing adb over 5555 the unguarded version would have installed this app on a
+stranger's handset and run a mute test on it.
+
 ### To resume, the phone needs exactly one thing
 
 **Settings → System → Developer options → Wireless debugging → ON.**
