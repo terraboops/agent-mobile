@@ -80,7 +80,8 @@ const SELECT = parsePhaseSelector({ only: flag('--only'), from: flag('--from') }
  * finish() removes it however the run ends — a forced fallback left behind would silently
  * degrade every later conversation on this machine. */
 const WS_FALLBACK = argv.includes('--ws-fallback');
-const FORCE_WS_FILE = join(homedir(), '.hermes/plugins/agentmob/sidecar/.force-ws-downlink');
+const FORCE_WS_FILE = process.env.AGENTMOB_FORCE_WS_FILE
+  || join(homedir(), '.hermes/plugins/agentmob/sidecar/.force-ws-downlink');
 let forcedWs = false;
 const setForcedWs = (on) => {
   try {
@@ -157,6 +158,14 @@ const TRIG = triggerAdequacy(TRIGGER);
 const SIMULATED = !!process.env.AGENTMOB_ADB;
 /* And never reads the REAL gateway log. Real traffic writes "→ phone pcm" lines there all day;
  * a simulated speak phase waiting on that file would take a stranger's reply as its own. */
+/* Nor forces the LIVE sidecar onto the WS downlink. The marker is read by whichever sidecar
+ * owns that path; a simulated --ws-fallback run writing the default one would degrade every
+ * real conversation on this machine for the length of a test. */
+if (SIMULATED && WS_FALLBACK && !process.env.AGENTMOB_FORCE_WS_FILE) {
+  console.error('device-verify: a simulated --ws-fallback run needs AGENTMOB_FORCE_WS_FILE — the '
+    + 'default marker is the LIVE sidecar\'s, and writing it forces every real reply onto WS');
+  process.exit(2);
+}
 if (SIMULATED && !process.env.AGENTMOB_GATEWAY_LOG) {
   console.error('device-verify: a simulated run needs AGENTMOB_GATEWAY_LOG pointed at a scratch '
     + 'file — it would otherwise read the real gateway log as its own evidence');
@@ -316,6 +325,9 @@ for (const p of localApkPreflight()) stage(p.name, p.status, p.detail);
  * into the generic message. It degrades to a correct-but-useless answer, which is the quietest
  * kind of wrong. */
 const TS_BIN = (() => {
+  /* In a simulated run the real `tailscale` describes the REAL phone, so its ping/status would
+   * be folded into verdicts about a stand-in. Only an explicitly supplied binary is used. */
+  if (SIMULATED) return process.env.AGENTMOB_TAILSCALE || null;
   const candidates = [
     process.env.AGENTMOB_TAILSCALE,
     '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
@@ -417,6 +429,14 @@ if (DRY) {
    * tell the operator to toggle a setting that may already be correct. */
   let notAdbNote = null;
   while (Date.now() < deadline) {
+    /* LOOK BEFORE YOU SWEEP. A phone already attached — USB, or a wireless pairing adb still
+     * holds — needs no discovery, and discovery went first: every pass port-scanned the tailnet
+     * address to the run's deadline and only THEN asked `adb devices`. A docked Pixel sat behind
+     * a sweep of up to ~4 minutes before the run noticed it. Found because the simulated adb
+     * suite had its USB device present from the first call and still took 16s per scenario to
+     * see it — the scan in front of it was hitting the real phone's address. */
+    classified = classifyDevices(adb(['devices', '-l']).stdout);
+    if (classified.ready.length) { serial = classified.ready[0]; break; }
     if (!target && Date.now() - lastDiscover > DISCOVER_EVERY_MS) {
       lastDiscover = Date.now();
       /* Sweep the LAN address too when Tailscale says the peer is direct on this network.
@@ -449,7 +469,9 @@ if (DRY) {
         /* null, not [] — "skipped" and "swept and found nothing" are different facts, and
          * returning [] made discover() log a sweep and a negative result for a pass that never
          * sent a packet. */
-        scan: (h, ranges) => doScan
+        /* A SIMULATED run never sends a packet to a real host. It used to: the fake answered
+         * every adb call, and discovery still TCP-swept the real Pixel for the whole --wait. */
+        scan: (h, ranges) => doScan && !SIMULATED
           ? scanPorts(h, ranges, { concurrency: 500, timeoutMs: 2000, signal: deadlineSignal() })
           : Promise.resolve(null),
         log: (m) => console.log(`  [discover] ${m}`),
@@ -708,16 +730,25 @@ if (!DRY && serial && phase('launch')) {
    * sidecar logs the instant it cannot read a pair — sat out the full 20s before the run
    * concluded the same thing. Dead time in front of someone holding the phone. */
   const pair = await waitForLog(logOff,
-    /\[sidecar\] webrtc ICE pair (?:remote=(\S+)|unknown)/, 20000);
+    /\[sidecar\] webrtc (?:ICE pair (?:remote=(\S+)|unknown)|(ICE FAILED))/, 20000);
   const path = classifyIcePath(pair && pair[1]);
+  /* ICE FAILING is its own answer, and it used to read as "werift did not expose one" — blaming
+   * the library for a pair that never existed. Found by driving this stage against the real
+   * sidecar with a simulated app that never applies the answer: the sidecar logged
+   * "webrtc ICE FAILED ... voice falls back to WS/UDP" and this stage told the reader something
+   * else. On the handset that is the android-webrtc item failing, not a logging gap. */
+  const iceFailed = !!(pair && pair[2]);
   /* ONE stage name, whatever the answer. It briefly had two — "ICE over the Tailscale TUN" or
    * "ICE connected, but over the LAN", chosen by outcome — which reads well in a terminal and
    * is wrong: a stage whose NAME depends on its result cannot be diffed across runs, and
    * device-stages (which scans for literal stage() names so nothing goes unclassified) could
    * not see either of them. The verdict belongs in the status and the detail. */
   stage('ICE path (tailnet vs LAN)',
-    path.via === 'tailnet' ? 'verified' : 'blocked',
-    path.via === 'unknown'
+    iceFailed ? 'failed' : path.via === 'tailnet' ? 'verified' : 'blocked',
+    iceFailed
+      ? 'ICE FAILED — WebRTC never connected, so voice is on the WS/UDP fallback and there is no '
+        + 'path to classify (the Stop stages below judge that burst downlink, not the paced one)'
+      : path.via === 'unknown'
       ? 'the sidecar logged no nominated pair — werift did not expose one'
       : `${path.via.toUpperCase()}: ${path.note}`);
 
@@ -726,10 +757,17 @@ if (!DRY && serial && phase('launch')) {
    * in which case the packets never leave the subnet and the remote case is not exercised at
    * all. Reporting the first without the second is the same overclaim the stage above exists to
    * prevent, one layer down. */
-  const tsPath = classifyTailnetPath(parseTailscalePeer(tailscaleStatus(), PHONE_HOST));
-  stage('tailnet path exercises the REMOTE case',
-    tsPath.exercisesRemote ? 'verified' : 'blocked',
-    `${tsPath.kind}${tsPath.via ? ` (${tsPath.via})` : ''}: ${tsPath.note}`);
+  /* Not in a simulation: `tailscale status` describes the REAL phone, and reporting its path as
+   * the simulated one's would put a real-world measurement into a report about a stand-in. */
+  if (SIMULATED) {
+    stage('tailnet path exercises the REMOTE case', 'blocked',
+      'simulated run — the tailnet peer on record is the real phone, not this stand-in');
+  } else {
+    const tsPath = classifyTailnetPath(parseTailscalePeer(tailscaleStatus(), PHONE_HOST));
+    stage('tailnet path exercises the REMOTE case',
+      tsPath.exercisesRemote ? 'verified' : 'blocked',
+      `${tsPath.kind}${tsPath.via ? ` (${tsPath.via})` : ''}: ${tsPath.note}`);
+  }
 
   }   /* end handshake phase */
 
@@ -822,10 +860,29 @@ if (!DRY && serial && phase('launch')) {
       stage('mute mid-sentence (issue #1)', 'blocked', 'no trigger, so nothing was playing');
     }
 
-    /* Wait until the sidecar is actually pushing audio, then grab the pill and cut it off. */
+    /* Wait until the sidecar STARTS pushing audio, then grab the pill and cut it off.
+     *
+     * This waited on `→ phone pcm ` — which matched the sidecar's END-of-send ledger line, the
+     * only one it wrote. On the paced WebRTC downlink that lands when the reply is over, so the
+     * "mid-sentence" mute tapped a silent phone, "the reply KEPT playing" passed because nothing
+     * was playing, and Stop found nothing to cut. It now waits for the START line. */
     const speaking = triggerFailed
       ? false
-      : await waitForLog(off2, /\[sidecar\] → phone pcm /, 90000);
+      : await waitForLog(off2, /\[sidecar\] → phone pcm START \S+ \(\d+ frames\) via (\S+)( \[FORCED\])?/, 90000);
+    /* Which downlink the reply is ACTUALLY on. Stop's evidence depends on it: the paced WebRTC
+     * downlink is still sending when Stop lands, so the sidecar can cut it and says so; the WS/UDP
+     * fallback sends the whole reply in one burst, so by the time anyone taps Stop there is
+     * nothing left on the host to cut and the only place the audio can be stopped is the phone. */
+    const replyVia = speaking ? speaking[1] : null;
+    /* Writing the marker is 'built'; this is whether the sidecar OBEYED it, read off the reply
+     * itself. Without it a --ws-fallback run whose sidecar never re-read the file would report
+     * the force as done and then judge a paced reply by the burst rule. */
+    if (WS_FALLBACK && speaking) {
+      stage('the sidecar honoured the forced WS downlink', speaking[2] ? 'verified' : 'failed',
+        speaking[2] ? `the reply went out via ${replyVia} [FORCED]`
+                    : `the reply went out via ${replyVia} with no [FORCED] tag — the marker was `
+                      + 'not honoured, so this run did not exercise the fallback');
+    }
     if (!speaking) {
       if (!triggerFailed) {
         stage('speaking pill', 'blocked', 'no reply audio within 90s');
@@ -911,15 +968,13 @@ if (!DRY && serial && phase('launch')) {
       const off4 = logSize();
       adb(['-s', serial, 'shell', 'input', 'tap', String(stopX), String(tapY)]);
       stage('tapped Stop mid-sentence', 'built', `(${stopX},${tapY})`);
-      const cut = await waitForLog(off4, /\[sidecar\] → phone pcm .*\[cut short after (\d+)\/(\d+) frames: ([^\]]+)\]/, 30000);
-      if (cut) {
-        stage('Stop actually stopped the audio', 'verified',
-          `cut at ${cut[1]}/${cut[2]} frames — ${cut[3]}`);
-      } else {
-        stage('Stop actually stopped the audio', 'blocked',
-          'no truncation logged within 30s — the reply may have finished first; '
-          + 'retry with a longer --say');
-      }
+      const burst = !!replyVia && replyVia !== 'WebRTC';
+      /* On a burst downlink the host finished sending before the tap, so a "cut short" can never
+       * appear — waiting 30s for one and then advising a longer --say sent the reader after the
+       * wrong thing. The phone-side flush below is the whole verdict there. */
+      const cut = burst ? null
+        : await waitForLog(off4, /\[sidecar\] → phone pcm .*\[cut short after (\d+)\/(\d+) frames: ([^\]]+)\]/, 30000);
+      if (burst) await sleep(1500);   /* let the flush land in logcat */
       shot('06-after-stop.png');
 
       /* THE MACHINE-CHECKABLE HALF OF stop-control.
@@ -930,7 +985,21 @@ if (!DRY && serial && phase('launch')) {
        * back with a handful did not force anything, and would otherwise look like a pass. */
       const stopLog = adb(['-s', serial, 'logcat', '-d', '-t', '800'], { timeout: 30000 }).stdout;
       writeFileSync(join(OUT, 'logcat-stop.txt'), agentChannelLines(stopLog).join('\n') + '\n');
-      const ev = stopEvidence(stopLog, { forcedWs: WS_FALLBACK });
+      const ev = stopEvidence(stopLog, { forcedWs: WS_FALLBACK, transport: replyVia });
+
+      if (cut) {
+        stage('Stop actually stopped the audio', 'verified',
+          `cut at ${cut[1]}/${cut[2]} frames — ${cut[3]}`);
+      } else if (burst) {
+        stage('Stop actually stopped the audio', ev.ok ? 'verified' : 'failed',
+          `the reply went out via ${replyVia} in one burst, so the host had nothing left to cut — `
+          + `the phone had to drop it: ${ev.why}`);
+      } else {
+        stage('Stop actually stopped the audio', 'blocked',
+          'no truncation logged within 30s — the reply may have finished first; '
+          + 'retry with a longer --say');
+      }
+
       stage('Stop flushed the audio already on the phone',
         ev.ok ? 'verified' : 'failed',
         `${ev.why} (logcat-stop.txt)`);

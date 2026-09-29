@@ -207,11 +207,25 @@ ok('log: agentChannelLines keeps only our tag',
 /* and device-verify has to actually use them */
 {
   const dvSrc = readFileSync(join(REPO, 'test/device-verify.mjs'), 'utf8');
+  {
+    const few = '09-29 00:00:00.000 1 1 I AgentChannel: playback flushed (3 queued frame(s) dropped)\n';
+    const many = '09-29 00:00:00.000 1 1 I AgentChannel: playback flushed (900 queued frame(s) dropped)\n';
+    const e1 = stopEvidence(few, { transport: 'WS' });
+    ok('stop: an UNFORCED fallback (ICE failed) is judged by the burst rule too', e1.ok === false,
+      JSON.stringify(e1));
+    ok('stop: and the verdict names the transport, not a force that never happened',
+      /via WS in one burst/.test(e1.why) && !/forced/i.test(e1.why), e1.why);
+    ok('stop: a big flush on an unforced WS reply passes', stopEvidence(many, { transport: 'UDP' }).ok === true);
+    ok('stop: transport WebRTC keeps the paced rule', stopEvidence(few, { transport: 'WebRTC' }).ok === true);
+  }
   ok('device-verify reads the mute out of logcat', /micMuteEvents\(/.test(dvSrc));
   ok('device-verify reads the Stop flush out of logcat', /stopEvidence\(/.test(dvSrc));
   ok('and tells stopEvidence whether the fallback was forced',
-    /stopEvidence\(stopLog, \{ forcedWs: WS_FALLBACK \}\)/.test(dvSrc),
+    /stopEvidence\(stopLog, \{ forcedWs: WS_FALLBACK, transport: replyVia \}\)/.test(dvSrc),
     'without that it would accept the paced profile on a run that was supposed to be bursting');
+  ok('and which transport the sidecar SAID the reply went on, read off the START line',
+    /phone pcm START [^\n]*via \(\\S\+\)/.test(dvSrc) && /const replyVia = speaking \? speaking\[1\]/.test(dvSrc),
+    'an ICE failure falls back on its own; without the transport it is judged by the paced rule');
   ok('device-verify SAVES the log, not just greps it',
     /logcat-stop\.txt/.test(dvSrc),
     'the evidence has to outlive the phone being unplugged');

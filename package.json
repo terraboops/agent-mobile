@@ -76,7 +76,8 @@
     "device-handoff": "node test/device-handoff.mjs",
     "handoff": "node test/handoff.test.mjs",
     "dead-predicates": "node test/dead-predicates.mjs",
-    "adb-sim": "node test/adb-sim.test.mjs"
+    "adb-sim": "node test/adb-sim.test.mjs",
+    "verify-sim": "node test/verify-sim.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

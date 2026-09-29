@@ -57,8 +57,18 @@ const out = (s) => { process.stdout.write(s); };
 const cmd = args[0];
 
 if (cmd === 'fake-trigger') {
-  /* The typed turn, answered the way the sidecar answers: reply audio starts going out. */
-  if (sc.speaks !== false) gateway('[sidecar] → phone pcm 142848b -> 148 opus packets via WebRTC');
+  /* With a REAL sidecar behind this run (SIM_SIDECAR_CTL), play only the adapter's part — push
+   * TTS audio into the sidecar's socket — and let the sidecar decide the transport and log it.
+   * Without one, fall back to replaying the line. */
+  if (sc.speaks === false) process.exit(0);
+  if (process.env.SIM_SIDECAR_CTL) {
+    const { spawnSync } = await import('node:child_process');
+    const here = new URL('.', import.meta.url).pathname;
+    spawnSync(process.execPath, [here + 'sim-adapter-push.mjs', process.env.SIM_SIDECAR_CTL,
+                                 String(sc.replySeconds || 6)], { stdio: 'ignore', timeout: 20000 });
+  } else {
+    gateway('[sidecar] → phone pcm START 142848b (148 frames) via WebRTC');
+  }
   process.exit(0);
 }
 
@@ -111,8 +121,22 @@ if (cmd === 'shell') {
   if (/dumpsys package/.test(line)) { out('    versionName=139.0.7258.158\n'); process.exit(0); }
   if (/cmd webviewupdate/.test(line)) { out('Current WebView package (name, version): (com.google.android.webview, 139.0.7258.158)\n'); process.exit(0); }
   /* launch: am start's own output, and the process list after it */
+  if (/^am force-stop/.test(line)) {
+    if (st.phonePid) { try { process.kill(st.phonePid, 'SIGTERM'); } catch {} st.phonePid = null; save(); }
+    process.exit(0);
+  }
   if (/^am start/.test(line)) {
     out('Starting: Intent { cmp=com.agentmobile.agent/.MainActivity }\n');
+    /* The app, launched: with a real sidecar behind the run, it dials in and does the protocol. */
+    if (process.env.SIM_SIDECAR_URL && sc.amStart !== 'not-exported') {
+      const { spawn } = await import('node:child_process');
+      const here = new URL('.', import.meta.url).pathname;
+      const args = [here + 'sim-phone.mjs', '--url', process.env.SIM_SIDECAR_URL,
+                    '--pt', String(sc.phonePT || 111), '--hold', '600'];
+      if (sc.breakWebrtc) args.push('--break-webrtc');
+      const ph = spawn(process.execPath, args, { detached: true, stdio: 'ignore' });
+      ph.unref(); st.phonePid = ph.pid; save();
+    }
     if (sc.amStart === 'not-exported') {
       process.stderr.write('java.lang.SecurityException: Permission Denial: starting Intent { cmp=com.agentmobile.agent/.MainActivity } from null (pid=1, uid=2000) not exported from uid 10234\n');
     }
@@ -139,8 +163,11 @@ if (cmd === 'shell') {
       /* muteTruncates: the issue #1 regression itself — the mute cuts the reply off */
       if (sc.muteTruncates) gateway('[sidecar] → phone pcm 142848b -> 148 opus packets via WebRTC [cut short after 20/148 frames: superseded or interrupted]');
     } else {
-      /* Stop: the sidecar truncates, the app flushes what was already queued */
-      if (sc.stopTruncates !== false) {
+      /* Stop: with a real sidecar, the simulated app sends the interrupt and the SIDECAR decides
+       * whether anything was left to cut. Otherwise replay the line. */
+      if (process.env.SIM_SIDECAR_URL && st.phonePid) {
+        try { process.kill(st.phonePid, 'SIGUSR1'); } catch {}
+      } else if (sc.stopTruncates !== false) {
         gateway('[sidecar] → phone pcm 142848b -> 148 opus packets via WebRTC [cut short after 61/148 frames: superseded or interrupted]');
       }
       if (sc.flushDropped !== undefined) phoneLog(`playback flushed (${sc.flushDropped} queued frame(s) dropped)`);
@@ -151,7 +178,31 @@ if (cmd === 'shell') {
 }
 
 if (cmd === 'logcat') { out((sc.logcat || '') + (st.logcat || '')); process.exit(0); }
-if (cmd === 'exec-out') { process.exit(1); }            // no screenshots from a replay
+if (cmd === 'exec-out') {
+  const drain = (buf) => new Promise((res) => process.stdout.write(buf, res));
+  /* screencap -p. A real capture (one ux-audit already rendered), or a well-formed BLACK frame,
+   * which is what a sleeping phone returns and what validatePng has to catch. */
+  const { readFileSync: rf } = await import('node:fs');
+  const { deflateSync } = await import('node:zlib');
+  if (sc.screen === 'none') process.exit(1);
+  if (sc.screen === 'blank') {
+    const w = 1080, h = 2400;
+    const chunk = (t, d) => { const l = Buffer.alloc(4); l.writeUInt32BE(d.length);
+                              return Buffer.concat([l, Buffer.from(t, 'latin1'), d, Buffer.alloc(4)]); };
+    const ih = Buffer.alloc(13); ih.writeUInt32BE(w, 0); ih.writeUInt32BE(h, 4); ih[8] = 8; ih[9] = 2;
+    await drain(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk('IHDR', ih), chunk('IDAT', deflateSync(Buffer.alloc(w * h * 3))), chunk('IEND', Buffer.alloc(0))]));
+    process.exit(0);
+  }
+  const here = new URL('.', import.meta.url).pathname;
+  /* Exit only once the pipe has taken it. process.exit() straight after write() on a pipe drops
+   * whatever has not drained — the first version served 246 KB and device-verify received a
+   * truncated PNG with no IEND. validatePng caught it, which is its job; the bug was here.
+   * A write CALLBACK is not enough either: the script carries on past it to the next branch
+   * and a later process.exit() cuts the pipe just the same. Await the drain, then exit. */
+  await drain(rf(here + '../audit/out/02-idle-matrix.png'));
+  process.exit(0);
+}
 
 if (cmd === 'install') {
   const result = sc.install || 'Success';

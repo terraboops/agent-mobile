@@ -290,6 +290,37 @@ const turn = (extra, only = 'mute,stop') => {
   rmSync(sc.dir, { recursive: true, force: true });
 }
 
+/* HERMETIC, AND LOOK BEFORE SWEEPING. Every scenario here used to take 16s to find a USB device
+ * that was attached from the first call: discovery went first and TCP-swept the REAL Pixel's
+ * tailnet address to the deadline, and consulted the real `tailscale`, before asking
+ * `adb devices`. On a docked phone that is minutes of dead time; in a simulation it is a
+ * stand-in's verdicts built on the real handset's network state. */
+{
+  const sc = scenario({ usb: '33250DLH2000CB', pid: '4242' });
+  const t0 = Date.now();
+  const r = verify(sc, ['--only', 'discover', '--wait', '20']);
+  const calls = readFileSync(sc.path + '.calls', 'utf8').trim().split('\n').map((l) => JSON.parse(l).args.join(' '));
+  ok('an attached device is asked for BEFORE any discovery runs',
+    calls.indexOf('devices -l') !== -1
+    && (calls.indexOf('mdns services') === -1 || calls.indexOf('devices -l') < calls.indexOf('mdns services')),
+    `calls: ${calls.slice(0, 4).join(' | ')}`);
+  ok('and nothing was swept to find it', !/\[discover\] scanned/.test(r.stdout),
+    (r.stdout.match(/.*\[discover\].*/g) || []).join(' | '));
+  ok('so it is found at once, not after the wait', Date.now() - t0 < 12000, `${Date.now() - t0}ms`);
+  rmSync(sc.dir, { recursive: true, force: true });
+}
+{
+  const sc = scenario({});
+  const r = verify(sc, ['--only', 'discover', '--wait', '4']);
+  ok('a simulated run with NO device sends no packet to the real phone',
+    !/\[discover\] (scanned|nothing open on)/.test(r.stdout),
+    (r.stdout.match(/.*\[discover\].*/g) || []).join(' | '));
+  ok('and does not build its verdict from the real tailscale',
+    !/reachable on the tailnet|NOT REACHABLE on the tailnet|tailscale reports/.test(r.stdout),
+    (r.stdout.match(/.*tailnet.*/g) || []).join(' | ').slice(0, 300));
+  rmSync(sc.dir, { recursive: true, force: true });
+}
+
 ok('the real device-handoff.json was not touched by any of this',
   (existsSync(REAL_H) ? readFileSync(REAL_H, 'utf8') : null) === realHBefore);
 

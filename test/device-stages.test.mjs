@@ -103,7 +103,7 @@ const ok = (name, cond, detail = '') => {
   ok('it states that the reply must KEEP playing when only the mic is muted',
     /reply KEPT playing/.test(SRC));
   ok('a separate Stop tap is what the truncation check follows',
-    /tapped Stop mid-sentence[\s\S]{0,400}?cut short after/.test(SRC),
+    /tapped Stop mid-sentence[\s\S]{0,1200}?cut short after/.test(SRC),
     'the truncation assertion is not attached to the interrupt control');
   ok('the Stop stage is named for what it proves',
     /Stop actually stopped the audio/.test(SRC));

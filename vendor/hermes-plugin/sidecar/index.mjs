@@ -349,7 +349,10 @@ const ICE_DEADLINE_MS = Number(process.env.AGENTMOB_ICE_DEADLINE_MS || 20000);
  *
  * Checked at most once a second: a reply is hundreds of frames and this must not become a stat
  * per frame. */
-const FORCE_WS_FILE = join(dirname(fileURLToPath(import.meta.url)), '.force-ws-downlink');
+/* Overridable, so a second sidecar started from this directory for a test does not share the
+ * LIVE sidecar's marker — forcing the test one would otherwise force this one too. */
+const FORCE_WS_FILE = process.env.AGENTMOB_FORCE_WS_FILE
+  || join(dirname(fileURLToPath(import.meta.url)), '.force-ws-downlink');
 const FORCE_WS_ENV = /^(1|true|yes)$/i.test(process.env.AGENTMOB_FORCE_WS_DOWNLINK || '');
 let _forceWsSeen = false;
 let _forceWsAt = 0;
@@ -909,6 +912,13 @@ function handleBridgeMessage(m) {
     target.pcmCancel = tok;
     let f = 0;
     const viaW = !forceWsDownlink() && !!(target.webrtc && target.webrtc.ready);
+    /* START, as well as the finish line below. The only record of a reply used to be written by
+     * finish() — when the send was DONE — and device-verify waited on it as "audio is playing",
+     * then tapped the mic "mid-sentence". It could never be mid-sentence: on the paced WebRTC
+     * downlink that line lands when the reply is over. Found by driving the device test against
+     * this sidecar and a simulated app: the Stop tap arrived five seconds after the last frame. */
+    log(`→ phone pcm START ${pcm.length}b (${n} frames) via ${viaW ? 'WebRTC' : (useUdp ? 'UDP' : 'WS')}`
+        + (!viaW && forceWsDownlink() ? ' [FORCED]' : ''));
     // This line is the ONLY record of which transport actually served the downlink, so it has
     // to survive a truncated playback too. Every early return below used to skip it, which is
     // why a reply cut short by a disconnect, an ICE drop or a newer synthesis left no trace of

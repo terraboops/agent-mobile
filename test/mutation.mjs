@@ -108,8 +108,9 @@ if (existsSync(LOCK)) {
   if (held && alive(held.pid)) {
     console.error(`\nANOTHER MUTATION RUN IS LIVE: pid ${held.pid}, started ${held.started}, `
       + `filter "${held.filter || '(all)'}". Its files may be mutated right now.`);
-    console.error(`Stop it with:  kill -TERM -${held.pgid}   (the process GROUP — a plain kill `
-      + 'waits for the current suite to finish)\n');
+    console.error(`Stop it with:  touch test/.mutation-stop   (after the current suite), or`);
+    console.error(`               kill -TERM -${held.pgid}   (cuts the current suite short; the `
+      + 'batch then stops and restores)\n');
     process.exit(4);
   }
   rmSync(LOCK, { force: true });   // stale: its process is gone
@@ -119,7 +120,8 @@ try { pgid = Number(spawnSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], 
 writeFileSync(LOCK, JSON.stringify({ pid: process.pid, pgid, started: new Date().toISOString(),
                                      filter: only || null }));
 process.on('exit', () => { try { rmSync(LOCK, { force: true }); } catch {} });
-console.log(`mutation run pid ${process.pid} — to stop it: kill -TERM -${pgid}`);
+console.log(`mutation run pid ${process.pid} — to stop it: touch test/.mutation-stop  `
+  + `(takes effect after the current suite), or kill -TERM -${pgid} to cut the suite short`);
 
 const backups = new Map();
 for (const f of touched) {
@@ -140,8 +142,25 @@ process.on('uncaughtException', (e) => { restoreAll(); console.error(e); process
 
 const results = [];
 let scopedUp = null;
+/* STOPPING, for real this time.
+ *
+ * The first fix wrote a lock naming the process GROUP to signal, on the theory that killing the
+ * child suite would let spawnSync return and the SIGTERM handler run. It does not: this loop is
+ * synchronous, and a Node signal handler only runs when the event loop gets a turn — which a
+ * `for` of spawnSync calls never gives it. The group kill took the running suite down, spawnSync
+ * returned, and the loop started the NEXT entry; watched at 12:56 with a fresh suite 47 seconds
+ * old under a "stopped" harness. Worse, a killed suite exits non-zero, so every entry cut short
+ * that way would have been recorded as CAUGHT.
+ *
+ * So the loop checks for itself, between entries and after each suite:
+ *   - a STOP FILE, `test/.mutation-stop`, which is how to ask it to stop;
+ *   - a suite that died by SIGNAL, which is not a verdict and ends the batch. */
+const STOP = join(REPO, 'test', '.mutation-stop');
+rmSync(STOP, { force: true });
+let stoppedBy = null;
 try {
   for (const m of chosen) {
+    if (existsSync(STOP)) { stoppedBy = 'stop file'; break; }
     const edits = editsOf(m);
     if (edits.some((e) => !existsSync(e.file))) {
       results.push({ ...m, verdict: 'skip', note: 'file missing' }); continue;
@@ -230,6 +249,14 @@ try {
     restoreEdits();
     if (m.scope === 'gateway') { stopScoped({}); startScoped({}); }
     else if (m.restart) reloadSidecar();
+    /* A suite killed by a signal did not fail an assertion — it was stopped. Recording that as
+     * CAUGHT would put a verdict in the table that nothing measured. */
+    if (r.signal || r.status === null) {
+      stoppedBy = `suite for "${m.why}" was killed by ${r.signal || 'a signal'}`;
+      results.push({ ...m, verdict: 'STOPPED', note: stoppedBy });
+      console.log(`  STOPPED ${m.suite.padEnd(24)} ${stoppedBy} — not a verdict`);
+      break;
+    }
     const failed = r.status !== 0;
     const n = (r.stdout || '').match(/(\d+) (?:passed|failed)/g) || [];
     /* WHICH assertions broke, not just that something did.
@@ -300,6 +327,10 @@ const wrongClaim = results.filter((r) => r.verdict === 'WRONG-CLAIM');
 const missed = results.filter((r) => r.verdict === 'MISSED');
 const stale = results.filter((r) => r.verdict === 'STALE');
 const caught = results.filter((r) => r.verdict === 'CAUGHT');
+if (stoppedBy) {
+  console.log(`\nSTOPPED EARLY (${stoppedBy}) after ${results.length} of ${chosen.length} entries. `
+    + 'The counts below are a PARTIAL table and must not be quoted as a full run.');
+}
 console.log(`\n${caught.length} caught, ${missed.length} MISSED, ${stale.length} stale, `
   + `${blocked.length} blocked, ${wrongClaim.length} wrong-claim, of ${results.length}`);
 for (const r of wrongClaim) console.log(`  WRONG-CLAIM: ${r.suite} — ${r.note}`);
@@ -310,5 +341,5 @@ for (const r of stale) console.log(`  STALE : ${r.suite} — ${r.note}`);
  * mutation that may not have applied produces a MISSED that sends you auditing a test that is
  * fine. There is deliberately no softer "not run" verdict any more — the scoped instance removed
  * the case that needed one, and a verdict nothing can emit is scaffolding. */
-process.exit(!clean || livePidMoved || missed.length || stale.length || blocked.length
+process.exit(stoppedBy ? 5 : !clean || livePidMoved || missed.length || stale.length || blocked.length
   || wrongClaim.length ? 1 : 0);

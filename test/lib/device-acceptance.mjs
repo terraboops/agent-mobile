@@ -187,6 +187,7 @@ export const DEVICE_ACCEPTANCE = [
              + '(Stop sends an interrupt and does not touch the mic)',
     stages: ['Stop flushed the audio already on the phone',
              'WS fallback forced for this run',
+             'the sidecar honoured the forced WS downlink',
              'tapped Stop mid-sentence', 'Stop actually stopped the audio'],
   },
   {

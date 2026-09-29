@@ -204,7 +204,7 @@ export function flushEvents(logcat) {
  * a reply can be sitting there, so dozens or hundreds. A run that forced the fallback and still
  * saw a handful did not force it.
  */
-export function stopEvidence(logcat, { forcedWs = false } = {}) {
+export function stopEvidence(logcat, { forcedWs = false, transport = null } = {}) {
   const flushes = flushEvents(logcat);
   if (!flushes.length) {
     return { ok: false, dropped: null,
@@ -212,7 +212,11 @@ export function stopEvidence(logcat, { forcedWs = false } = {}) {
                 + 'so whatever the audio did, it was not this fix doing it' };
   }
   const dropped = flushes[flushes.length - 1].dropped;
-  if (!forcedWs) {
+  /* The transport the sidecar SAID it used. A reply that fell back on its own — ICE failed, no
+   * force file — is on the burst path exactly as a forced one is, and used to be judged by the
+   * paced rule, so a flush of 3 frames passed where it means the reply had already played out. */
+  const burst = forcedWs || (!!transport && transport !== 'WebRTC');
+  if (!burst) {
     return { ok: true, dropped,
              why: `Stop flushed ${dropped} queued frame(s) on the paced downlink` };
   }
@@ -222,6 +226,10 @@ export function stopEvidence(logcat, { forcedWs = false } = {}) {
            why: dropped >= 10
              ? `Stop flushed ${dropped} queued frame(s) — the burst path really was in use, and `
                + 'this is the audio that used to keep playing'
-             : `only ${dropped} frame(s) were queued, which is the PACED profile: the forced WS `
-               + 'fallback did not take, so this run did not exercise the case it was for' };
+             : forcedWs
+             ? `only ${dropped} frame(s) were queued, which is the PACED profile: the forced WS `
+               + 'fallback did not take, so this run did not exercise the case it was for'
+             : `the reply went via ${transport} in one burst yet only ${dropped} frame(s) were `
+               + 'queued at Stop — it had almost all played out, so this Stop proves nothing '
+               + 'about cutting a reply off; tap earlier or use a longer --say' };
 }
