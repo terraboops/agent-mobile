@@ -34,7 +34,7 @@ export const PHASES = [
    * against silence. So selecting mute or stop implies the turn. Its guard is therefore the
    * disjunction over the three, not a `phase('speak')` of its own — marked here so the drift
    * check below knows that is deliberate rather than a phase nobody wired up. */
-  { name: 'speak', precondition: true,
+  { name: 'speak', precondition: true, impliedBy: ['mute', 'stop'],
     what: 'trigger a spoken reply and watch the speaking pill — implied by mute and stop, '
         + 'because neither is observable without a reply in flight' },
   { name: 'mute',
@@ -96,12 +96,25 @@ export function parsePhaseSelector({ only = null, from = null } = {}) {
     return { names, error: null };
   };
 
+  /* Preconditions are IMPLIED, and the selection has to say so.
+   *
+   * `--only stop` runs the spoken turn — it has to, since Stop against silence means nothing,
+   * and device-verify triggers it whenever any of speak/mute/stop is selected. But the selection
+   * did not contain `speak`, so the run printed "SKIPPED ... speak" while speaking. Rehearsing
+   * the exact command found it; the summary line was describing a phase that had just run.
+   * Adding the implication here keeps the report and the behaviour the same statement. */
+  const withImplied = (run) => {
+    for (const p of PHASES) {
+      if (p.impliedBy && p.impliedBy.some((d) => run.has(d))) run.add(p.name);
+      if (p.always) run.add(p.name);
+    }
+    return run;
+  };
+
   if (only !== null && only !== false) {
     const { names, error } = check(only, '--only');
     if (error) return bad(error);
-    const run = new Set(names);
-    for (const p of PHASES) if (p.always) run.add(p.name);
-    return { run, kind: 'only', error: null };
+    return { run: withImplied(new Set(names)), kind: 'only', error: null };
   }
   if (from !== null && from !== false) {
     const { names, error } = check(from, '--from');
@@ -111,9 +124,7 @@ export function parsePhaseSelector({ only = null, from = null } = {}) {
                + 'Use --only for a set.');
     }
     const at = PHASE_NAMES.indexOf(names[0]);
-    const run = new Set(PHASE_NAMES.slice(at));
-    for (const p of PHASES) if (p.always) run.add(p.name);
-    return { run, kind: 'from', error: null };
+    return { run: withImplied(new Set(PHASE_NAMES.slice(at))), kind: 'from', error: null };
   }
   return { run: all, kind: 'all', error: null };
 }

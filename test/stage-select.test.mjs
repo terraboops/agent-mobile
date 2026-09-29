@@ -40,15 +40,33 @@ ok('--from mute skips the install', !runsPhase(fromMute, 'install'),
   'skipping the install is the whole point — it is the slowest phase');
 ok('--from mute skips everything before it',
   !runsPhase(fromMute, 'launch') && !runsPhase(fromMute, 'handshake')
-  && !runsPhase(fromMute, 'surface') && !runsPhase(fromMute, 'speak'));
+  && !runsPhase(fromMute, 'surface'));
+/* EXCEPT the turn, which mute needs to be observable. This assertion used to include
+ * `!runsPhase(fromMute, 'speak')` and was wrong about the behaviour: device-verify triggers the
+ * spoken turn whenever any of speak/mute/stop is selected, so the run spoke while the summary
+ * printed "SKIPPED ... speak". Rehearsing the exact command Terra would fire found it. */
+ok('--from mute DOES include the turn it needs, and says so',
+  runsPhase(fromMute, 'speak'),
+  'the run triggers the turn regardless; a selection that omits it makes the PARTIAL PASS line '
+  + 'describe a phase that just ran');
+ok('--only stop implies the turn too',
+  runsPhase(parsePhaseSelector({ only: 'stop' }), 'speak'),
+  'Stop against silence means nothing');
+ok('but an unrelated phase does NOT drag the turn in',
+  !runsPhase(parsePhaseSelector({ only: 'surface' }), 'speak'),
+  'a screenshot-only run would spend a minute speaking for no reason');
 ok('--from still runs discovery, which every later phase needs',
   runsPhase(fromMute, 'discover'),
   'without a serial there is nothing to resume onto, so this would fail confusingly');
 ok('--from the FIRST phase is the same set as no flags',
   parsePhaseSelector({ from: PHASE_NAMES[0] }).run.size === PHASE_NAMES.length);
-ok('--from the LAST phase runs only it and discovery',
+/* The last phase is `stop`, which implies the turn — so "only it and discovery" is three, not
+ * two. Written as two before the implication existed, and the count was the giveaway. */
+ok('--from the LAST phase runs it, discovery, and whatever it implies',
   (() => { const s = parsePhaseSelector({ from: PHASE_NAMES.at(-1) });
-           return s.run.size === 2 && runsPhase(s, 'discover'); })());
+           return runsPhase(s, PHASE_NAMES.at(-1)) && runsPhase(s, 'discover')
+               && s.run.size === 3 && runsPhase(s, 'speak'); })(),
+  JSON.stringify([...parsePhaseSelector({ from: PHASE_NAMES.at(-1) }).run]));
 
 /* ---- --only is a set ----------------------------------------------------------------------- */
 const onlyMute = parsePhaseSelector({ only: 'mute' });

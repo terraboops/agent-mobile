@@ -81,6 +81,26 @@ ok('and clears it FIRST, before anything that can throw',
   'a throw in the report writer would leave the machine in diagnostic mode');
 ok('clearing tolerates a marker that is already gone',
   /rmSync\(FORCE_WS_FILE, \{ force: true \}\)/.test(dv));
+/* EVERY exit path, which is the half I got wrong first. finish() covers the tidy ending; a
+ * Ctrl-C during the spoken turn is the likeliest way anyone actually stops a device run, and
+ * that path used to call stopAdb() alone. A diagnostic switch that survives its own run is
+ * worse than not having one. */
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  ok(`${sig} clears the marker, not just adb`,
+    new RegExp(`${sig}`).test(dv) && /cleanupExit\(\); process\.exit\(130\)/.test(dv),
+    `a ${sig} during the spoken turn would leave this machine bursting every reply`);
+}
+ok('an uncaught exception clears it',
+  /UNCAUGHT[\s\S]{0,120}?cleanupExit\(\)/.test(dv));
+ok('an unhandled rejection clears it',
+  /UNHANDLED REJECTION[\s\S]{0,140}?cleanupExit\(\)/.test(dv));
+ok("process.on('exit') clears it as the last resort",
+  /process\.on\('exit', cleanupExit\)/.test(dv),
+  'any path not covered above would still leak the marker');
+ok('cleanupExit clears the marker BEFORE stopping adb',
+  /const cleanupExit = \(\) => \{ setForcedWs\(false\); stopAdb\(\); \}/.test(dv),
+  'stopAdb can throw on a wedged server, and the marker matters more than the adb daemon');
+
 ok('and a failure to clear is reported rather than swallowed',
   /could not \$\{on \? 'set' : 'clear'\}/.test(dv),
   'silently failing to clear is how the machine stays in diagnostic mode');

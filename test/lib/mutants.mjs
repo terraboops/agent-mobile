@@ -1439,8 +1439,8 @@ export const MUTANTS = [
   { suite: 'stage-select', file: SSEL,
     why: '--from running the phases that follow, not only the named one',
     breaks: '--from mute runs what comes AFTER it',
-    from: '    const run = new Set(PHASE_NAMES.slice(at));',
-    to:   '    const run = new Set([PHASE_NAMES[at]]);' },
+    from: '    return { run: withImplied(new Set(PHASE_NAMES.slice(at))), kind: \'from\', error: null };',
+    to:   '    return { run: withImplied(new Set([PHASE_NAMES[at]])), kind: \'from\', error: null };' },
 
   /* stage-select #3 — a partial pass SAYING so. Tomorrow the report is just a file: one whose
      mute stages passed and one that never attempted them must not read the same. */
@@ -1457,9 +1457,8 @@ export const MUTANTS = [
   { suite: 'stage-select', file: SSEL,
     why: 'discovery running whatever else was selected',
     breaks: '--from still runs discovery',
-    from: '    for (const p of PHASES) if (p.always) run.add(p.name);\n'
-        + "    return { run, kind: 'from', error: null };",
-    to:   "    return { run, kind: 'from', error: null };" },
+    from: '      if (p.always) run.add(p.name);',
+    to:   '      /* discovery no longer forced into the set */' },
 
   /* run-facts #1 — a BLANK screenshot not passing as evidence. `screencap -p` returns a
      well-formed PNG of a black screen when the device is asleep or the activity has not drawn,
@@ -1632,6 +1631,17 @@ export const MUTANTS = [
     breaks: 'finish() clears the marker',
     from: '  setForcedWs(false);\n  stopAdb();',
     to:   '  stopAdb();' },
+
+  /* ws-fallback #5 — and on the way out the ABNORMAL exits, which is the half that was wrong
+     first. finish() covers the tidy ending; a Ctrl-C during the spoken turn is the likeliest
+     way anyone actually stops a device run, and that path called stopAdb() alone. The marker
+     would stay on disk and every later conversation on this machine would be burst over the
+     WebSocket with nothing saying why. Verified by interrupting a real run holding it. */
+  { suite: 'ws-fallback', file: DV,
+    why: 'clearing the marker on a signal, not only on a clean finish',
+    breaks: 'SIGINT clears the marker, not just adb',
+    from: '    cleanupExit(); process.exit(130);',
+    to:   '    stopAdb(); process.exit(130);' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

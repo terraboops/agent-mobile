@@ -199,18 +199,31 @@ const stopAdb = () => {
  * throw in a later stage — or a kill of a backgrounded run — skipped finish() entirely and left
  * the server up. That already happened once: stopping an armed run needed a manual
  * `adb kill-server` afterwards. Crashing loudly is fine; crashing dirty is not. */
+/* EVERY exit path, not just the tidy one.
+ *
+ * These handlers called stopAdb() alone, and the forced-WS marker was cleared only in finish().
+ * So a Ctrl-C during the spoken turn — the most likely way anyone stops a device run — left the
+ * marker on disk, and every later conversation on this machine would be burst over the
+ * WebSocket with nothing saying why. I had already written in a commit message that a run which
+ * dies holding it does not latch the machine into diagnostic mode; that was true of the
+ * graceful path and of no other. A diagnostic switch that survives its own run is worse than
+ * not having one. */
+const cleanupExit = () => { setForcedWs(false); stopAdb(); };
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(sig, () => { console.log(`\n${sig} — stopping adb before exit.`); stopAdb(); process.exit(130); });
+  process.on(sig, () => {
+    console.log(`\n${sig} — clearing the forced-WS marker and stopping adb before exit.`);
+    cleanupExit(); process.exit(130);
+  });
 }
 process.on('uncaughtException', (e) => {
   console.error('\nUNCAUGHT: ' + (e && e.stack || e));
-  stopAdb(); process.exit(70);
+  cleanupExit(); process.exit(70);
 });
 process.on('unhandledRejection', (e) => {
   console.error('\nUNHANDLED REJECTION: ' + (e && e.stack || e));
-  stopAdb(); process.exit(70);
+  cleanupExit(); process.exit(70);
 });
-process.on('exit', stopAdb);   // last resort for any path not covered above
+process.on('exit', cleanupExit);   // last resort for any path not covered above
 
 const finish = (code) => {
   /* FIRST, before anything that could throw. A forced WS fallback left on disk would make every
