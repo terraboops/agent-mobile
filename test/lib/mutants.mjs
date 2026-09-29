@@ -43,6 +43,7 @@ const SSEL = join(REPO, 'test/lib/stage-select.mjs');
 const RFACTS = join(REPO, 'test/lib/run-facts.mjs');
 const DACC = join(REPO, 'test/lib/device-acceptance.mjs');
 const BRIDGEJS = join(REPO, 'www/bridge.js');
+const HANDOFF = join(REPO, 'test/lib/handoff.mjs');
 const PLUGINJ = join(REPO,
   'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
@@ -1642,6 +1643,42 @@ export const MUTANTS = [
     breaks: 'SIGINT clears the marker, not just adb',
     from: '    cleanupExit(); process.exit(130);',
     to:   '    stopAdb(); process.exit(130);' },
+
+  /* handoff #1 — the WS-FALLBACK pass running at all. The full sweep negotiates WebRTC, whose
+     downlink is paced, so it exercises the easy side of stop-control; the bug the flush was
+     written for only appears on the burst path. A handoff that ran the full sweep alone would
+     come back green over the exact case it was armed to settle. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'the burst-path Stop pass running after the full sweep',
+    breaks: 'a WS-fallback Stop pass runs after it',
+    from: '  if (wsFallback) {',
+    to:   '  if (false) {' },
+
+  /* handoff #2 — the LAN sweep not running every tick. It takes about a minute; at a 20s tick
+     the loop would never complete a cycle and would look like it was working. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'the expensive sweep keeping to its cadence',
+    breaks: 'the LAN sweep does NOT run every tick',
+    from: '  const lanSweep = hasLan && (elapsedS - lastLanSweepS) >= LAN_SWEEP_EVERY_S;',
+    to:   '  const lanSweep = hasLan;' },
+
+  /* handoff #3 — the two sweeps never colliding. The tailnet one costs minutes for the answer
+     the LAN gives in seconds, because a closed port on the userspace TUN times out rather than
+     refusing; queueing it behind the fast one wastes the window the operator is waiting in. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'the slow sweep giving way to the fast one',
+    breaks: 'the two sweeps never run on the same tick',
+    from: '  const tailnetSweep = !lanSweep && (elapsedS - lastTailnetSweepS) >= TAILNET_SWEEP_EVERY_S;',
+    to:   '  const tailnetSweep = (elapsedS - lastTailnetSweepS) >= TAILNET_SWEEP_EVERY_S;' },
+
+  /* handoff #4 — the verdict for finding NOTHING not reading as a pass. An arming loop that
+     waited six hours and saw no phone, reported in the same words as a run where everything
+     succeeded, is the report-shaped failure this project keeps finding in itself. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'an empty wait being unmistakable for a device pass',
+    breaks: 'says so in words that cannot be read as a pass',
+    from: "      + 'it found nothing, NOT a device pass with no failures.' };",
+    to:   "      + 'it completed.' };" },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

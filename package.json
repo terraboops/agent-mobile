@@ -72,7 +72,9 @@
     "stage-select": "node test/stage-select.test.mjs",
     "run-facts": "node test/run-facts.test.mjs",
     "stop-flush": "node test/stop-flush.test.mjs",
-    "ws-fallback": "node test/ws-fallback.test.mjs"
+    "ws-fallback": "node test/ws-fallback.test.mjs",
+    "device-handoff": "node test/device-handoff.mjs",
+    "handoff": "node test/handoff.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

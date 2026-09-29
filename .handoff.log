@@ -1,0 +1,7 @@
+device-handoff — arming for 6h, then two passes
+  apk   android/app/build/outputs/apk/release/app-release.apk
+  phone 100.112.255.69
+  The phone needs Settings > System > Developer options > Wireless debugging ON.
+  Nothing here can flip it; this only removes the round trip afterwards.
+
+  [0s] sweeping 192.168.10.53 (LAN sweep due (refusals are instant, so this is the cheap informative one))

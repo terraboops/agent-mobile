@@ -19,6 +19,10 @@ export const UTILITIES = {
   'device-watch': 'a long-running watcher that waits for a phone to connect',
   'device-verify': 'the on-device run; blocked on hardware and asserts nothing without it',
   'device-arm': 'device-verify with a long unattended wait; same code, no assertions of its own',
+  'device-handoff': 'the arming loop that waits for the phone and then spawns device-verify. '
+    + 'It asserts nothing itself — its DECISIONS (the probe schedule, which passes to run, and '
+    + 'a verdict that cannot read as a pass when nothing appeared) live in lib/handoff.mjs and '
+    + 'are covered by the handoff suite',
   'ctrlbar-shot': 'renders screenshots for a human to look at; makes no assertions',
   'ice-candidates': 'a reachability report; exits 0 by design whatever it finds',
   'vendor-refresh': 'copies the installed plugin into vendor/; one-way, no assertions',
