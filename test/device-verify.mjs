@@ -44,7 +44,7 @@ import { typedTurn } from './lib/aead-trigger.mjs';
 import { localApkPreflight, APK } from './lib/apk-facts.mjs';
 import { classifyIcePath } from './lib/ice-path.mjs';
 import { parseDensity, parseSize, micTapPoint, stopTapX, parseMicMute, parseVersionName,
-         highestMajor, parseNavInset } from './lib/device-probe.mjs';
+         highestMajor, parseNavInset, parseCrash } from './lib/device-probe.mjs';
 import { logStamp, logSince as logSinceReal } from './lib/gateway-log.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -515,7 +515,17 @@ if (!DRY && serial) {
   adb(['-s', serial, 'shell', 'am', 'start', '-n', `${PKG}/.MainActivity`]);
   await sleep(6000);
   const alive = sh(`pidof ${PKG} || true`);
-  stage('app launched', alive ? 'verified' : 'failed', alive ? `pid ${alive}` : 'no process');
+  /* A pid is not a launch. An app that throws in onCreate is restarted by the system, so
+   * `pidof` finds one and the stage would read VERIFIED over a crash loop; a crash inside the
+   * six seconds gives "no process", which tells whoever is holding the phone nothing they can
+   * act on. logcat says which, and says why. Only crashes attributed to OUR package count. */
+  const crash = parseCrash(adb(['-s', serial, 'logcat', '-d', '-t', '400'],
+                               { timeout: 30000 }).stdout, PKG);
+  stage('app launched',
+    crash ? 'failed' : (alive ? 'verified' : 'failed'),
+    crash ? `${crash.kind}: ${crash.summary}`
+          : (alive ? `pid ${alive}` : 'no process and no crash in logcat — check the launcher '
+                                    + 'component name'));
   stage('screenshot: boot', shot('01-boot.png') ? 'verified' : 'blocked',
     lastShotError ? `01-boot.png — ${lastShotError}` : '01-boot.png');
 

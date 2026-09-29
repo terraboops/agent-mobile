@@ -95,3 +95,41 @@ export function parseNavInset(out) {
   const m = /navigationBars[^\n]*?frame=\[\d+,\d+\]\[\d+,(\d+)\]/.exec(String(out || ''));
   return m ? Number(m[1]) : 0;
 }
+
+/**
+ * Did OUR package crash, according to logcat?
+ *
+ * WHY. The launch stage was `pidof <pkg>` six seconds after `am start`. That answers "is there a
+ * process now", which is not "did it launch": an app that throws in onCreate is restarted by the
+ * system, so a pid is present and the stage reads VERIFIED over a crash loop. The opposite case
+ * is no better — a crash inside the six seconds gives "failed: no process", which tells whoever
+ * is holding the phone nothing they can act on.
+ *
+ * Only crashes attributed to the named package count. A FATAL EXCEPTION from some other app is
+ * background noise on a real handset and must not fail this run.
+ *
+ * @returns {{kind: string, summary: string}|null}
+ */
+export function parseCrash(logcat, pkg) {
+  const text = String(logcat || '');
+  const name = String(pkg || '');
+  if (!name) return null;
+  const lines = text.split('\n');
+
+  /* FATAL EXCEPTION blocks name their package on a following `Process:` line. */
+  for (let i = 0; i < lines.length; i++) {
+    if (!/\bFATAL EXCEPTION\b/.test(lines[i])) continue;
+    const window = lines.slice(i, i + 4).join('\n');
+    if (!window.includes(name)) continue;
+    const exc = lines.slice(i, i + 6)
+      .find((l) => /^\s*(?:\S+\s+)*?(?:java|android|kotlin|com)\.\S+(?:Exception|Error)\b/.test(l)
+                || /\b\w+(?:Exception|Error):/.test(l));
+    return { kind: 'fatal', summary: (exc || lines[i]).trim().slice(0, 200) };
+  }
+  /* ANRs and deaths name the package inline. */
+  const anr = new RegExp(`ANR in ${name.replace(/\./g, '\\.')}\\b[^\n]*`).exec(text);
+  if (anr) return { kind: 'anr', summary: anr[0].trim().slice(0, 200) };
+  const died = new RegExp(`Process ${name.replace(/\./g, '\\.')}[^\n]*?has died[^\n]*`).exec(text);
+  if (died) return { kind: 'died', summary: died[0].trim().slice(0, 200) };
+  return null;
+}

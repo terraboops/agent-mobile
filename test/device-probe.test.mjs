@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   parseDensity, parseSize, micTapPoint, stopTapX, parseMicMute,
-  parseVersionName, highestMajor, parseNavInset,
+  parseVersionName, highestMajor, parseNavInset, parseCrash,
 } from './lib/device-probe.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -108,6 +108,37 @@ ok('nav inset: read out of a dumpsys window frame',
   parseNavInset('navigationBars frame=[0,2337][1080,2400]') === 2400);
 ok('nav inset: absent yields 0, which the tap treats as no inset',
   parseNavInset('no such thing') === 0);
+
+/* ---- did the app actually launch, or is there merely a process? -----------------------------
+ * The launch stage was `pidof` alone. Android restarts an app that throws in onCreate, so a pid
+ * is present during a crash loop and the stage read VERIFIED over it. */
+const PKG = 'com.agentmobile.agent';
+const FATAL = [
+  '10-01 01:02:03.456  1234  1234 E AndroidRuntime: FATAL EXCEPTION: main',
+  '10-01 01:02:03.456  1234  1234 E AndroidRuntime: Process: com.agentmobile.agent, PID: 1234',
+  '10-01 01:02:03.456  1234  1234 E AndroidRuntime: java.lang.NullPointerException: ko keypair',
+  '10-01 01:02:03.456  1234  1234 E AndroidRuntime: \tat com.agentmobile.agent.MainActivity.onCreate',
+].join('\n');
+ok('crash: a FATAL EXCEPTION for our package is found',
+  (parseCrash(FATAL, PKG) || {}).kind === 'fatal', JSON.stringify(parseCrash(FATAL, PKG)));
+ok('crash: the summary names the exception, not just that one happened',
+  /NullPointerException/.test((parseCrash(FATAL, PKG) || {}).summary || ''),
+  (parseCrash(FATAL, PKG) || {}).summary);
+ok('crash: ANOTHER app crashing is not our failure',
+  parseCrash(FATAL.replace(/com\.agentmobile\.agent/g, 'com.someone.else'), PKG) === null,
+  'a real handset has other apps crashing in the background; failing on those makes the run '
+  + 'unusable and teaches people to ignore it');
+ok('crash: an ANR is reported',
+  (parseCrash('10-01 E ActivityManager: ANR in com.agentmobile.agent (reason: Input dispatching timed out)', PKG) || {}).kind === 'anr');
+ok('crash: a process death is reported',
+  (parseCrash('10-01 I ActivityManager: Process com.agentmobile.agent (pid 1234) has died: prcp', PKG) || {}).kind === 'died');
+ok('crash: an ordinary log with our package in it is NOT a crash',
+  parseCrash('10-01 I agentmob: com.agentmobile.agent connected to the sidecar', PKG) === null,
+  'the package name appearing in a log line is not a crash');
+ok('crash: empty logcat is not a crash', parseCrash('', PKG) === null && parseCrash(null, PKG) === null);
+ok('crash: no package named means no verdict, not a false positive',
+  parseCrash(FATAL, '') === null && parseCrash(FATAL, null) === null,
+  'without a package to attribute to, every crash on the device would be ours');
 
 console.log(`\n${pass} passed, ${fails.length} failed`);
 if (fails.length) process.exit(1);

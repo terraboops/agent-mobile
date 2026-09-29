@@ -1209,6 +1209,25 @@ export const MUTANTS = [
     from: "    if (!familiesOf(value).some((f) => GENERICS.has(f))) continue;",
     to:   '    continue;' },
 
+  /* device-probe #4 — ATTRIBUTING a crash to our package. A real handset has other apps dying
+     in the background all the time; fail the launch on those and the run is unusable within a
+     week, which is the same end state as not checking at all. The attribution is the whole
+     difference between a signal and a nuisance. */
+  { suite: 'device-probe', file: DPROBE,
+    why: 'only counting a crash that names the package under test',
+    breaks: 'ANOTHER app crashing is not our failure',
+    from: '    if (!window.includes(name)) continue;',
+    to:   '    if (false) continue;' },
+
+  /* device-probe #5 — a crash being found AT ALL. Without it the launch stage is `pidof`, which
+     an app crash-looping in onCreate satisfies: Android restarts it, a pid exists, and the run
+     reports the app launched over a crash it never mentioned. */
+  { suite: 'device-probe', file: DPROBE,
+    why: 'noticing a fatal exception in the launch log',
+    breaks: 'a FATAL EXCEPTION for our package is found',
+    from: "    if (!/\\bFATAL EXCEPTION\\b/.test(lines[i])) continue;",
+    to:   '    continue;' },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',
