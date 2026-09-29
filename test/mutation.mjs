@@ -45,7 +45,14 @@ const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 
 export 
 const only = process.argv[2];
-const chosen = only ? MUTANTS.filter((m) => m.suite.includes(only)) : MUTANTS;
+const matched = only ? MUTANTS.filter((m) => m.suite.includes(only)) : MUTANTS;
+/* An optional 1-based slice, `a-b`, of the matched entries: resuming a batch that was stopped
+ * part-way without re-running what already reported. A slice is a PARTIAL table and says so. */
+const sliceArg = process.argv[3];
+const sliceM = sliceArg && /^(\d+)-(\d+)$/.exec(sliceArg);
+if (sliceArg && !sliceM) { console.error(`slice must be a-b (1-based), got "${sliceArg}"`); process.exit(2); }
+const chosen = sliceM ? matched.slice(Number(sliceM[1]) - 1, Number(sliceM[2])) : matched;
+if (sliceM) console.log(`SLICE ${sliceArg} of ${matched.length} "${only}" entries — a PARTIAL table`);
 
 /* An entry is ONE conceptual mutation, but it may need SEVERAL edits.
  *
@@ -327,6 +334,10 @@ const wrongClaim = results.filter((r) => r.verdict === 'WRONG-CLAIM');
 const missed = results.filter((r) => r.verdict === 'MISSED');
 const stale = results.filter((r) => r.verdict === 'STALE');
 const caught = results.filter((r) => r.verdict === 'CAUGHT');
+if (sliceM && !stoppedBy) {
+  console.log(`\nSLICE ${sliceArg} of ${matched.length}: ${results.length} entries ran. A PARTIAL table — `
+    + 'quote it together with the run(s) that covered the rest.');
+}
 if (stoppedBy) {
   console.log(`\nSTOPPED EARLY (${stoppedBy}) after ${results.length} of ${chosen.length} entries. `
     + 'The counts below are a PARTIAL table and must not be quoted as a full run.');

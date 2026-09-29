@@ -1870,10 +1870,14 @@ export const MUTANTS = [
 
   /* adb-sim #6 — the tap point computed from the shape parseSize actually returns. The caller
      indexed `size[1]`, the regex-match shape it replaced; W was NaN and the issue #1 test died
-     with an uncaught TypeError before a single mute stage was recorded. */
+     with an uncaught TypeError before a single mute stage was recorded.
+     Re-pointed: the crash can no longer happen — micTapPoint now refuses a NaN/off-screen point
+     and the stage FAILS instead of throwing — so the same mutant now shows as a tap aimed off
+     the screen. The mutation run said WRONG-CLAIM, which is right: it was still caught, by a
+     different assertion than this one named. */
   { suite: 'adb-sim', file: DV,
     why: 'the mute test reading the screen size it was given',
-    breaks: 'the run does not crash on the way into the mute test',
+    breaks: 'issue #1: the mic tap lands ON the screen',
     from: '    const W = size.w, H = size.h;',
     to:   '    const W = Number(size[1]), H = Number(size[2]);' },
 
