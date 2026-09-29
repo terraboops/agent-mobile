@@ -65,7 +65,8 @@
     "mute-webrtc": "node test/mute-webrtc.test.mjs",
     "webview-baseline": "node test/webview-baseline.test.mjs",
     "suite": "node test/run-suite.mjs",
-    "ice-path": "node test/ice-path.test.mjs"
+    "ice-path": "node test/ice-path.test.mjs",
+    "device-probe": "node test/device-probe.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

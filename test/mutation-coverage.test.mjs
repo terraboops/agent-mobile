@@ -171,6 +171,55 @@ ok('a suite with several entries mutates a different place each time', samePlace
     + 'to the part that is written literally in the suite source.');
 }
 
+/* ---- 5b-bis. no assertion may be true by arithmetic -----------------------------------------
+ *
+ * The literal-true gate above catches `ok(true, ...)`. It does not catch the same thing written
+ * as a comparison that cannot come out false, and this repo has produced three of those:
+ *
+ *   android-lint   `issues.length >= 0 && xml.includes(...)`   — a length is never negative, so
+ *                  half the assertion was decoration and the parser could return nothing.
+ *   adapter-fields `REQUIRED <= REAL` and `REQUIRED == (REAL - OMIT)` — both true by
+ *                  construction, since REQUIRED is assigned `REAL - OMIT` one line above.
+ *                  (Set algebra, so not matchable here; named so the gap is on the record.)
+ *
+ * What IS mechanically checkable is the count-never-negative family. A `.length >= 0`,
+ * `len(x) >= 0`, `.size >= 0` or `> -1` is always true and there is no honest use of one in an
+ * assertion: if the intent is "this parsed", say what it parsed into.
+ *
+ * The other half of the sweep that produced this — `len(a) < len(b)` standing in for a precise
+ * budget — is NOT gated, deliberately. The shape is legitimate ("fewer errors than events" is
+ * sometimes exactly the claim); what made two of them wrong was that the real claim was "once,
+ * then periodically", which no regex can tell from the outside. Both instances are fixed and
+ * carry a comment saying why; a gate here would be noise standing in for judgement. */
+{
+  const { readdirSync } = await import('node:fs');
+  /* Every suite source, .mjs AND .py — the two instances were one of each. */
+  const srcFiles = [];
+  for (const d of ['test', 'test/audit']) {
+    for (const f of readdirSync(join(REPO, d))) {
+      if (/\.(test\.mjs|test\.py|mjs)$/.test(f) && !/^(lib|audit)$/.test(f)) srcFiles.push(join(d, f));
+    }
+  }
+  for (const f of readdirSync(REPO)) if (/^test-.*\.mjs$/.test(f)) srcFiles.push(f);
+
+  const alwaysTrue = [];
+  for (const rel of srcFiles) {
+    let src;
+    try { src = readFileSync(join(REPO, rel), 'utf8'); } catch { continue; }
+    src.split('\n').forEach((line, i) => {
+      if (!/\bok\(|\bcheck\(/.test(line)) return;
+      if (/(?:\.length|\.size|\blen\([^)]*\))\s*>=\s*0\b/.test(line)
+          || /(?:\.length|\.size|\blen\([^)]*\))\s*>\s*-1\b/.test(line)) {
+        alwaysTrue.push(`${rel}:${i + 1}  ${line.trim().slice(0, 90)}`);
+      }
+    });
+  }
+  ok('no assertion compares a count against zero from below', alwaysTrue.length === 0,
+    alwaysTrue.join('\n       ')
+    + '\n       A count is never negative, so this half of the condition can never fail. Assert '
+    + 'what the count should BE, or drop it.');
+}
+
 /* ---- 5c. a mutation must not edit its own suite's test file ---------------------------------
  * Mutating the assertion instead of the code is a category error that cannot be caught by the
  * suite it belongs to: flip `ok(..., cond)` to `ok(..., true)` and the suite passes by

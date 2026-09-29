@@ -34,6 +34,8 @@ const SCOPEDGW = join(REPO, 'test/lib/scoped-gateway.mjs');
 const GRADLE_VARS = join(REPO, 'android/variables.gradle');
 const AEADTRIG = join(REPO, 'test/lib/aead-trigger.mjs');
 const ICEPATH = join(REPO, 'test/lib/ice-path.mjs');
+const LINTRPT = join(REPO, 'test/lib/lint-report.mjs');
+const DPROBE = join(REPO, 'test/lib/device-probe.mjs');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
  * instance's own copy, so the production adapter is never modified and never needs restoring. */
 const SCOPED_AD = join(homedir(), '.hermes/profiles/agentmobtest/plugins/agentmob/adapter.py');
@@ -1113,6 +1115,69 @@ export const MUTANTS = [
     breaks: 'a healthy run CLEARS the consecutive-failure count',
     from: '                        self._sidecar_fails = 0\n                        self._sidecar_wedged = False',
     to:   '                        self._sidecar_wedged = False' },
+
+  /* android-lint #3 — the PARSER, which until tonight had no claim on it that could fail. The
+     assertion read `issues.length >= 0 && xml.includes('<issues')`: a length is never negative,
+     so the whole thing reduced to "the file contains that string" and the regex could have
+     matched nothing at all. A gate that reports zero violations because it stopped parsing is
+     indistinguishable from a clean build, which is the worst shape a gate can take.
+
+     The first version of this entry pointed at the suite's own file, and the self-edit gate
+     refused it — correctly, and the justification I had written for the exception was a
+     rationalisation. The parser moved to test/lib/lint-report.mjs instead, where it is ordinary
+     code: breaking the <issue> pattern makes the parse come back empty while the document still
+     looks like a report, which is exactly the silent-blindness case, and the suite now carries
+     fixtures whose answers are known — including an EMPTY report, so a clean build can never
+     read the same as a broken parser. */
+  { suite: 'android-lint', file: LINTRPT,
+    why: 'the issue parser still extracting records from the report',
+    breaks: 'every <issue> in the report parsed into a record with an id',
+    from: "  return [...String(xml || '').matchAll(/<issue\\s+([^>]*?)>/gs)].map((m) => {",
+    to:   "  return [...String(xml || '').matchAll(/<issueXX\\s+([^>]*?)>/gs)].map((m) => {" },
+
+  /* respawn-escalation #6 — the FLAP report being periodic, the twin of #3's wedge report.
+     Both alarms answer the same question ("is this still happening?") and both have to answer
+     it without filling the log; #3 covers one, this covers the other. The class sweep found the
+     assertion behind this one written as `len(errors) < len(restarts)`, which escalating on all
+     but one restart still satisfies — the second copy of a shape I had already fixed once. */
+  { suite: 'respawn-escalation', file: AD,
+    why: 'reporting a flap periodically rather than on every restart',
+    breaks: 'does not spam an ERROR per restart',
+    from: '                        if first or self._flap_reports % _RESPAWN_ESCALATE_EVERY == 0:',
+    to:   '                        if True:' },
+
+  /* device-probe #1 — the MUTE READING, which is the evidence for issue #1 and so the most
+     expensive wrong answer in the device run. It used to be `/true/i` over three grepped lines:
+     any neighbouring field containing the word made the mic read as muted, verifying the claim
+     without measuring it. This makes the field match loose again in the same way. */
+  { suite: 'device-probe', file: DPROBE,
+    why: 'reading the mic-mute FIELD rather than the word true anywhere near it',
+    breaks: 'a neighbouring "true" does not make it muted',
+    /* The mutation has to be the ORIGINAL defect, not a near miss. A first attempt loosened
+       the field match to `mMicMute[\s\S]*?(true|false)` and came back MISSED — non-greedy, so
+       it still found the field's own value first. What the old code did was scan for the word
+       anywhere, so that is what this plants. */
+    from: '    /\\bmMicMute\\s*[:=]\\s*(true|false)\\b/i,',
+    to:   '    /(true)\\b/i,' },
+
+  /* device-probe #2 — SAID NOTHING is not SAID NO. A probe that returns false when the device
+     reported no mic-mute field at all turns "this Android version spells it differently" into
+     "the mute failed", and the two want opposite responses: rewrite the probe, or file the bug. */
+  { suite: 'device-probe', file: DPROBE,
+    why: 'distinguishing a device that said nothing from one that said no',
+    breaks: 'nothing reported is NULL, not false',
+    from: '  return null;\n}\n\n/** `dumpsys package <pkg>` → versionName, or null. */',
+    to:   '  return false;\n}\n\n/** `dumpsys package <pkg>` → versionName, or null. */' },
+
+  /* device-probe #3 — the TAP LANDING ON THE BUTTON. The mic sits gap + half a button above the
+     nav inset; drop the inset and on a 3-button-nav phone the tap lands on the navigation bar
+     instead. Nothing is pressed, nothing is reported, and the mute stage then says the mic is
+     not muted — which reads as issue #1 reproducing when in fact the run never touched it. */
+  { suite: 'device-probe', file: DPROBE,
+    why: 'the mic tap accounting for the navigation-bar inset',
+    breaks: 'a bigger nav bar moves the tap UP',
+    from: '    y: Math.round(h - (navPx + (micGapDp + micSizeDp / 2) * dens)),',
+    to:   '    y: Math.round(h - ((micGapDp + micSizeDp / 2) * dens)),' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

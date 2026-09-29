@@ -162,11 +162,18 @@ ok("the wedged flag is set for anything else to read", adapter._sidecar_wedged i
 # that escalation is PERIODIC: one when it first wedges, then one every _RESPAWN_ESCALATE_EVERY.
 # (The identical `len(a) < len(b)` shape was fixed in inbound-resilience earlier tonight; I did
 # not think to look for the second copy of it, and a mutation had to point here.)
+#
+# COUNT ONLY THE WEDGE LINES. A fast-failing sidecar trips BOTH alarms, so this capture also
+# holds FLAPPING errors — counting every ERROR made this assertion fail when the FLAP report's
+# periodicity was broken, which is scenario 3's claim, not this one. An assertion that fires on
+# someone else's regression is a mislabelled alarm.
+_wedge_errors = [m for m in errors if "WEDGED" in m]
 _esc_budget = 2 + adapter._sidecar_fails // mod._RESPAWN_ESCALATE_EVERY
 ok("it does NOT spam an ERROR on every single attempt",
-   len(errors) <= _esc_budget,
-   f"{len(errors)} errors for {adapter._sidecar_fails} attempts — periodic escalation allows "
-   f"at most {_esc_budget} (one on wedging, then every {mod._RESPAWN_ESCALATE_EVERY})")
+   len(_wedge_errors) <= _esc_budget,
+   f"{len(_wedge_errors)} wedge errors for {adapter._sidecar_fails} attempts — periodic "
+   f"escalation allows at most {_esc_budget} (one on wedging, then every "
+   f"{mod._RESPAWN_ESCALATE_EVERY})")
 ok("backoff is capped (the loop did not stall for minutes)", elapsed < 10,
    f"{elapsed:.1f}s")
 
@@ -269,8 +276,24 @@ ok("stay-up loop: ordinary lines report the window count",
    any("restart(s) in the last" in m for m in warns3), "; ".join(warns3[:2]))
 ok("stay-up loop: it BACKS OFF (does not keep restarting at the crash's own period)",
    any("Backing off to" in m for m in errors3), "; ".join(errors3[:1]))
+# The SECOND copy of `len(a) < len(b)` in this file — the first was the wedge escalation above.
+# "Fewer errors than restarts" is satisfied by escalating on all but one of them. The flap
+# report is periodic for the same reason the wedge one is, so it gets the same budget.
+# Budgeted against _flap_reports, not against restarts. Restarts overcount: flapping is only
+# declared once the rate window fills, so the early restarts produce no report at all and a
+# budget derived from them is slack enough to pass an alarm that fires EVERY time. Measured
+# against the reports themselves the two are far apart — periodic gives 1 + R//EVERY, per-report
+# gives R.
+_flap_errors = [m for m in errors3 if "FLAPPING" in m]
+_flap_budget = 1 + adapter3._flap_reports // mod._RESPAWN_ESCALATE_EVERY
+ok("stay-up loop: the flap was reported enough times to judge the rate",
+   adapter3._flap_reports >= 3, f"only {adapter3._flap_reports} flap report(s) — too few for "
+   "the periodicity assertion below to mean anything")
 ok("stay-up loop: does not spam an ERROR per restart",
-   len(errors3) < len(adapter3._restart_times), f"{len(errors3)} errors / {len(adapter3._restart_times)} restarts")
+   len(_flap_errors) <= _flap_budget,
+   f"{len(_flap_errors)} flap errors for {adapter3._flap_reports} flap report(s) — periodic "
+   f"reporting allows at most {_flap_budget} (one on detection, then every "
+   f"{mod._RESPAWN_ESCALATE_EVERY})")
 logger.removeHandler(cap3)
 
 # ---- 4. DISCRIMINATION: one genuine crash must not fire the alarm --------------------------

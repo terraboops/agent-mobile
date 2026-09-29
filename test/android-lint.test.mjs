@@ -26,6 +26,8 @@
 import { readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { gradle, ANDROID, resolveJdk } from './lib/android-build.mjs';
+import { parseLintIssues, countIssueTags, looksLikeReport, locationsFor }
+  from './lib/lint-report.mjs';
 
 let pass = 0; const fails = [];
 const ok = (name, cond, detail = '') => {
@@ -55,19 +57,42 @@ ok('lint wrote its report', existsSync(REPORT),
 if (!r.ok || !existsSync(REPORT)) { console.log(`\n${pass} passed, ${fails.length} failed`); process.exit(1); }
 
 const xml = readFileSync(REPORT, 'utf8');
-/* Each <issue id="..." severity="..."> may carry several <location> children. Count issues. */
-const issues = [...xml.matchAll(/<issue\s+([^>]*?)>/gs)].map((m) => {
-  const a = m[1];
-  const g = (k) => (new RegExp(`${k}="([^"]*)"`).exec(a) || [])[1];
-  return { id: g('id'), severity: g('severity'), message: g('message') };
-});
-ok('the report parsed into issues', issues.length >= 0 && xml.includes('<issues'),
-  'the XML did not look like a lint report');
+/* Parsing lives in test/lib/lint-report.mjs, with fixtures of its own — see the note there for
+ * why it could not stay inline. What is checked here is that the parser still agrees with the
+ * REAL report Gradle just produced: a regex that stops matching yields an empty list, and an
+ * empty list is a legitimate outcome for a clean build, so the two have to be told apart by
+ * comparing the parse against an independent count of the tags. */
+const issues = parseLintIssues(xml);
+const issueTags = countIssueTags(xml);
+ok('the report is a lint report', looksLikeReport(xml), 'the XML did not look like a report');
+ok('every <issue> in the report parsed into a record with an id',
+  issues.length === issueTags && issues.every((i) => !!i.id),
+  `${issueTags} <issue> tag(s) in the XML, ${issues.length} parsed, `
+  + `${issues.filter((i) => !i.id).length} with no id — the parser has gone blind`);
 
-/* Locations, so a violation can be pointed at. */
-const locsFor = (id) => [...xml.matchAll(new RegExp(`<issue\\s+id="${id}"[\\s\\S]*?</issue>`, 'g'))]
-  .flatMap((blk) => [...blk[0].matchAll(/file="([^"]*)"\s*(?:line="(\d+)")?/g)]
-    .map((l) => `${l[1].replace(/.*\/com\/agentmobile\/agent\//, '')}${l[2] ? ':' + l[2] : ''}`));
+/* POSITIVE CONTROL, so "0 issues" can never be mistaken for "parser broken". A fixture with
+ * known contents goes through the same function the real report does. */
+const FIXTURE = '<issues format="6">'
+  + '<issue id="NewApi" severity="Error" message="Call requires API level 33">'
+  + '<location file="/x/com/agentmobile/agent/KoCrypto.java" line="41"/></issue>'
+  + '<issue id="MissingPermission" severity="Warning" message="needs RECORD_AUDIO">'
+  + '<location file="/x/com/agentmobile/agent/MainActivity.java" line="7"/></issue></issues>';
+const fx = parseLintIssues(FIXTURE);
+ok('control: a known report parses into exactly its two issues', fx.length === 2, JSON.stringify(fx));
+ok('control: ids, severities and messages all come through',
+  fx[0].id === 'NewApi' && fx[0].severity === 'Error' && /API level 33/.test(fx[0].message || ''),
+  JSON.stringify(fx[0]));
+ok('control: locations are found and trimmed to the package',
+  locationsFor(FIXTURE, 'NewApi').join() === 'KoCrypto.java:41',
+  locationsFor(FIXTURE, 'NewApi').join());
+ok('control: an EMPTY report parses to nothing and still reads as a report',
+  parseLintIssues('<issues format="6"></issues>').length === 0
+  && looksLikeReport('<issues format="6"></issues>'),
+  'a clean build must be distinguishable from a broken parser');
+ok('control: a file that is not a report is not treated as one',
+  !looksLikeReport('<html><body>build failed</body></html>'));
+
+const locsFor = (id) => locationsFor(xml, id);
 
 const newApi = issues.filter((i) => i.id === 'NewApi');
 const inlined = issues.filter((i) => i.id === 'InlinedApi');

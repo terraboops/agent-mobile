@@ -43,6 +43,8 @@ import { discover, scanPorts, DEFAULT_SCAN_RANGES, parseTailscalePeer } from './
 import { typedTurn } from './lib/aead-trigger.mjs';
 import { localApkPreflight, APK } from './lib/apk-facts.mjs';
 import { classifyIcePath } from './lib/ice-path.mjs';
+import { parseDensity, parseSize, micTapPoint, stopTapX, parseMicMute, parseVersionName,
+         highestMajor, parseNavInset } from './lib/device-probe.mjs';
 import { logStamp, logSince as logSinceReal } from './lib/gateway-log.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -487,14 +489,14 @@ if (!DRY && serial) {
   const found = [];
   for (const pkg of providers) {
     const r = adb(['-s', serial, 'shell', 'dumpsys', 'package', pkg], { timeout: 30000 });
-    const v = /versionName=(\S+)/.exec(r.stdout || '');
-    if (v) found.push(`${pkg}=${v[1]}`);
+    const v = parseVersionName(r.stdout);
+    if (v) found.push(`${pkg}=${v}`);
   }
   /* The implementation actually in use, when the device will say. */
   const impl = adb(['-s', serial, 'shell', 'cmd', 'webviewupdate', 'query'], { timeout: 30000 });
   const implLine = (impl.stdout || '').split('\n')
     .find((l) => /current webview package/i.test(l)) || '';
-  const major = found.map((f) => Number((/=(\d+)/.exec(f) || [])[1])).filter(Boolean).sort((a, b) => b - a)[0];
+  const major = highestMajor(found);
   if (found.length) {
     stage('WebView version read from the device', 'verified',
       `${found.join(' ')} ${implLine.trim()}`.trim()
@@ -565,8 +567,8 @@ if (!DRY && serial) {
     '03-surface.png — check tiles render on var(--surface)/var(--ink)');
 
   /* ---- 5/6/7. speak, then mute MID-SENTENCE ------------------------------------------------ */
-  const dens = Number((sh('wm density').match(/(\d+)\s*$/) || [])[1] || 0) / 160;
-  const size = sh('wm size').match(/(\d+)x(\d+)\s*$/);
+  const dens = parseDensity(sh('wm density'));
+  const size = parseSize(sh('wm size'));
   const MIC_SIZE = Number((readFileSync(JAVA, 'utf8').match(/MIC_SIZE_DP\s*=\s*(\d+)/) || [])[1]);
   const MIC_GAP = Number((readFileSync(JAVA, 'utf8').match(/MIC_BOTTOM_GAP_DP\s*=\s*(\d+)/) || [])[1]);
 
@@ -576,9 +578,10 @@ if (!DRY && serial) {
     const W = Number(size[1]), H = Number(size[2]);
     /* Nav-bar inset in px, best effort. The mic is MIC_SIZE dp tall, so even a wrong inset
      * stays well inside the button: the tap aims at its centre, +-MIC_SIZE/2 dp of slack. */
-    const navPx = Number((sh('dumpsys window | grep -m1 -o "navigationBars.*frame=\\[[0-9]*,[0-9]*\\]\\[[0-9]*,[0-9]*\\]" | grep -o "[0-9]*\\]$" | grep -o "[0-9]*"') || 0)) || 0;
-    const tapX = Math.round(W / 2);
-    const tapY = Math.round(H - (navPx + (MIC_GAP + MIC_SIZE / 2) * dens));
+    const navPx = parseNavInset(sh('dumpsys window | grep -m1 navigationBars'));
+    const _tap = micTapPoint({ w: W, h: H, dens, navPx, micSizeDp: MIC_SIZE, micGapDp: MIC_GAP });
+    const tapX = _tap.x;
+    const tapY = _tap.y;
     stage('mic tap point from MainActivity constants', 'built',
       `(${tapX},${tapY}) — ${MIC_SIZE}dp button, gap ${MIC_GAP}dp, density ${dens}, nav ${navPx}px`);
 
@@ -636,18 +639,25 @@ if (!DRY && serial) {
       shot('05-after-mute.png');
 
       /* What the MIC tap must actually change: the device's mic-mute state. */
-      const micMuted = sh('dumpsys audio | grep -i "mic.*mute\|mMicMute" | head -3');
+      /* Read the FIELD, not the text. `/true/i` over grepped lines called the mic muted if the
+       * word appeared anywhere near it — including in a neighbouring field — which verifies
+       * issue #1 without measuring it. parseMicMute returns null when the device said nothing,
+       * which is a different verdict from "not muted" and gets a different line. */
+      const micRaw = sh('dumpsys audio | grep -i "mic.*mute\|mMicMute" | head -3');
+      const micMuted = parseMicMute(micRaw);
       stage('mute mid-sentence: the device reports the mic muted (issue #1)',
-        /true/i.test(micMuted) ? 'verified' : 'blocked',
-        micMuted ? micMuted.replace(/\s+/g, ' ').slice(0, 140)
-                 : 'dumpsys audio reported no mic-mute state');
+        micMuted === true ? 'verified' : 'blocked',
+        micMuted === null
+          ? `dumpsys audio reported no mic-mute field (probe may need updating): `
+            + `${String(micRaw).replace(/\s+/g, ' ').slice(0, 100)}`
+          : String(micRaw).replace(/\s+/g, ' ').slice(0, 140));
       stage('mute mid-sentence: the reply KEPT playing (muting the mic must not stop it)',
         'built', 'compare 04-speaking.png and 05-after-mute.png — the pill should still be lit');
 
       /* The interrupt is the control that truncates. Tap Stop, which the web layer renders at
        * the right of #ctrlbar: its centre sits one third of the bar's width in from the right
        * edge, on the same centreline as the mic (ctrlbar-geometry pins that to within 1dp). */
-      const stopX = Math.round(W - (66 * dens));
+      const stopX = stopTapX({ w: W, dens });
       const off4 = logSize();
       adb(['-s', serial, 'shell', 'input', 'tap', String(stopX), String(tapY)]);
       stage('tapped Stop mid-sentence', 'built', `(${stopX},${tapY})`);
