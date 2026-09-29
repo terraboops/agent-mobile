@@ -208,6 +208,10 @@ const finish = (code) => {
   const kind = reportKind(doc);
   if (kind.kind !== 'full') {
     console.log(`\n  THIS REPORT IS NOT A DEVICE VERIFICATION (${kind.kind}): ${kind.note}`);
+    if (kind.kind === 'not-reached') {
+      console.log('  Everything above is host-side preflight. The phone was never reached, so no '
+                + 'acceptance item moved.');
+    }
   }
   const verified = report.filter((r) => r.status === 'verified').length;
   const blocked = report.filter((r) => r.status === 'blocked').length;

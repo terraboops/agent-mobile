@@ -164,19 +164,41 @@ export function validateReport(obj) {
   return { ok: problems.length === 0, problems };
 }
 
+/** The stage that says whether the run ever got to the phone. */
+export const DEVICE_GATE = 'device authorised';
+
 /**
  * Was this report a full device pass, or something less? A partial pass must never read like a
  * verification, and "no failures" is not the same claim as "everything was attempted".
+ *
+ * NOT REACHED IS THE COMMON CASE AND IT WAS THE ONE THIS GOT WRONG. The first version defined
+ * "full" as "no skipped rows", and a real cold run — the first one ever driven end to end —
+ * produced exactly that: four host-side preflight stages verified, the device gate blocked, no
+ * skipped rows anywhere, and the file classified itself `full: 5 stage(s) attempted`. Nothing
+ * on the phone had been attempted at all. A report that says full while the device was never
+ * reached is worse than one that says nothing, because it is the file someone quotes tomorrow.
+ *
+ * So the gate stage decides it. Everything before that gate is host-side preflight, and passing
+ * preflight is not a device pass however many rows it fills.
  */
-export function reportKind(obj) {
+export function reportKind(obj, { gate = DEVICE_GATE } = {}) {
   const rows = (obj && Array.isArray(obj.report)) ? obj.report : [];
   if (obj && obj.dryRun) return { kind: 'dry-run', note: 'no device was touched' };
+  if (!rows.length) return { kind: 'empty', note: 'the report has no stages at all' };
+
+  const gateRow = rows.find((r) => r && r.name === gate);
+  if (!gateRow || gateRow.status === 'blocked' || gateRow.status === 'failed') {
+    return { kind: 'not-reached',
+             note: gateRow
+               ? `"${gate}" is ${gateRow.status}, so nothing on the phone was attempted — the `
+                 + `${rows.length} stage(s) here are host-side preflight`
+               : `"${gate}" never ran, so there is no evidence the phone was reached at all` };
+  }
   const skipped = rows.filter((r) => r && r.status === 'skipped');
   if (skipped.length) {
     return { kind: 'partial',
              note: `${skipped.length} stage(s) were never attempted: `
                  + `${skipped.map((r) => r.name).join(', ')}` };
   }
-  if (!rows.length) return { kind: 'empty', note: 'the report has no stages at all' };
   return { kind: 'full', note: `${rows.length} stage(s) attempted` };
 }

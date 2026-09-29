@@ -1493,7 +1493,7 @@ export const MUTANTS = [
      look the same tomorrow, and "no failures" is not the same claim as "everything ran". */
   { suite: 'run-facts', file: RFACTS,
     why: 'a report with skipped stages reading as partial, not full',
-    breaks: 'reads as partial, not full',
+    breaks: 'REACHED the phone but skipped phases reads as partial',
     from: '  const skipped = rows.filter((r) => r && r.status === \'skipped\');\n'
         + '  if (skipped.length) {',
     to:   '  const skipped = rows.filter((r) => r && r.status === \'skipped\');\n'
@@ -1507,6 +1507,18 @@ export const MUTANTS = [
     breaks: 'a REPEATED stage name is caught',
     from: '  const dupes = names.filter((n, i) => n && names.indexOf(n) !== i);',
     to:   '  const dupes = [];' },
+
+  /* run-facts #6 — NOT-REACHED not reading as a full pass, which is the verdict a real cold run
+     actually produces and the one this got wrong. The first version defined "full" as "no
+     skipped rows"; the first end-to-end cold run gave four host-side preflight stages verified,
+     the device gate blocked, and no skipped rows anywhere — so the file classified itself
+     `full: 5 stage(s) attempted` for a run that never touched the phone. Passing preflight is
+     not a device pass however many rows it fills, and this is the file someone quotes. */
+  { suite: 'run-facts', file: RFACTS,
+    why: 'a run that never reached the phone not reading as a verification',
+    breaks: 'does NOT read as full',
+    from: "  if (!gateRow || gateRow.status === 'blocked' || gateRow.status === 'failed') {",
+    to:   '  if (false) {' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

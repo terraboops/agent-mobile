@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { triggerAdequacy, invitesLongReply, validatePng, validateReport, reportKind,
-         NEEDED_SPEECH_S, STATUSES } from './lib/run-facts.mjs';
+         NEEDED_SPEECH_S, STATUSES, DEVICE_GATE } from './lib/run-facts.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 let pass = 0; const fails = [];
@@ -134,14 +134,49 @@ ok('a non-object report is caught', !validateReport(null).ok && !validateReport(
 ok('a report whose entries are not objects is caught',
   !validateReport({ ...good, report: ['a', 'b'] }).ok);
 
-/* and the distinction that matters most in the file */
-ok('a full pass reads as full', reportKind(good.report ? { ...good, report:
-  [{ name: 'a', status: 'verified' }] } : good).kind === 'full');
-ok('a pass with SKIPPED stages reads as partial, not full',
-  reportKind(good).kind === 'partial',
-  'a PARTIAL PASS must never read like a device verification');
+/* and the distinction that matters most in the file.
+ *
+ * NOT-REACHED is the common case and the one this got wrong. A real cold run — the first ever
+ * driven end to end rather than with --dry — produced four host-side preflight stages verified,
+ * the device gate blocked, and NO skipped rows. The first version defined "full" as "no skipped
+ * rows", so the file classified itself `full: 5 stage(s) attempted` for a run that never
+ * touched the phone. That is the file someone quotes tomorrow. */
+const reached = (rows) => ({ generated: new Date().toISOString(), dryRun: false, report: rows });
+const COLD = reached([{ name: 'APK present', status: 'verified' },
+                      { name: DEVICE_GATE, status: 'blocked',
+                        detail: 'no device after 111s: Wireless debugging is OFF' }]);
+ok('a run that never reached the phone does NOT read as full',
+  reportKind(COLD).kind === 'not-reached', JSON.stringify(reportKind(COLD)));
+ok('and it says the stages present were host-side preflight',
+  /preflight/.test(reportKind(COLD).note), reportKind(COLD).note);
+ok('a report with NO device gate at all is not-reached, not full',
+  reportKind(reached([{ name: 'APK present', status: 'verified' }])).kind === 'not-reached',
+  'a run that never even attempted the gate has no evidence the phone exists');
+ok('a FAILED gate is not-reached either',
+  reportKind(reached([{ name: DEVICE_GATE, status: 'failed' }])).kind === 'not-reached');
+ok('the real cold report on disk classifies as not-reached',
+  (() => { try {
+    const disk = JSON.parse(readFileSync(join(REPO, 'test/audit/out/device/device-verify.json'), 'utf8'));
+    return disk.dryRun || reportKind(disk).kind !== 'full'
+        || disk.report.some((r) => r.name === DEVICE_GATE && r.status === 'verified');
+  } catch { return true; } })(),
+  'a report on disk claims a full pass without a verified device gate');
+
+ok('a full pass reads as full',
+  reportKind(reached([{ name: DEVICE_GATE, status: 'verified' },
+                      { name: 'app launched', status: 'verified' }])).kind === 'full');
+ok('a pass that REACHED the phone but skipped phases reads as partial',
+  reportKind(reached([{ name: DEVICE_GATE, status: 'verified' },
+                      { name: 'app launched', status: 'skipped' }])).kind === 'partial',
+  'reaching the device is necessary for partial to be the right word — without it the run is '
+  + 'not a smaller version of a pass, it is not a pass');
 ok('the partial note names what was never attempted',
-  /b/.test(reportKind(good).note), reportKind(good).note);
+  /app launched/.test(reportKind(reached([{ name: DEVICE_GATE, status: 'verified' },
+    { name: 'app launched', status: 'skipped' }])).note));
+ok('the DEVICE_GATE name matches what device-verify actually emits',
+  new RegExp(`stage\\('${DEVICE_GATE}'`).test(dv),
+  `device-verify no longer emits a stage called "${DEVICE_GATE}", so every not-reached verdict `
+  + 'silently becomes "full" again');
 ok('a dry run reads as a dry run whatever it contains',
   reportKind({ ...good, dryRun: true, report: [{ name: 'a', status: 'verified' }] }).kind
   === 'dry-run',
@@ -162,7 +197,7 @@ ok('device-verify says when the file is not a device verification',
     const v = validateReport(disk);
     ok('the report last written to disk is well-formed', v.ok, v.problems.join('; '));
     ok('and its kind is stated rather than assumed',
-      ['full', 'partial', 'dry-run', 'empty'].includes(reportKind(disk).kind),
+      ['full', 'partial', 'not-reached', 'dry-run', 'empty'].includes(reportKind(disk).kind),
       JSON.stringify(reportKind(disk)));
   } else {
     ok('no report on disk yet, nothing to validate', true);

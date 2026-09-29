@@ -126,6 +126,14 @@ direct path means packets reached the handset just now, while `idle; offline` de
 control-plane session, which Android drops when the screen has been off a while. Refused on the
 LAN address means the same thing at the TCP layer — the host answered and nothing is bound.
 
+The cold seam — discovery through to verdict with no device present — has been rehearsed for
+real, not with `--dry`. That matters because `--dry` short-circuits every adb call, so the
+discovery walk, the tailnet probe, the connect attempts, the sweep and the blocked verdict had
+never actually executed in one pass. The rehearsal found one defect on its first run: the report
+classified itself as a FULL pass (`full: 5 stage(s) attempted`) because "full" meant "no skipped
+rows", and a cold run skips nothing — it just never gets past the gate. Four host-side preflight
+stages and a blocked device gate now read as `not-reached`, which is what they are.
+
 ### To resume, the phone needs exactly one thing
 
 **Settings → System → Developer options → Wireless debugging → ON.**
