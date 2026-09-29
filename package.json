@@ -70,7 +70,8 @@
     "font-stack": "node test/font-stack.test.mjs",
     "java-mic": "node test/java-mic.test.mjs",
     "stage-select": "node test/stage-select.test.mjs",
-    "run-facts": "node test/run-facts.test.mjs"
+    "run-facts": "node test/run-facts.test.mjs",
+    "stop-flush": "node test/stop-flush.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

@@ -191,7 +191,25 @@
       });
     },
     // Stop the running Hermes turn (echo of /stop). Not a user message.
+    //
+    // TWO HALVES, and only one of them used to happen. The interrupt stops the SENDER; audio
+    // already delivered to this phone keeps playing regardless, and on the WS fallback — which
+    // bursts the reply rather than pacing it — that could be the whole remainder. Stop appeared
+    // not to work, for seconds.
+    //
+    // The local flush goes FIRST and is not awaited: it is a direct call into the audio layer
+    // and takes effect immediately, whereas the interrupt is a round trip over the wire. Doing
+    // it the other way round would leave the buffered audio playing for the duration of that
+    // round trip, which is the part a person actually hears.
     stop: function () {
+      var P = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AgentChannel;
+      if (P && P.flushPlayback) {
+        try {
+          P.flushPlayback().then(function (r) {
+            if (r && r.dropped) console.log('[stop] flushed ' + r.dropped + ' queued frame(s)');
+          }).catch(function (e) { console.log('[stop] flushPlayback failed: ' + e); });
+        } catch (e) { console.log('[stop] flushPlayback threw: ' + e); }
+      }
       return window.__agent.send('{"cmd":"interrupt"}');
     },
   };

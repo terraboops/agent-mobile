@@ -42,6 +42,7 @@ const JFACTS = join(REPO, 'test/lib/java-facts.mjs');
 const SSEL = join(REPO, 'test/lib/stage-select.mjs');
 const RFACTS = join(REPO, 'test/lib/run-facts.mjs');
 const DACC = join(REPO, 'test/lib/device-acceptance.mjs');
+const BRIDGEJS = join(REPO, 'www/bridge.js');
 const PLUGINJ = join(REPO,
   'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
@@ -1541,6 +1542,58 @@ export const MUTANTS = [
     from: "  const moved = DEVICE_ACCEPTANCE.filter((a) => (a.stages || [])\n"
         + "    .some((s) => ['verified', 'built'].includes(byName.get(s)))).map((a) => a.id);",
     to:   '  const moved = [];' },
+
+  /* stop-flush #1 — the REPLY queue being cleared, which is the WS-burst case. The sidecar
+     bursts a reply on the WS fallback rather than pacing it, so the whole remainder can be
+     sitting in replyQueue when Stop is pressed: without this clear, Stop appears not to work
+     for seconds. The paced WebRTC path hides it, which is why the device run would have passed
+     over the top of it. */
+  { suite: 'stop-flush', file: PLUGINJ,
+    why: 'clearing the reply queue on Stop',
+    breaks: 'flush clears replyQueue',
+    from: '        replyQueue.clear();',
+    to:   '        /* replyQueue left alone */' },
+
+  /* stop-flush #2 — the AudioTrack's OWN buffer. Emptying the queues is not enough: the track
+     keeps a buffer of its own and plays it out regardless, and that last fraction of a second
+     is exactly the part someone notices when they press Stop. */
+  { suite: 'stop-flush', file: PLUGINJ,
+    why: 'flushing the hardware buffer, not just the queues',
+    breaks: 'flush also flushes the AudioTrack',
+    from: '        flushTrack(track);\n        flushTrack(playTrack);',
+    to:   '        /* tracks left to play out */' },
+
+  /* stop-flush #3 — RESUMING the track. flush() is only defined while paused, so the fix has to
+     pause first — and a track left paused has nowhere to play, which would turn a documented
+     gap into a silent phone. This is the half that makes a fix a regression. */
+  { suite: 'stop-flush', file: PLUGINJ,
+    why: 'the track playing again after it is flushed',
+    breaks: 'and resumes after',
+    from: '            t.flush();\n            t.play();',
+    to:   '            t.flush();' },
+
+  /* stop-flush #4 — the PRE-ROLL being re-armed. beginReplyBurst() pads a reply when it sees a
+     gap over 250ms; after a flush the next frame can arrive immediately, so the stamp is zeroed
+     to force the pad. Without it the reply after a Stop starts on an under-primed buffer and
+     clips — the bug this project already fixed once, reintroduced by the fix for another. */
+  { suite: 'stop-flush', file: PLUGINJ,
+    why: 'the reply after a Stop still getting its pre-roll',
+    breaks: 'the pre-roll stamp is reset',
+    from: '        lastReplyEnqMs = 0;',
+    to:   '        /* stamp left alone */' },
+
+  /* stop-flush #5 — the local flush happening BEFORE the wire round trip. The interrupt is a
+     round trip to the host; the buffered audio would keep playing for its duration, and that is
+     the part a person hears. Ordering is the whole value of doing it locally at all. */
+  { suite: 'stop-flush', file: BRIDGEJS,
+    why: 'flushing locally before waiting on the interrupt',
+    breaks: 'the local flush goes BEFORE the wire round trip',
+    /* The assertion is a SOURCE-ORDER check, so the mutation has to reorder the source — a
+       first version nulled the plugin handle instead, which leaves the text in place and came
+       back MISSED. Correctly: an order assertion is falsified by reordering, not by disabling. */
+    from: "      var P = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AgentChannel;",
+    to:   "      if (true) return window.__agent.send('{\"cmd\":\"interrupt\"}');\n"
+        + "      var P = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AgentChannel;" },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

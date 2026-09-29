@@ -309,6 +309,64 @@ public class AgentChannelPlugin extends Plugin {
         call.resolve();
     }
 
+    /**
+     * Stop playing what has ALREADY ARRIVED (the Stop control).
+     *
+     * The Stop button sends {"cmd":"interrupt"} to the agent, which stops the SENDER. It does
+     * nothing about audio that is already on this phone, and nothing here used to either: send()
+     * treats the payload as opaque and forwards it. The playback queues are deliberately
+     * unbounded — a fixed one silently dropped every reply longer than its capacity — so how
+     * much kept playing after a Stop depended entirely on the transport:
+     *
+     *   WebRTC downlink: the sidecar paces at 20ms/frame, so the queue is about one frame deep
+     *                    and the residue is the pre-roll plus the AudioTrack buffer.
+     *   WS fallback:     the sidecar BURSTS the reply, so the whole remainder can be sitting
+     *                    here. Stop appeared not to work, for seconds.
+     *
+     * Clearing the queues is not enough on its own: AudioTrack keeps its own buffer, so without
+     * flushing it the last fraction of a second still plays. Both, or the control is still a
+     * suggestion.
+     */
+    @PluginMethod
+    public void flushPlayback(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("dropped", flushPlaybackActual());
+        call.resolve(r);
+    }
+
+    /** @return how many queued frames were discarded, so the caller can report it. */
+    int flushPlaybackActual() {
+        int dropped = playQueue.size() + replyQueue.size();
+        playQueue.clear();
+        replyQueue.clear();
+        /* The next reply must not start on an under-primed buffer. beginReplyBurst() pads when
+         * it sees a gap over 250ms; zeroing the stamp makes the very next frame re-pad even if
+         * it arrives immediately after the Stop. */
+        lastReplyEnqMs = 0;
+        /* And stop gating the mic on a reply that is over. */
+        replyActiveUntil = 0;
+        flushTrack(track);
+        flushTrack(playTrack);
+        Log.i("AgentChannel", "playback flushed (" + dropped + " queued frame(s) dropped)");
+        return dropped;
+    }
+
+    /**
+     * AudioTrack.flush() is only defined while the track is PAUSED or STOPPED, so pause first
+     * and resume after — dropping the buffer without resuming would leave the next reply with
+     * nowhere to play.
+     */
+    private void flushTrack(AudioTrack t) {
+        if (t == null) return;
+        try {
+            if (t.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) t.pause();
+            t.flush();
+            t.play();
+        } catch (Exception e) {
+            Log.w("AgentChannel", "flushTrack: " + e);
+        }
+    }
+
     @PluginMethod
     public void isAudioRunning(PluginCall call) {
         JSObject r = new JSObject();
