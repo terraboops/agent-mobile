@@ -36,11 +36,20 @@ const APK = process.env.AGENTMOB_APK
 const PHONE_HOST = String(flag('--host', process.env.AGENTMOB_PHONE_HOST || '100.112.255.69'));
 const ADB_PORT = Number(process.env.AGENTMOB_ADB_PORT || 5039);
 const OUT = join(HERE, 'audit/out/device');
+/* Test seams. --tiers keeps a simulated run off the real network (the subnet tier sweeps the
+ * actual LAN); --pass-only scopes each pass to a phase so a run against a stand-in adb does
+ * not sit in 60-second waits for a sidecar handshake that cannot happen; the tick override lets
+ * a scripted "Allow" tap arrive in seconds rather than minutes. */
+const TIERS_ALLOWED = flag('--tiers', null) ? new Set(String(flag('--tiers')).split(',')) : null;
+const PASS_ONLY = flag('--pass-only', null);
+const TICK = Number(process.env.AGENTMOB_HANDOFF_TICK_S || TICK_S);
 mkdirSync(OUT, { recursive: true });
 
-const ADB = ['/opt/homebrew/bin/adb',
+/* AGENTMOB_ADB first, so a scripted stand-in can drive the paths no device has exercised —
+ * the USB serial and the unauthorized prompt had never run anywhere before it existed. */
+const ADB = [process.env.AGENTMOB_ADB, '/opt/homebrew/bin/adb',
              '/opt/homebrew/share/android-commandlinetools/platform-tools/adb', 'adb']
-  .find((p) => { try { execFileSync(p, ['version'], { stdio: 'ignore' }); return true; } catch { return false; } });
+  .filter(Boolean).find((p) => { try { execFileSync(p, ['version'], { stdio: 'ignore' }); return true; } catch { return false; } });
 if (!ADB) { console.error('device-handoff: no adb on PATH or in the SDK'); process.exit(2); }
 
 const adb = (args, timeout = 30000) => {
@@ -88,6 +97,13 @@ let found = null;                       // {tier, endpoint, note}
 let confirmed = null;                   // the endpoint that proved to be the right phone
 const rejected = new Set();             // candidates already shown not to be it
 const swept = new Set();                // hosts whose full range has been checked once
+/* A phone showing "Allow wireless debugging?" is not a rejection, it is a wait. It was handled
+ * as one: disconnected — tearing down the very connection whose prompt the user has to tap —
+ * and added to `rejected`, so nothing re-offered it. Reproduced against the scripted adb: an
+ * endpoint advertised once, Allow tapped three calls later, and the handoff never looked again
+ * and ended by saying Wireless debugging was OFF. */
+let awaiting = null;                    // {tier, endpoint, note} held while the prompt is up
+let awaitingSince = 0;
 const last = {};                        // tier -> elapsed seconds when it last ran
 let liveHosts = [];
 const deadline = t0 + HOURS * 3600 * 1000;
@@ -119,6 +135,10 @@ async function sweepSubnet(hosts, concurrency = 120) {
 }
 
 while (Date.now() < deadline && !confirmed) {
+  /* Re-check a phone that is waiting on its prompt BEFORE rediscovering anything: rediscovery
+   * may never offer it again (a sweep find is one event), and the connection is still up. */
+  if (awaiting && !found) found = awaiting;
+
   const peer = parseTailscalePeer(tsStatus(), PHONE_HOST);
   if (peer.lan) lastKnownLan = peer.lan;
   /* TWO DIFFERENT ADDRESSES, which one variable used to hold. `lastKnownLan` is the PHONE's,
@@ -127,9 +147,10 @@ while (Date.now() < deadline && !confirmed) {
   const selfLan = SELF_LAN;
   const plan = discoveryPlan({ elapsedS: elapsed(), last, liveHosts: liveHosts.map((h) => h.host),
                                hasTailnet: true });
+  if (TIERS_ALLOWED) plan.tiers = plan.tiers.filter((t) => TIERS_ALLOWED.has(t));
 
   /* --- usb: the only path that works with the toggle off ----------------------------------- */
-  if (plan.tiers.includes('usb')) {
+  if (!found && plan.tiers.includes('usb')) {
     last.usb = elapsed();
     const out = adb(['devices', '-l']).stdout || '';
     const usb = out.split('\n').slice(1)
@@ -199,8 +220,16 @@ while (Date.now() < deadline && !confirmed) {
    * sweep. "Continuing to look" was printed by a branch that could not continue. */
   if (found) {
     const cand = found.endpoint;
-    console.log(`  CANDIDATE ${cand} after ${Math.round(elapsed())}s — ${found.note}`);
-    if (found.detail) console.log(`    ${found.detail}`);
+    const recheck = awaiting && found === awaiting;
+    /* A re-check of a phone waiting on its prompt is not a new discovery, and printing it as
+     * one — "CANDIDATE ... via mDNS" every tick, when mDNS advertised it exactly once — made the
+     * log claim observations that were not made. Quiet, and at most every 30s. */
+    if (!recheck) {
+      console.log(`  CANDIDATE ${cand} after ${Math.round(elapsed())}s — ${found.note}`);
+      if (found.detail) console.log(`    ${found.detail}`);
+    } else if (Math.floor(elapsed() / 30) !== Math.floor((elapsed() - TICK) / 30)) {
+      console.log(`  [${Math.round(elapsed())}s] still waiting on "Allow" at ${cand}`);
+    }
     /* Shape first. adb connect on a malformed target fails in a way that reads like the phone
      * refusing, and the rewrite above dropped this check until the suite noticed. */
     let why = null;
@@ -215,8 +244,15 @@ while (Date.now() < deadline && !confirmed) {
     else if (!st.present) {
       why = 'adb does not list it as a device — an open port is not an adb endpoint';
     } else if (st.state === 'unauthorized') {
-      why = 'the device is UNAUTHORIZED: a real phone showing "Allow wireless debugging?". '
-          + 'Accept it on the handset; nothing here can answer that prompt. Still looking.';
+      if (!awaiting) {
+        awaitingSince = elapsed();
+        console.log(`  WAITING: ${cand} is a real phone showing "Allow wireless debugging?". Tap `
+          + 'Allow (and "Always allow from this computer") on the handset — nothing here can '
+          + 'answer it. The connection is being held open; no further step is needed after.');
+      }
+      awaiting = found;
+      found = null;
+      if (!confirmed) { await sleep(TICK * 1000); continue; }
     } else if (!st.ready) {
       /* `offline` after connecting to a random service is adb describing a socket it could not
        * speak to — not a phone with a prompt, which is what the first version implied. */
@@ -230,6 +266,10 @@ while (Date.now() < deadline && !confirmed) {
       if (id.ok) { confirmed = cand; console.log(`  CONFIRMED: ${id.why}\n`); }
       else why = id.why;
     }
+    if (confirmed) {
+      if (awaiting) console.log(`  (Allow was tapped after ${Math.round(elapsed() - awaitingSince)}s)`);
+      awaiting = null;
+    }
     if (!confirmed) {
       console.log(`  REJECTED: ${why}`);
       if (found.tier !== 'usb') adb(['disconnect', cand], 15000);
@@ -238,14 +278,20 @@ while (Date.now() < deadline && !confirmed) {
     }
   }
 
-  if (!confirmed) await sleep(TICK_S * 1000);
+  if (!confirmed) await sleep(TICK * 1000);
 }
 const endpoint = confirmed;
 
 let ran = 0;
 const results = [];
 if (confirmed) {
-  for (const p of passPlan({ apk: APK, wsFallback: WS })) {
+  const passes = passPlan({ apk: APK, wsFallback: WS }).map((p) => {
+    if (!PASS_ONLY) return p;
+    const a = [...p.args]; const i = a.indexOf('--only');
+    if (i >= 0) a.splice(i, 2);
+    return { ...p, args: [...a, '--only', String(PASS_ONLY)] };
+  });
+  for (const p of passes) {
     console.log(`\n=== ${p.name} — ${p.why}\n`);
     const r = spawnSync(process.execPath, [join(HERE, 'device-verify.mjs'), ...p.args],
       { stdio: 'inherit', env: { ...process.env, ...p.env }, timeout: 45 * 60 * 1000 });
@@ -254,12 +300,16 @@ if (confirmed) {
   }
 }
 
-const verdict = handoffVerdict({ found: !!confirmed, ranPasses: ran, elapsedS: elapsed() });
+const verdict = handoffVerdict({ found: !!confirmed, ranPasses: ran, elapsedS: elapsed(),
+                                awaiting: awaiting ? awaiting.endpoint : null });
 console.log(`\n  ${verdict.note}`);
-writeFileSync(join(OUT, 'device-handoff.json'), JSON.stringify({
+/* Same quarantine as device-verify: a handoff against a scripted adb is not a record of the phone. */
+const HANDOFF_LOG = join(OUT, process.env.AGENTMOB_ADB ? 'device-handoff.sim.json' : 'device-handoff.json');
+writeFileSync(HANDOFF_LOG, JSON.stringify({
+  simulated: !!process.env.AGENTMOB_ADB, awaitingAllow: awaiting ? awaiting.endpoint : null,
   generated: new Date().toISOString(), armedHours: HOURS, endpoint,
   foundVia: found ? { tier: found.tier, note: found.note } : null,
   liveHostsSeen: liveHosts.map((h) => h.host), ranPasses: ran, results, verdict: verdict.note,
 }, null, 2));
-console.log(`  handoff log -> ${join(OUT, 'device-handoff.json')}`);
+console.log(`  handoff log -> ${HANDOFF_LOG}`);
 process.exit(confirmed ? (results.every((r) => r.exit === 0) ? 0 : 1) : 3);

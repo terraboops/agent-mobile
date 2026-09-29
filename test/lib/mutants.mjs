@@ -44,6 +44,7 @@ const RFACTS = join(REPO, 'test/lib/run-facts.mjs');
 const DACC = join(REPO, 'test/lib/device-acceptance.mjs');
 const BRIDGEJS = join(REPO, 'www/bridge.js');
 const HANDOFF = join(REPO, 'test/lib/handoff.mjs');
+const HANDOFFRUN = join(REPO, 'test/device-handoff.mjs');
 const PLUGINJ = join(REPO,
   'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
@@ -1530,7 +1531,8 @@ export const MUTANTS = [
   { suite: 'device-stages', file: DACC,
     why: 'a report that never reached the phone contributing no device evidence',
     breaks: 'a DRY report contributes no device evidence',
-    from: "  const reached = !!report && report.dryRun !== true && !!gate && gate.status === 'verified';",
+    from: "  const reached = !!report && report.dryRun !== true && report.simulated !== true\n"
+        + "    && !!gate && gate.status === 'verified';",
     to:   '  const reached = true;' },
 
   /* device-stages #4 — and the counter not being stuck at zero. A computation that can never
@@ -1790,6 +1792,42 @@ export const MUTANTS = [
     breaks: 'a link-local autoconfig address is not it either',
     from: '  return o[0] === 10 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168);',
     to:   '  return o[0] !== 127;' },
+
+  /* adb-sim #1 — a SIMULATED run never counting as device evidence. The first run against the
+     scripted adb wrote device-verify.json as a real report and acceptanceCoverage then said
+     three acceptance items had moved: fabricated device evidence from the harness built to test
+     the harness. Of everything in this table, that is the worst available failure. */
+  { suite: 'adb-sim', file: DACC,
+    why: 'a report from a scripted adb moving no acceptance item',
+    breaks: 'acceptanceCoverage moves NOTHING from it',
+    from: "  const reached = !!report && report.dryRun !== true && report.simulated !== true",
+    to:   "  const reached = !!report && report.dryRun !== true" },
+
+  /* adb-sim #2 — the Allow prompt being a WAIT. Treated as a rejection it was disconnected —
+     tearing down the connection whose prompt the user has to tap — and never re-offered, so
+     tapping Allow went unnoticed for the rest of a six-hour arm. */
+  { suite: 'adb-sim', file: HANDOFFRUN,
+    why: 'an unauthorized phone being held, not dropped',
+    breaks: 'tapping Allow is noticed even though discovery never offers it again',
+    from: '  if (awaiting && !found) found = awaiting;',
+    to:   '  /* awaiting never re-checked */' },
+
+  /* adb-sim #3 — FOUND BUT WAITING having its own verdict. Without it the run said "Wireless
+     debugging is still off" about a phone that had it on and was showing a prompt, which sends
+     someone to the one setting that is already right. */
+  { suite: 'adb-sim', file: HANDOFF,
+    why: 'a phone waiting on Allow being reported as found',
+    breaks: 'the verdict says the phone was FOUND and is waiting on Allow',
+    from: '  if (!found && awaiting) {',
+    to:   '  if (false) {' },
+
+  /* adb-sim #4 — the USB path not falling through to the network one. The cable needs no
+     `adb connect`; a connect here means the serial was not recognised as a device. */
+  { suite: 'adb-sim', file: HANDOFFRUN,
+    why: 'the cable path being checked before any network path',
+    breaks: 'handoff usb: the cable is found without any network step',
+    from: "  if (!found && plan.tiers.includes('usb')) {",
+    to:   "  if (false && plan.tiers.includes('usb')) {" },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

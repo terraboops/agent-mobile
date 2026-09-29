@@ -75,7 +75,8 @@
     "ws-fallback": "node test/ws-fallback.test.mjs",
     "device-handoff": "node test/device-handoff.mjs",
     "handoff": "node test/handoff.test.mjs",
-    "dead-predicates": "node test/dead-predicates.mjs"
+    "dead-predicates": "node test/dead-predicates.mjs",
+    "adb-sim": "node test/adb-sim.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

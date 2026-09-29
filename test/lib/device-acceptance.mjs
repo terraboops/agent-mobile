@@ -289,10 +289,18 @@ export const BLOCKER =
  * @param {object|null} report the parsed device-verify.json, or null when none exists
  * @returns {{onHostOnly: string[], moved: string[], usable: boolean, why: string}}
  */
+/** Stages decided on this Mac, before or without the phone. Never evidence about the phone. */
+export const HOST_STAGES = new Set([
+  'the trigger phrase speaks for long enough to tap mid-sentence',
+  'APK present', 'APK minSdk matches the project declaration', 'APK declares its SDK levels',
+  'bundled web assets match www/', 'adb present', 'WS fallback forced for this run',
+]);
+
 export function acceptanceCoverage(report) {
   const rows = (report && Array.isArray(report.report)) ? report.report : [];
   const gate = rows.find((r) => r && r.name === 'device authorised');
-  const reached = !!report && report.dryRun !== true && !!gate && gate.status === 'verified';
+  const reached = !!report && report.dryRun !== true && report.simulated !== true
+    && !!gate && gate.status === 'verified';
   if (!reached) {
     return {
       onHostOnly: DEVICE_ACCEPTANCE.map((a) => a.id),
@@ -301,11 +309,16 @@ export function acceptanceCoverage(report) {
       why: !report ? 'no device report exists at all'
         : report.dryRun ? 'the only report is a DRY RUN — no device was touched, and its '
                         + '"verified" rows are host-side preflight'
+        : report.simulated ? 'the report is SIMULATED — adb was a scripted stand-in'
         : !gate ? 'the report has no device gate row, so it never attempted the phone'
         : `the device gate is ${gate.status} — the run never reached the phone`,
     };
   }
-  const byName = new Map(rows.map((r) => [r.name, r.status]));
+  /* And even in a report that DID reach the phone, host-side preflight is not device evidence.
+   * The trigger-phrase stage sits under native-mic-toggle because the mute test depends on it,
+   * but it is decided on this Mac before anything is touched — counting it moved the item on
+   * the strength of a string length. */
+  const byName = new Map(rows.filter((r) => !HOST_STAGES.has(r.name)).map((r) => [r.name, r.status]));
   const moved = DEVICE_ACCEPTANCE.filter((a) => (a.stages || [])
     .some((s) => ['verified', 'built'].includes(byName.get(s)))).map((a) => a.id);
   return {

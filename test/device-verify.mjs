@@ -152,8 +152,11 @@ mkdirSync(OUT, { recursive: true });
  * alternative is finding out eight minutes in. */
 const TRIG = triggerAdequacy(TRIGGER);
 
-const ADB = ['/opt/homebrew/bin/adb', '/opt/homebrew/share/android-commandlinetools/platform-tools/adb', 'adb']
-  .find((p) => { try { execFileSync(p, ['version'], { stdio: 'ignore' }); return true; } catch { return false; } });
+/* AGENTMOB_ADB first, so a scripted stand-in can drive the paths no device has exercised —
+ * the USB serial and the unauthorized prompt had never run anywhere before it existed. */
+const SIMULATED = !!process.env.AGENTMOB_ADB;
+const ADB = [process.env.AGENTMOB_ADB, '/opt/homebrew/bin/adb', '/opt/homebrew/share/android-commandlinetools/platform-tools/adb', 'adb']
+  .filter(Boolean).find((p) => { try { execFileSync(p, ['version'], { stdio: 'ignore' }); return true; } catch { return false; } });
 
 const report = [];
 const stage = (name, status, detail = '') => {
@@ -238,8 +241,14 @@ const finish = (code) => {
    * acceptance count computed from the file then counted host-side preflight stages as device
    * evidence. The artifact the whole device pass exists to produce, clobbered by an unrelated
    * test. Separate files, so a real report can only ever be replaced by another real one. */
-  const path = join(OUT, DRY ? 'device-verify.dry.json' : 'device-verify.json');
-  const doc = { generated: new Date().toISOString(), dryRun: DRY, report };
+  /* A SIMULATED run must never be mistaken for a device one. The first run against the scripted
+   * adb stand-in wrote device-verify.json with dryRun:false, and acceptanceCoverage promptly
+   * reported THREE acceptance items as moved — fabricated device evidence, from a harness built
+   * to test the harness. Any adb other than a real one marks the report simulated and writes
+   * it somewhere the device evidence never lives. */
+  const path = join(OUT, DRY ? 'device-verify.dry.json'
+                          : SIMULATED ? 'device-verify.sim.json' : 'device-verify.json');
+  const doc = { generated: new Date().toISOString(), dryRun: DRY, simulated: SIMULATED, report };
   writeFileSync(path, JSON.stringify(doc, null, 2));
   console.log(`report -> ${path}`);
   /* The file outlives the terminal, so its shape is checked as it is written rather than

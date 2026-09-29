@@ -198,7 +198,16 @@ export function passPlan({ apk = null, wsFallback = true } = {}) {
 }
 
 /** A line that cannot be mistaken for a device verification when no device ever appeared. */
-export function handoffVerdict({ found = false, ranPasses = 0, elapsedS = 0 } = {}) {
+export function handoffVerdict({ found = false, ranPasses = 0, elapsedS = 0,
+                                 awaiting = null } = {}) {
+  /* FOUND BUT WAITING is its own verdict. The phone was reached with wireless debugging ON and
+   * is showing a prompt; saying "Wireless debugging is still off" about it — which the first
+   * version did — sends someone to the one setting that is already right. */
+  if (!found && awaiting) {
+    return { armed: true, note: `the phone was FOUND at ${awaiting} and is showing "Allow wireless `
+      + `debugging?" — tap Allow on the handset. Nothing was run; the wait ended at `
+      + `${Math.round(elapsedS)}s with the prompt unanswered.` };
+  }
   if (!found) {
     return { armed: true, note: `no adb target after ${Math.round(elapsedS)}s — nothing was run. `
       + 'Wireless debugging is still off on the phone; this is the arming loop reporting that '

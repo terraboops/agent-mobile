@@ -184,6 +184,10 @@ export const DEVICE_GATE = 'device authorised';
 export function reportKind(obj, { gate = DEVICE_GATE } = {}) {
   const rows = (obj && Array.isArray(obj.report)) ? obj.report : [];
   if (obj && obj.dryRun) return { kind: 'dry-run', note: 'no device was touched' };
+  if (obj && obj.simulated) {
+    return { kind: 'simulated', note: 'adb was a scripted stand-in — every device stage here '
+           + 'describes a replay, not a phone' };
+  }
   if (!rows.length) return { kind: 'empty', note: 'the report has no stages at all' };
 
   const gateRow = rows.find((r) => r && r.name === gate);

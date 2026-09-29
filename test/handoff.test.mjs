@@ -265,8 +265,12 @@ ok('a rejected endpoint is remembered and not re-offered',
   'the same Plex port would be found again on every sweep');
 ok('the loop runs until a CONFIRMED device, not until any candidate',
   /while \(Date\.now\(\) < deadline && !confirmed\)/.test(src));
-ok('UNAUTHORIZED is described as a phone with a prompt',
-  /Allow wireless debugging/.test(src) && /UNAUTHORIZED/.test(src));
+/* This was a string match on the word UNAUTHORIZED, which the rewrite renamed to WAITING — a
+ * source check on a label, standing in for behaviour nothing executed. The behaviour is now
+ * RUN, against a scripted adb, in adb-sim; what stays here is the shape. */
+ok('an unauthorized phone is held as a WAIT with the Allow instruction',
+  /WAITING: .*Allow wireless debugging/.test(src) && /awaiting = found;/.test(src),
+  'see adb-sim for the executed version: advertised once, Allow tapped later, confirmed');
 ok('but an OFFLINE socket is not described as one',
   /answered TCP but does not speak adb/.test(src),
   'adb marks a random service offline after connecting to it; calling that an authorization '
