@@ -11,7 +11,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tickPlan, discoveryPlan, passPlan, usableEndpoint, handoffVerdict, subnetHosts,
          aliveFromProbe, foundVia, excludedHosts, endpointState, identityMatches,
-         hostSweepOrder, HOSTS_PER_TICK, TICK_S, LAN_SWEEP_EVERY_S,
+         hostSweepOrder, ownLanAddress, HOSTS_PER_TICK, TICK_S, LAN_SWEEP_EVERY_S,
          TAILNET_SWEEP_EVERY_S }
   from './lib/handoff.mjs';
 
@@ -166,6 +166,36 @@ ok('the sweep never includes this machine',
   excludedHosts({ selfLan: '192.168.10.55' }).has('192.168.10.55'),
   'it swept its own address and found a local service');
 ok('nor loopback', excludedHosts({}).has('127.0.0.1'));
+/* TWO ADDRESSES, ONE VARIABLE — the bug that made the exclusion do the opposite of its job.
+ * `lastKnownLan` held the PHONE's address, learned from tailscale. The same variable was used
+ * to derive the subnet and to exclude "self", so the moment the peer went active the exclusion
+ * removed THE PHONE from discovery and swept this Mac instead. Watched in a live run:
+ * `swept 192.168.10.55 full range` while .53 sat unexamined. */
+ok('this machine\'s address comes from the OS, not from tailscale',
+  ownLanAddress({ en0: [{ family: 'IPv4', internal: false, address: '192.168.10.55' }] })
+    === '192.168.10.55');
+ok('loopback is not this machine\'s LAN address',
+  ownLanAddress({ lo0: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }] }) === null);
+ok('a link-local autoconfig address is not it either',
+  ownLanAddress({ en0: [{ family: 'IPv4', internal: false, address: '169.254.1.1' }] }) === null,
+  'a self-assigned address means no DHCP, and deriving a /24 from it sweeps nothing real');
+ok('a tailnet address is not this machine\'s LAN address',
+  ownLanAddress({ utun: [{ family: 'IPv4', internal: false, address: '100.125.53.51' }] }) === null,
+  'the tailnet /24 is not a LAN and sweeping it is the slow path by another name');
+ok('numeric family 4 is understood as well as the string',
+  ownLanAddress({ en0: [{ family: 4, internal: false, address: '10.0.0.5' }] }) === '10.0.0.5');
+ok('the runner derives self from the OS',
+  /ownLanAddress\(networkInterfaces\(\)\)/.test(src),
+  'a flag or tailscale can name the wrong machine; the OS cannot');
+ok('and refuses to run without knowing it',
+  /cannot determine this machine/.test(src),
+  'guessing would sweep some other subnet entirely');
+ok('the phone address has its OWN flag, distinct from self',
+  /flag\('--phone-lan'/.test(src) && /const SELF_LAN = String\(flag\('--lan'/.test(src),
+  'one flag feeding both is how the exclusion came to exclude the phone');
+ok('the sweep excludes SELF, not the phone',
+  /excludedHosts\(\{ selfLan \}\)/.test(src) && /const selfLan = SELF_LAN;/.test(src));
+
 ok('the runner applies the exclusion',
   /excludedHosts\(\{ selfLan \}\)/.test(src) && /!skip\.has\(h\)/.test(src));
 
@@ -277,10 +307,11 @@ ok('discovery does not depend on knowing the phone\'s address',
   'a loop that polls one remembered IP misses a phone whose lease moved — which is what the '
   + 'first armed version did');
 ok('the sweep aims at THIS machine\'s subnet',
-  /const selfLan = lastKnownLan \|\| /.test(src));
-ok('--lan seeds it for a cold start',
-  /flag\('--lan'/.test(src) && /AGENTMOB_PHONE_LAN/.test(src),
-  'a fresh arming run against an already-idle phone would have nothing to remember');
+  /const selfLan = SELF_LAN;/.test(src) && /subnetHosts\(selfLan\)/.test(src),
+  'it used to be derived from whatever address was last seen, which tailscale made the phone\'s');
+ok('--phone-lan seeds the phone address for a cold start',
+  /flag\('--phone-lan'/.test(src) && /AGENTMOB_PHONE_LAN/.test(src),
+  'a fresh arming run against an already-idle phone would have nothing to prioritise');
 ok('the log says which subnet it swept and how many answered',
   /addresses on/.test(src) && /alive/.test(src),
   'a sweep that found 11 live hosts and one that found none are different situations, and '

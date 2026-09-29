@@ -266,3 +266,38 @@ export function identityMatches({ model = '', serial = '', expectModel = 'Pixel'
     : `model ${m} is not a ${expectModel} — refusing to install on a device this run did not `
       + 'mean to touch' };
 }
+
+/**
+ * This machine's own LAN address, from the OS.
+ *
+ * WHY NOT A FLAG OR tailscale. The runner had ONE variable doing two jobs: "this machine's
+ * address, to derive the subnet and to exclude" and "the phone's last known LAN address, to
+ * sweep first". tailscale reports the PHONE's address, so the moment the peer went active the
+ * variable became 192.168.10.53 — and the exclusion then removed THE PHONE from discovery while
+ * happily sweeping this Mac. Watched in a live run: `swept 192.168.10.55 full range`.
+ *
+ * The OS knows which address is ours and cannot be confused about it.
+ */
+export function ownLanAddress(interfaces) {
+  for (const addrs of Object.values(interfaces || {})) {
+    for (const a of addrs || []) {
+      const family = a.family === 4 || a.family === 'IPv4';
+      if (!family || a.internal) continue;
+      /* isPrivateAddr already excludes 169.254 — it admits only 10/8, 172.16/12 and
+       * 192.168/16 — so a separate link-local test here would be dead code that reads as
+       * the guarantee. A mutation aimed at one came back MISSED, which is how it was
+       * found; the third time this project has shipped a guard that cannot fire. */
+      if (isPrivateAddr(a.address)) return a.address;
+    }
+  }
+  return null;
+}
+
+/** RFC1918, reused from the ICE side of the house rather than written twice. */
+function isPrivateAddr(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(host || '').trim());
+  if (!m) return false;
+  const o = m.slice(1).map(Number);
+  if (o.some((n) => n > 255)) return false;
+  return o[0] === 10 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168);
+}

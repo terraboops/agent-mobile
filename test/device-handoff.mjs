@@ -17,13 +17,13 @@
 import { spawnSync, execFileSync } from 'node:child_process';
 import { existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { scanPorts, DEFAULT_SCAN_RANGES, parseMdnsServices, pickAdbEndpoints,
          parseTailscalePeer } from './lib/adb-discover.mjs';
 import { discoveryPlan, passPlan, usableEndpoint, handoffVerdict, subnetHosts,
          aliveFromProbe, foundVia, excludedHosts, endpointState, identityMatches,
-         hostSweepOrder, HOSTS_PER_TICK, TICK_S } from './lib/handoff.mjs';
+         hostSweepOrder, ownLanAddress, HOSTS_PER_TICK, TICK_S } from './lib/handoff.mjs';
 import { createConnection } from 'node:net';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -80,7 +80,10 @@ console.log('  Nothing here can flip it; this only removes the round trip afterw
  * first armed run: it went straight to the slow sweep against a phone whose LAN path was fine.
  *
  * So the last LAN address seen is kept, and --lan seeds it for a cold start. */
-let lastKnownLan = String(flag('--lan', process.env.AGENTMOB_PHONE_LAN || '')) || null;
+let lastKnownLan = String(flag('--phone-lan', process.env.AGENTMOB_PHONE_LAN || '')) || null;
+const SELF_LAN = String(flag('--lan', '')) || ownLanAddress(networkInterfaces());
+if (!SELF_LAN) { console.error('device-handoff: cannot determine this machine\'s LAN address'); process.exit(2); }
+console.log(`  self  ${SELF_LAN} (excluded from every sweep)`);
 let found = null;                       // {tier, endpoint, note}
 let confirmed = null;                   // the endpoint that proved to be the right phone
 const rejected = new Set();             // candidates already shown not to be it
@@ -118,7 +121,10 @@ async function sweepSubnet(hosts, concurrency = 120) {
 while (Date.now() < deadline && !confirmed) {
   const peer = parseTailscalePeer(tsStatus(), PHONE_HOST);
   if (peer.lan) lastKnownLan = peer.lan;
-  const selfLan = lastKnownLan || '192.168.10.55';
+  /* TWO DIFFERENT ADDRESSES, which one variable used to hold. `lastKnownLan` is the PHONE's,
+   * learned from tailscale; SELF is this machine's, from the OS. Conflating them made the
+   * exclusion remove the phone from discovery and sweep this Mac instead — watched live. */
+  const selfLan = SELF_LAN;
   const plan = discoveryPlan({ elapsedS: elapsed(), last, liveHosts: liveHosts.map((h) => h.host),
                                hasTailnet: true });
 

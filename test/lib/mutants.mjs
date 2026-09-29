@@ -1771,6 +1771,26 @@ export const MUTANTS = [
     from: '  return [...hosts].sort((a, b) => rank(a) - rank(b) || hosts.indexOf(a) - hosts.indexOf(b));',
     to:   '  return [...hosts].filter((h) => !swept.has(h));' },
 
+  /* handoff #12 — THIS machine's address being a PRIVATE one. One variable held both "self" and
+     "the phone", and tailscale writes the phone's into it — so the exclusion removed the PHONE
+     from discovery and swept this Mac instead. Watched live: `swept 192.168.10.55 full range`
+     while .53 sat unexamined. Accepting a tailnet address here aims the /24 sweep at something
+     that is not a LAN at all. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'this machine’s own address being a LAN address, not a tailnet one',
+    breaks: 'a tailnet address is not this machine',
+    from: '      if (isPrivateAddr(a.address)) return a.address;',
+    to:   '      if (true) return a.address;' },
+
+  /* handoff #13 — and the range that decides it. 169.254 means no DHCP answered, and deriving a
+     /24 from it sweeps 254 addresses that do not exist for fifty seconds each; 100.x is the
+     tailnet, which is not a LAN. Widening the range is how both get through. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'the private-address range admitting only real LAN space',
+    breaks: 'a link-local autoconfig address is not it either',
+    from: '  return o[0] === 10 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168);',
+    to:   '  return o[0] !== 127;' },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',

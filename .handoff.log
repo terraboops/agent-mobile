@@ -4,4 +4,5 @@ device-handoff — arming for 6h, then two passes
   The phone needs Settings > System > Developer options > Wireless debugging ON.
   Nothing here can flip it; this only removes the round trip afterwards.
 
+  self  192.168.10.55 (excluded from every sweep)
   [4s] swept 253 addresses on 192.168.10.0/24 in 3.6s — 11 alive (subnet sweep due (254 hosts, one port — refusals are instant))
