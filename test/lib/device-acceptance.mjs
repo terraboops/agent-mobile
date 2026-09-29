@@ -184,7 +184,12 @@ export const DEVICE_ACCEPTANCE = [
              + 'playback as CUT SHORT with a reason naming the interrupt, no packet arrives '
              + 'after it, AND — the half that was missing — a NEW reply plays afterwards on the '
              + 'same surviving WebRTC peer, so Stop does not wedge the pipeline); mic-mute '
-             + '(Stop sends an interrupt and does not touch the mic)',
+             + '(Stop sends an interrupt and does not touch the mic); java-flush (the SHIPPED '
+             + 'flushPlaybackActual/flushTrack/beginReplyBurst bodies compiled with javac against '
+             + 'AudioTrack/Log/SystemClock stubs and run: both queues emptied, the count taken '
+             + 'before clearing, pause→flush→play on both tracks, the re-pad after Stop, and the '
+             + 'logged line parsed by the same code device-verify uses — two behaviour mutants '
+             + 'that stop-flush\'s source regexes passed are caught here)',
     stages: ['Stop flushed the audio already on the phone',
              'WS fallback forced for this run',
              'the sidecar honoured the forced WS downlink',

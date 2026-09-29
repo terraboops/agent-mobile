@@ -14,6 +14,7 @@ const AD = join(homedir(), '.hermes/plugins/agentmob/adapter.py');
 const SC = join(homedir(), '.hermes/plugins/agentmob/sidecar/index.mjs');
 const WRTC = join(homedir(), '.hermes/plugins/agentmob/sidecar/webrtc-media.mjs');
 const DV = join(REPO, 'test/device-verify.mjs');
+const ACPLUG = join(REPO, 'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
 const VF = join(REPO, 'test/lib/vendor-files.mjs');
 const AS = join(REPO, 'test/lib/adb-state.mjs');
 const ADIS = join(REPO, 'test/lib/adb-discover.mjs');
@@ -2015,4 +2016,32 @@ export const MUTANTS = [
     breaks: 'and does not build its verdict from the real tailscale',
     from: '  if (SIMULATED) return process.env.AGENTMOB_TAILSCALE || null;',
     to:   '  /* real tailscale even when simulated */' },
+  /* java-flush — the Stop flush EXECUTED: the shipped method bodies compiled with javac against
+   * stubs. The first two SURVIVED every one of stop-flush's 24 source-regex assertions; they are
+   * why this suite exists. */
+  { suite: 'java-flush', file: ACPLUG,
+    why: 'the dropped count being taken before the queues are cleared',
+    breaks: 'flush: the count is what WAS queued',
+    from: '        int dropped = playQueue.size() + replyQueue.size();\n        playQueue.clear();',
+    to:   '        playQueue.clear();\n        int dropped = playQueue.size() + replyQueue.size();' },
+  { suite: 'java-flush', file: ACPLUG,
+    why: 'the reply queue really being cleared, not merely mentioned',
+    breaks: 'reply-only (mic off): the reply queue is emptied',
+    from: '        replyQueue.clear();\n        /* The next reply',
+    to:   '        if (dropped < 0) replyQueue.clear();\n        /* The next reply' },
+  { suite: 'java-flush', file: ACPLUG,
+    why: 'the track being flushed while PAUSED',
+    breaks: 'flush: the duplex track was paused, FLUSHED while paused, then resumed',
+    from: '            t.flush();\n            t.play();',
+    to:   '            t.play();\n            t.flush();\n            t.play();' },
+  { suite: 'java-flush', file: ACPLUG,
+    why: 'the reply-only track being flushed as well as the duplex one',
+    breaks: 'reply-only: its track is flushed',
+    from: '        flushTrack(playTrack);',
+    to:   '        flushTrack(track == null ? null : track);' },
+  { suite: 'java-flush', file: ACPLUG,
+    why: 'the reply after a Stop re-padding',
+    breaks: 'the reply AFTER a Stop re-pads, even 10ms later',
+    from: '        lastReplyEnqMs = 0;',
+    to:   '        lastReplyEnqMs = SystemClock.elapsedRealtime();' },
 ];
