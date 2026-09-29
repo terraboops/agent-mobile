@@ -82,6 +82,8 @@ console.log('  Nothing here can flip it; this only removes the round trip afterw
  * So the last LAN address seen is kept, and --lan seeds it for a cold start. */
 let lastKnownLan = String(flag('--lan', process.env.AGENTMOB_PHONE_LAN || '')) || null;
 let found = null;                       // {tier, endpoint, note}
+let confirmed = null;                   // the endpoint that proved to be the right phone
+const rejected = new Set();             // candidates already shown not to be it
 const last = {};                        // tier -> elapsed seconds when it last ran
 let liveHosts = [];
 const deadline = t0 + HOURS * 3600 * 1000;
@@ -112,7 +114,7 @@ async function sweepSubnet(hosts, concurrency = 120) {
   return alive;
 }
 
-while (Date.now() < deadline && !found) {
+while (Date.now() < deadline && !confirmed) {
   const peer = parseTailscalePeer(tsStatus(), PHONE_HOST);
   if (peer.lan) lastKnownLan = peer.lan;
   const selfLan = lastKnownLan || '192.168.10.55';
@@ -161,7 +163,8 @@ while (Date.now() < deadline && !found) {
     for (const h of liveHosts) {
       const open = await scanPorts(h.host, DEFAULT_SCAN_RANGES,
                                    { concurrency: 800, timeoutMs: 1200 });
-      if (open.length) { found = foundVia('hosts', `${h.host}:${open[0]}`, `${open.length} port(s) open`); break; }
+      const fresh = open.map((p) => `${h.host}:${p}`).find((e) => !rejected.has(e));
+      if (fresh) { found = foundVia('hosts', fresh, `${open.length} port(s) open`); break; }
     }
     if (!found) console.log(`  [${Math.round(elapsed())}s] no wireless-debug port on any of `
       + `${liveHosts.length} live host(s) (${plan.why})`);
@@ -176,45 +179,58 @@ while (Date.now() < deadline && !found) {
     else console.log(`  [${Math.round(elapsed())}s] nothing open on ${PHONE_HOST}`);
   }
 
-  if (!found) await sleep(TICK_S * 1000);
+  /* CONFIRM IT HERE, and keep looking if it is not the phone.
+   *
+   * This lived after the loop, so the first candidate ended the run whatever it turned out to
+   * be: an arming run died after 39 seconds because a Plex server on .54:32400 answered a
+   * sweep. "Continuing to look" was printed by a branch that could not continue. */
+  if (found) {
+    const cand = found.endpoint;
+    console.log(`  CANDIDATE ${cand} after ${Math.round(elapsed())}s — ${found.note}`);
+    if (found.detail) console.log(`    ${found.detail}`);
+    /* Shape first. adb connect on a malformed target fails in a way that reads like the phone
+     * refusing, and the rewrite above dropped this check until the suite noticed. */
+    let why = null;
+    let st = { present: false, ready: false, state: null };
+    if (found.tier !== 'usb' && !usableEndpoint(cand)) {
+      why = `"${cand}" is not a host:port adb could connect to`;
+    } else {
+      if (found.tier !== 'usb') adb(['connect', cand], 30000);
+      st = endpointState(adb(['devices', '-l']).stdout, cand);
+    }
+    if (why) { /* already decided */ }
+    else if (!st.present) {
+      why = 'adb does not list it as a device — an open port is not an adb endpoint';
+    } else if (st.state === 'unauthorized') {
+      why = 'the device is UNAUTHORIZED: a real phone showing "Allow wireless debugging?". '
+          + 'Accept it on the handset; nothing here can answer that prompt. Still looking.';
+    } else if (!st.ready) {
+      /* `offline` after connecting to a random service is adb describing a socket it could not
+       * speak to — not a phone with a prompt, which is what the first version implied. */
+      why = `adb reports it ${st.state} — it answered TCP but does not speak adb`;
+    } else {
+      const model = adb(['-s', cand, 'shell', 'getprop', 'ro.product.model']).stdout.trim();
+      const serialProp = adb(['-s', cand, 'shell', 'getprop', 'ro.serialno']).stdout.trim();
+      const id = identityMatches({ model, serial: serialProp,
+                                   expectModel: String(flag('--model', 'Pixel')),
+                                   expectSerial: flag('--serial', null) });
+      if (id.ok) { confirmed = cand; console.log(`  CONFIRMED: ${id.why}\n`); }
+      else why = id.why;
+    }
+    if (!confirmed) {
+      console.log(`  REJECTED: ${why}`);
+      if (found.tier !== 'usb') adb(['disconnect', cand], 15000);
+      rejected.add(cand);
+      found = null;                    // keep arming; a Plex server is not the end of the run
+    }
+  }
+
+  if (!confirmed) await sleep(TICK_S * 1000);
 }
-const endpoint = found ? found.endpoint : null;
+const endpoint = confirmed;
 
 let ran = 0;
 const results = [];
-let confirmed = null;
-if (found && (found.tier === 'usb' || usableEndpoint(endpoint))) {
-  console.log(`\n  CANDIDATE ${endpoint} after ${Math.round(elapsed())}s — ${found.note}`);
-  if (found.detail) console.log(`  ${found.detail}`);
-
-  /* A SWEEP HIT IS A CANDIDATE, NOT A PHONE. An open port proves a socket answered; adb has to
-   * say it is a device, and the device has to say it is the right one. Skipping either is how a
-   * run installs this app on a stranger's handset and runs a mute test on it. */
-  if (found.tier !== 'usb') adb(['connect', endpoint], 30000);
-  const st = endpointState(adb(['devices', '-l']).stdout, endpoint);
-  if (!st.present) {
-    console.log(`  REJECTED: adb does not list ${endpoint} as a device — an open port is not `
-      + 'an adb endpoint. Continuing to look.');
-  } else if (!st.ready) {
-    console.log(`  ${endpoint} is present but ${st.state}. If it says unauthorized, accept the `
-      + '"Allow wireless debugging?" prompt on the phone; nothing here can answer it.');
-  } else {
-    const model = adb(['-s', endpoint, 'shell', 'getprop', 'ro.product.model']).stdout.trim();
-    const serialProp = adb(['-s', endpoint, 'shell', 'getprop', 'ro.serialno']).stdout.trim();
-    const id = identityMatches({ model, serial: serialProp,
-                                 expectModel: String(flag('--model', 'Pixel')),
-                                 expectSerial: flag('--serial', null) });
-    if (!id.ok) {
-      console.log(`  REFUSED: ${id.why}`);
-      adb(['disconnect', endpoint], 15000);
-    } else {
-      console.log(`  CONFIRMED: ${id.why}`);
-      confirmed = endpoint;
-    }
-  }
-  console.log('');
-}
-
 if (confirmed) {
   for (const p of passPlan({ apk: APK, wsFallback: WS })) {
     console.log(`\n=== ${p.name} — ${p.why}\n`);

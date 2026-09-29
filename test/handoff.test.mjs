@@ -184,6 +184,28 @@ ok('the runner checks adb BEFORE running anything',
   'the passes would run against whatever answered');
 ok('the runner checks the identity before running anything',
   /identityMatches\(\{ model/.test(src) && src.indexOf('identityMatches(') < src.indexOf('if (confirmed)'));
+/* AND KEEPS LOOKING. The confirmation lived AFTER the loop, so the first candidate ended the
+ * run whatever it was: an arming run died after 39 seconds because a Plex server on
+ * 192.168.10.54:32400 answered a sweep. "Continuing to look" was printed by a branch that could
+ * not continue. A six-hour waiter that gives up on the first open port is worse than none. */
+ok('a rejected candidate does NOT end the run',
+  /found = null;\s*\/\/ keep arming/.test(src),
+  'the loop exited on the first thing that answered a sweep');
+ok('the confirmation happens inside the arming loop',
+  src.indexOf('CANDIDATE ${cand}') < src.indexOf('const endpoint = confirmed;'),
+  'confirming after the loop means the loop can only ever consider one candidate');
+ok('a rejected endpoint is remembered and not re-offered',
+  /rejected\.add\(cand\)/.test(src) && /!rejected\.has\(e\)/.test(src),
+  'the same Plex port would be found again on every sweep');
+ok('the loop runs until a CONFIRMED device, not until any candidate',
+  /while \(Date\.now\(\) < deadline && !confirmed\)/.test(src));
+ok('UNAUTHORIZED is described as a phone with a prompt',
+  /Allow wireless debugging/.test(src) && /UNAUTHORIZED/.test(src));
+ok('but an OFFLINE socket is not described as one',
+  /answered TCP but does not speak adb/.test(src),
+  'adb marks a random service offline after connecting to it; calling that an authorization '
+  + 'prompt sends someone to look at a phone that is not involved');
+
 ok('an unconfirmed candidate runs NO passes',
   /if \(confirmed\) \{/.test(src) && /let confirmed = null;/.test(src),
   'a candidate and a confirmed device must not take the same path');
@@ -191,7 +213,7 @@ ok('and the verdict is computed from the CONFIRMED device, not the candidate',
   /handoffVerdict\(\{ found: !!confirmed/.test(src),
   'a rejected candidate would otherwise report as a device that was found');
 ok('a rejected candidate is disconnected again',
-  /adb\(\['disconnect', endpoint\]/.test(src),
+  /adb\(\['disconnect', cand\]/.test(src),
   'leaving a stranger\'s device attached to this adb server is not tidy');
 
 /* ---- THE VERDICT, which must not read like a pass -------------------------------------------- */
@@ -243,7 +265,8 @@ ok('the runner records which PATH found the phone',
   + 'the phone is');
 ok('it runs the passes from passPlan', /passPlan\(/.test(src));
 ok('it checks the endpoint before handing it to adb',
-  /usableEndpoint\(endpoint\)/.test(src),
+  /!usableEndpoint\(cand\)/.test(src)
+  && src.indexOf('!usableEndpoint(cand)') < src.indexOf("adb(['connect', cand]"),
   'adb connect on a malformed target fails in a way that reads like the phone refusing');
 ok('it stops its adb server on every exit path',
   /SIGINT[\s\S]{0,200}stopAdb\(\)/.test(src) && /process\.on\('exit', stopAdb\)/.test(src),
