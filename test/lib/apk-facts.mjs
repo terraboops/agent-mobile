@@ -60,9 +60,14 @@ export function apkBadging(apk = APK) {
  * Capacitor copies www/ verbatim into assets/public/, so this is a byte comparison. NOT mtime:
  * the mutation harness rewrites www/ files on restore, which makes timestamps useless here.
  *
+ * `wwwDir` is injectable ONLY so a test can point it at a fixture that deliberately differs.
+ * Without that, "every asset matches" is unfalsifiable: when they all match, a comparator that
+ * can never report a difference produces exactly the same green — which is how a mutation
+ * deleting the comparison went MISSED.
+ *
  * @returns {{ok, mismatched: string[], missing: string[], checked: number, reason?: string}}
  */
-export function bundleMatchesWww(apk = APK) {
+export function bundleMatchesWww(apk = APK, { wwwDir = join(REPO, 'www') } = {}) {
   if (!existsSync(apk)) return { ok: false, mismatched: [], missing: [], checked: 0,
                                  reason: 'no APK' };
   const tmp = mkdtempSync(join(tmpdir(), 'apk-facts-'));
@@ -72,7 +77,6 @@ export function bundleMatchesWww(apk = APK) {
     if (un.status !== 0) {
       return { ok: false, mismatched: [], missing: [], checked: 0, reason: 'unzip failed' };
     }
-    const wwwDir = join(REPO, 'www');
     const want = readdirSync(wwwDir).filter((f) => /\.(html|js|css)$/.test(f));
     const mismatched = [];
     const missing = [];

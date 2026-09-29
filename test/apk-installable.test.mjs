@@ -161,6 +161,28 @@ console.log(`\n  package ${pkg} | minSdk ${minSdk} target ${targetSdk} | signer 
  * check for its pre-device preflight. It was inline here first; two copies of a staleness check
  * drift, and then one of them goes green on a stale bundle and nobody knows which. */
 {
+  /* POSITIVE CONTROL: the comparator must be able to SAY a file differs.
+   *
+   * "every bundled asset matches" is satisfied by a comparator that can never find a mismatch —
+   * and when the APK is fresh, both look identical. Proven, not theorised: a mutation deleting
+   * the comparison went MISSED against this suite. So point it at a fixture whose contents
+   * deliberately differ and require it to notice. */
+  {
+    const { mkdtempSync, writeFileSync: wf, readdirSync: rd, copyFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const fixture = mkdtempSync(join(tmpdir(), 'apk-ctl-'));
+    const wwwDir = join(REPO, 'www');
+    for (const f of rd(wwwDir)) {
+      if (/\.(html|js|css)$/.test(f)) copyFileSync(join(wwwDir, f), join(fixture, f));
+    }
+    const victim = rd(fixture).find((f) => f.endsWith('.js'));
+    wf(join(fixture, victim), readFileSync(join(fixture, victim), 'utf8') + '\n/* drift */\n');
+    const ctl = bundleMatchesWww(APK, { wwwDir: fixture });
+    ok('the asset comparator DETECTS a file that differs', ctl.mismatched.includes(victim),
+      `mismatched=${JSON.stringify(ctl.mismatched)} — if it cannot report a difference, `
+      + '"every bundled asset matches" below is unfalsifiable');
+  }
+
   const bundle = bundleMatchesWww();
   ok('the APK bundle could be read', !bundle.reason, bundle.reason || '');
   ok('checked a meaningful number of web assets', bundle.checked >= 3, `${bundle.checked} files`);

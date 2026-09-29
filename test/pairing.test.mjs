@@ -9,6 +9,9 @@
 // open, and so a wrong-format pin (the realistic operator mistake) is a LOUD
 // failure rather than a phone that mysteriously stops connecting.
 import { genIdentity, identityId, clientHello, serverHandshake, clientFinish, verifyConfirm } from '../proto.js';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log('  ok  ', m); } else { fail++; console.log('  FAIL', m); } };
@@ -48,6 +51,27 @@ ok(connect(stranger, buildAllow('')).hs.clientId.length === 8,
   const allow = buildAllow(phoneId);
   ok(connect(phone, allow).hs.clientId === phoneId, 'pinned by short id: the phone connects');
   ok(threw(() => connect(stranger, allow), /unknown_client/), 'pinned by short id: a stranger is rejected as unknown_client');
+}
+
+/* THE MIRROR MUST MATCH THE SHIPPED CODE.
+ *
+ * buildAllow above is a REIMPLEMENTATION of the sidecar's allowlist, and the comment says
+ * "mirrored here exactly" — which is exactly the drift hazard this project has already been
+ * bitten by once (device-stages was exercising its own copy of the gateway-log helpers). A
+ * mirror that drifts proves the mirror works and says nothing about what ships: mutating the
+ * sidecar's allowlist could not fail this suite at all.
+ *
+ * So compare against the source. Not elegant, but it fails the moment the shipped line changes
+ * shape, which is the only thing that makes the cases below evidence about the product. */
+{
+  const shipped = readFileSync(
+    join(homedir(), '.hermes/plugins/agentmob/sidecar/index.mjs'), 'utf8');
+  const line = (/const clientAllow = [\s\S]{0,200}?;\n/.exec(shipped) || [''])[0];
+  ok(/_allowSet\.has\(id\)/.test(line) && /_allowSet\.has\(Buffer\.from\(pub\)\.toString\('base64'\)\)/.test(line),
+    'the mirrored allowlist matches the shipped one (id OR base64 SPKI)',
+    `shipped:\n       ${line.trim().replace(/\n/g, '\n       ')}\n`
+    + '       buildAllow above no longer reflects the sidecar — the cases below would be '
+    + 'testing a local copy and nothing that ships');
 }
 
 // 3. Pinned by base64 SPKI: same outcome (the log line prints this form).

@@ -26,6 +26,9 @@ const WVB = join(REPO, 'test/lib/webview-baseline.mjs');
 const DWATCH = join(REPO, 'test/device-watch.mjs');
 const WSF = join(REPO, 'transport/wsframes.js');
 const WIRE = join(homedir(), '.hermes/plugins/agentmob/sidecar/wire.mjs');
+const MAIN = join(REPO, 'android/app/src/main/java/com/agentmobile/agent/MainActivity.java');
+const APKFACTS = join(REPO, 'test/lib/apk-facts.mjs');
+const GRADLE_APP = join(REPO, 'android/app/build.gradle');
 const GS = join(REPO, 'test/lib/gateway-scope.mjs');
 const SCOPEDGW = join(REPO, 'test/lib/scoped-gateway.mjs');
 const GRADLE_VARS = join(REPO, 'android/variables.gradle');
@@ -411,6 +414,127 @@ export const MUTANTS = [
     from: '        if (conn.rxFails === RX_FAIL_ESCALATE) {',
     to: '        if (false) {' },
 
+  /* ctrlbar-geometry #2 — the INSET LISTENER, not the reserved band (entry #1). targetSdk 36
+     forces edge-to-edge, so android.R.id.content spans the navigation bar; without honouring the
+     systemBars inset the native mic parks its lower third inside the gesture strip, where a
+     swipe-up belongs to the system and the tap never arrives — and it drifts off Stop, which
+     DOES honour env(safe-area-inset-bottom). Both sides must read the same inset.
+     Targets the inset ARITHMETIC, not the listener registration: my first attempt wrapped the
+     listener in `if (false)`, which left the method name in the source — and the assertion greps
+     the Java for it, so the mutation changed behaviour while the test still matched. MISSED. */
+  { suite: 'ctrlbar-geometry', file: MAIN,
+    why: 'the native mic honouring the systemBars inset under edge-to-edge',
+    breaks: 'native mic margin is inset-aware',
+    from: '                int want = dp(MIC_BOTTOM_GAP_DP) + navBottom;',
+    to: '                int want = dp(MIC_BOTTOM_GAP_DP);' },
+
+  /* apk-installable #2 — the bundled-asset comparison, not package identity (entry #1).
+     My first version here flipped `===` to `!==` in the suite's OWN assertion. It went CAUGHT,
+     but it proved nothing about the product: mutating the judge is not testing the judged.
+     mutation-coverage now refuses that shape. This targets apk-facts, the library doing the
+     comparing — the check that caught an APK built BEFORE the issue #2 fix, which would have
+     installed cleanly and behaved exactly like the bug it was meant to fix. */
+  { suite: 'apk-installable', file: APKFACTS,
+    why: 'comparing bundled web assets against www/ byte for byte',
+    breaks: 'DETECTS a file that differs',
+    from: '      if (sha(inApk) !== sha(join(wwwDir, f))) mismatched.push(f);',
+    to: '      if (false) mismatched.push(f);' },
+
+  /* ice-config #2 — the TAILNET host candidate, not TURN parsing (entry #1). Neither side
+     enumerates the Tailscale utun on its own (ICE skips point-to-point interfaces, and Android
+     libwebrtc has the same blind spot), so a remote phone otherwise sees only a LAN candidate it
+     cannot route to. Stop advertising it and ICE stalls at `connecting` with the downlink
+     silently falling back to the WebSocket. */
+  { suite: 'ice-config', file: SC, restart: true,
+    why: 'advertising this host tailnet address as an extra ICE host candidate',
+    breaks: 'advertises the tailnet host candidate',
+    from: "  if (/^(1|true|yes)$/i.test(process.env.AGENTMOB_NO_TAILNET_ICE || '')) return [];",
+    to: '  if (true) return [];' },
+
+  /* mic-mute #2 — issue #1's CORE claim, not the re-entrancy guard (entry #1). Uplink and
+     downlink are separate directions; muting yourself must not silence the agent. Make the mute
+     path clear the speaking widget and the surface stops indicating a reply the moment you mute,
+     which is the bug users actually hit. */
+  { suite: 'mic-mute', file: BRIDGE,
+    why: 'muting the mic leaving the agent-speaking indicator alone',
+    breaks: 'reply KEPT PLAYING',
+    from: "      if (!running) ring.classList.remove('pulse');",
+    to: "      if (!running) { ring.classList.remove('pulse'); var _b = document.getElementById('agentSpeech'); if (_b) _b.classList.remove('show'); }" },
+
+  /* webview-baseline #2 — COMMENT STRIPPING, not the floor comparison (entry #1). The prose
+     explaining this gate names the very features it scans for, so a scanner that reads comments
+     flags the explanation and the gate cries wolf until someone turns it off. */
+  { suite: 'webview-baseline', file: WVB,
+    why: 'scanning code with comments stripped, so prose is not flagged',
+    breaks: 'named only in a JS comment',
+    from: "    ? codeOnly(raw, 'js')",
+    to: '    ? raw' },
+
+  /* discover-live #2 — the SKIPPED/SWEPT distinction, not detection (entry #1). device-verify
+     sweeps on a slower cadence than it polls mDNS, so most passes send nothing. Collapse the
+     skip sentinel into an empty result and a pass that never ran is reported as a measurement
+     that found nothing — a negative nobody took.
+     Targets the didScan flag rather than the skip BRANCH: removing the branch makes the suite
+     crash instead of assert, which the harness reports as a claimless failure. */
+  { suite: 'discover-live', file: ADIS,
+    why: 'telling a skipped sweep apart from one that found nothing',
+    breaks: 'still records that it really swept',
+    from: '    didScan = true;',
+    to: '    didScan = false;' },
+
+  /* android-lint #2 — the XML REPORT the gate reads, not the minSdk floor (entry #1).
+     My first attempt here mutated the suite's OWN assertion to `true`, which by construction
+     cannot fail that suite — a category error the harness returned as MISSED. A mutation must
+     change code UNDER TEST, never the test's own condition; mutation-coverage now refuses an
+     entry that edits its suite's own file. Without the report there is nothing to parse, and a
+     gate that cannot read its input must say so rather than pass. */
+  { suite: 'android-lint', file: GRADLE_APP,
+    why: 'lint writing its XML report where the gate reads it',
+    breaks: 'lint wrote its report',
+    from: '        xmlOutput = file("$projectDir/build/reports/agentmob-lint.xml")',
+    to: '        xmlOutput = file("$projectDir/build/reports/elsewhere.xml")' },
+
+  /* pairing #2 — pinning by SPKI, not by short id (entry #1 covers the gate itself). The
+     allowlist accepts either form; drop the base64 branch and an operator who pinned the full
+     public key locks the phone out of its own gateway while the config looks correct. */
+  { suite: 'pairing', file: SC, restart: true,
+    why: 'accepting a client pinned by full SPKI as well as by short id',
+    breaks: 'mirrored allowlist matches the shipped one',
+    from: "  ? (pub, id) => _allowSet.has(id) || _allowSet.has(Buffer.from(pub).toString('base64'))",
+    to: '  ? (pub, id) => _allowSet.has(id)' },
+
+  /* frames #2 — the CATCH-ALL that makes a malformed frame null rather than an exception.
+     Entry #1 covers unpack's length guard, in a different file.
+     Two earlier attempts here went MISSED, and the reason is worth recording: every recvBytes
+     assertion in that suite is "returns null, no throw", and the outer try/catch satisfies all
+     of them however many individual guards are removed. Removing a guard changes nothing the
+     suite can see. It takes a MULTI-EDIT to show it: drop the null-frame guard AND make the
+     catch rethrow, and recvBytes(null) finally throws instead of returning null. Defence in
+     depth again — the same shape as surface-live's two CSPs, and the same reason single-edit
+     entries kept reporting MISSED on a property that is perfectly falsifiable.
+     My first attempt removed the nonce-length check in recvBytes and went MISSED: a 5-byte
+     nonce fails decryption anyway, so that guard is redundant for the input the suite feeds.
+     Defence in depth again — the guard is real, but not what makes THAT assertion pass. */
+  { suite: 'frames',
+    why: 'turning a malformed frame into null instead of an exception',
+    breaks: 'no throw',
+    edits: [
+      { file: PROTO, from: '      if (!frame || !frame.nonce) return null;', to: '' },
+      { file: PROTO, from: '    } catch { return null; }', to: '    } catch (e) { throw e; }' },
+    ] },
+
+  /* surface-core #2 — the DEPENDENCY gate, not the storage cap (entry #1). A widget type whose
+     assets are not present must not register: the agent has to ship and test its deps first,
+     rather than register a type that renders a blank frame on the phone.
+     My first attempt here targeted chunk sequencing, which belongs to surface-chunks — this
+     suite never exercises it, so the mutation went MISSED. Guessing at a suite's claim instead
+     of reading it costs a full run each time. */
+  { suite: 'surface-core', file: SCORE,
+    why: 'refusing to register a widget type whose asset deps are missing',
+    breaks: 'widget type registered when dep present',
+    from: '          const missing = (deps || []).find(d => !assets[d]);',
+    to: '          const missing = true;' },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',
@@ -449,8 +573,9 @@ export const MUTANTS = [
     from: '            if (seq !== want) { abort(', to: '            if (false) { abort(' },
 
   { suite: 'surface-live', file: SHOST, why: 'the per-frame message queue',
-    breaks: 'throwing widget reports ok:false',
-    from: '    if (!v.ready) { v.queue.push(msg); return; }', to: '    if (false) { v.queue.push(msg); return; }' },
+    breaks: 'rendered at all (the sandbox received its queued messages)',
+    from: '    if (!v.ready) { v.queue.push(msg); return; }',
+    to: '    if (false) { v.queue.push(msg); return; }' },
 
   { suite: 'surface-protocol', file: SHOST, why: 'the per-frame message queue (protocol view)',
     breaks: 'throwing widget reports ok:false',

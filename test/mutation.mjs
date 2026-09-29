@@ -141,7 +141,22 @@ try {
         note: `the mutation target no longer exists in ${stale.map((o) => o.file.split('/').pop()).join(', ')}` });
       continue;
     }
-    for (const o of originals) writeFileSync(o.file, o.src.replace(o.from, o.to));
+    /* Apply edits GROUPED BY FILE, accumulating.
+     *
+     * Writing each edit from its own snapshot of the original meant two edits to the SAME file
+     * clobbered each other — only the last survived, and the entry reported MISSED on a mutation
+     * that works perfectly when applied by hand. surface-live's multi-edit passed only because
+     * its two edits happen to be in different files, so the bug stayed invisible.
+     *
+     * Found on frames, whose defence-in-depth claim needs two edits in proto.js. */
+    {
+      const byFile = new Map();
+      for (const o of originals) {
+        if (!byFile.has(o.file)) byFile.set(o.file, o.src);
+        byFile.set(o.file, byFile.get(o.file).replace(o.from, o.to));
+      }
+      for (const [file, content] of byFile) writeFileSync(file, content);
+    }
     const restoreEdits = () => { for (const o of originals) { try { writeFileSync(o.file, o.src); } catch {} } };
     /* Purge the bytecode cache. Python will happily load a __pycache__ .pyc compiled from the
      * UNMUTATED source, so the mutation silently does nothing and the suite is recorded as

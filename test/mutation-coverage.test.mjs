@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MUTANTS } from './lib/mutants.mjs';
+import { UTILITIES } from './lib/suite-list.mjs';
 import { codeOnly, langOf } from './lib/code-only.mjs';
 import { existsSync } from 'node:fs';
 
@@ -32,22 +33,10 @@ const ok = (name, cond, detail = '') => {
   else { fails.push(name); console.log(`  FAIL ${name}${detail ? '\n       ' + detail : ''}`); }
 };
 
-/**
- * Scripts that are NOT test suites. Each needs a reason, because "it is not a suite" is a
- * judgement and an unexplained one is indistinguishable from an oversight.
- */
-const UTILITIES = {
-  gateway: 'runs the dev gateway; not a test',
-  'device-watch': 'a long-running watcher that waits for a phone to connect',
-  'device-verify': 'the on-device run; blocked on hardware and asserts nothing without it',
-  'device-arm': 'device-verify with a long unattended wait; same code, no assertions of its own',
-  'ctrlbar-shot': 'renders screenshots for a human to look at; makes no assertions',
-  'ice-candidates': 'a reachability report; exits 0 by design whatever it finds',
-  'vendor-refresh': 'copies the installed plugin into vendor/; one-way, no assertions',
-  mutation: 'the mutation harness itself',
-  suite: 'the suite runner; it executes the others and asserts nothing of its own',
-  'mutation-coverage': 'this gate itself; mutating it would only test the test',
-};
+/* The canonical list lives in ./lib/suite-list.mjs, shared with the suite runner. It used to be
+ * duplicated there, with a comment claiming the two were kept in sync by an assertion that was
+ * never written — so a new utility could be added to one and not the other. A shared module makes
+ * that impossible instead of detectable. */
 
 /* An entry may carry several edits (defence in depth needs them — see mutants.mjs). Normalise
  * once so every check below reads one shape. */
@@ -150,6 +139,33 @@ ok('a suite with several entries mutates a different place each time', samePlace
   const tooVague = MUTANTS.filter((m) => typeof m.breaks === 'string' && m.breaks.trim().length < 8);
   ok('no `breaks` value is too short to identify one assertion', tooVague.length === 0,
     tooVague.map((m) => `${m.suite}: "${m.breaks}"`).join(', '));
+}
+
+/* ---- 5c. a mutation must not edit its own suite's test file ---------------------------------
+ * Mutating the assertion instead of the code is a category error that cannot be caught by the
+ * suite it belongs to: flip `ok(..., cond)` to `ok(..., true)` and the suite passes by
+ * definition, so the harness reports MISSED and the entry looks like a weak test rather than a
+ * malformed entry. I made exactly that mistake on android-lint.
+ *
+ * Mutating a LIBRARY the suite exercises is fine and common here — gateway-scope tests
+ * test/lib/gateway-scope.mjs. What is never fine is editing the file that holds the assertions
+ * doing the judging. */
+{
+  const selfEdits = [];
+  for (const m of MUTANTS) {
+    for (const e of editsOf(m)) {
+      /* By PATH, not basename. test/lib/adb-state.mjs is the library the adb-state suite
+       * exercises — mutating it is the point. test/adb-state.test.mjs is the suite itself. */
+      const rel = e.file.replace(REPO + '/', '');
+      if (rel === `test/${m.suite}.test.mjs` || rel === `test/${m.suite}.mjs`
+          || rel === `test/audit/${m.suite}.mjs`) {
+        selfEdits.push(`${m.suite} -> ${rel}`);
+      }
+    }
+  }
+  ok('no mutation edits the test file of the suite it belongs to', selfEdits.length === 0,
+    `${selfEdits.join(', ')} — mutating an assertion cannot fail the suite that owns it; `
+    + 'point the entry at the code under test instead');
 }
 
 /* ---- 6. every mutation must change EXECUTABLE CODE -----------------------------------------

@@ -167,7 +167,17 @@ const feedback = await page.waitForFunction(() => {
 }, null, { timeout: 5000 });
 const probeKeys = await feedback.jsonValue();
 ok(probeKeys.includes('probe_x'), 'test_widget mounted a probe viewport');
-await page.waitForFunction(() => window.__surfaceRender('probe_x') !== '', null, { timeout: 5000 });
+/* A timeout here used to ESCAPE as an unhandled rejection and kill the suite.
+ *
+ * That matters beyond tidiness: the mutation entry covering the per-frame message queue was
+ * "caught" by this crash rather than by any assertion, so the harness recorded a failure with no
+ * named claim. A suite that dies proves something changed; a suite that FAILS says what. */
+const rendered = await page.waitForFunction(
+  () => window.__surfaceRender('probe_x') !== '', null, { timeout: 5000 },
+).then(() => true).catch(() => false);
+ok(rendered, 'test_widget rendered at all (the sandbox received its queued messages)',
+  'nothing was rendered within 5s — messages sent before the frame was ready were dropped '
+  + 'instead of queued');
 ok((await page.evaluate(() => window.__surfaceRender('probe_x'))).includes('v=7'), 'test_widget rendered props (v=7) in sandbox');
 ok((await page.evaluate(() => window.__surfaceRender('probe_x'))).includes('loaded-from-asset-store'), 'test_widget used the registered asset');
 await push({ type: 'surface', ops: [{ op: 'remove_widget', key: 'probe_x' }] });

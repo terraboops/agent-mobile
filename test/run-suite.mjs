@@ -27,11 +27,10 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(REPO, 'test', 'audit', 'out', 'suite-failures');
 mkdirSync(OUT, { recursive: true });
 
-/* Not suites. Kept in sync with mutation-coverage's UTILITIES by asserting below, so the two
- * cannot drift apart silently. */
-const SKIP = new Set(['gateway', 'device-watch', 'device-verify', 'device-arm', 'ctrlbar-shot',
-                      'ice-candidates', 'vendor-refresh', 'mutation', 'mutation-coverage',
-                      'suite']);
+/* Not suites. The list is shared with mutation-coverage via ./lib/suite-list.mjs, so the gate and
+ * the runner cannot disagree about what counts as a suite. It was duplicated here, under a comment
+ * claiming an assertion kept them aligned — there was no such assertion. */
+import { UTILITY_NAMES as SKIP } from './lib/suite-list.mjs';
 
 const scripts = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).scripts || {};
 const suites = Object.keys(scripts).filter((s) => !SKIP.has(s));
@@ -105,14 +104,18 @@ console.log(`live plugin: sidecar ${before.sidecar} -> ${after.sidecar}, `
   + `adapter ${before.adapter} -> ${after.adapter}`
   + `${before.sidecar === after.sidecar && before.adapter === after.adapter
       ? ' (untouched)' : '  !! A SUITE MODIFIED THE LIVE PLUGIN'}`);
-{
-  const a = adbServers();
-  console.log(`adb servers listening: ${a.ports.join(', ') || 'none'}`
-    + `${a.armed ? ' (device-arm owns :5039)' : ''}`
-    + `${a.stray.length ? `  !! STRAY: ${a.stray.join(', ')}` : ''}`);
-}
+const adb = adbServers();
+console.log(`adb servers listening: ${adb.ports.join(', ') || 'none'}`
+  + `${adb.armed ? ' (device-arm owns :5039)' : ''}`
+  + `${adb.stray.length ? `  !! STRAY: ${adb.stray.join(', ')}` : ''}`);
 
+/* A stray adb server FAILS the run.
+ *
+ * It was printed with a loud !! and then ignored — the run exited 0 with a leaked server
+ * listening. Reporting without failing is the exact defect this suite has spent the day removing
+ * from other checks, sitting in the runner that reports them. A lingering adb server is
+ * something Terra has to find and kill later, which is precisely why the rule exists. */
 const dirty = before.pid !== after.pid || before.sidecar !== after.sidecar
-  || before.adapter !== after.adapter;
+  || before.adapter !== after.adapter || adb.stray.length > 0;
 if (failed.length) console.log(`\nfailing: ${failed.map((f) => f.suite).join(', ')}`);
 process.exit(failed.length || dirty ? 1 : 0);
