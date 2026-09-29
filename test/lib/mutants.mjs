@@ -2044,4 +2044,21 @@ export const MUTANTS = [
     breaks: 'the reply AFTER a Stop re-pads, even 10ms later',
     from: '        lastReplyEnqMs = 0;',
     to:   '        lastReplyEnqMs = SystemClock.elapsedRealtime();' },
+  /* java-mic, EXECUTED section. The first two SURVIVED every source-reading assertion java-mic
+   * had; the third is the refused-mute ordering bug that running the body found. */
+  { suite: 'java-mic', file: ACPLUG,
+    why: 'an UNMUTE reaching the hardware, not only a mute',
+    breaks: 'exec: mute then unmute reaches the HARDWARE both times, in order',
+    from: '            am.setMicrophoneMute(muted);\n            /* Recorded only',
+    to:   '            if (muted) am.setMicrophoneMute(muted);\n            /* Recorded only' },
+  { suite: 'java-mic', file: ACPLUG,
+    why: 'a MUTE being announced to the web layer',
+    breaks: 'exec: and the web layer is told both times — mic dead, then live',
+    from: '        } catch (Exception e) { Log.w("AgentChannel", "setMicMuted: " + e); }\n        notifyAudioState();',
+    to:   '        } catch (Exception e) { Log.w("AgentChannel", "setMicMuted: " + e); }\n        if (!muted) notifyAudioState();' },
+  { suite: 'java-mic', file: ACPLUG,
+    why: 'a refused mute not being recorded as muted',
+    breaks: 'exec: a REFUSED mute is not recorded as muted — the hardware never took it',
+    from: '        try {\n            AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);\n            am.setMicrophoneMute(muted);',
+    to:   '        try {\n            micMuted = muted;\n            AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);\n            am.setMicrophoneMute(muted);' },
 ];

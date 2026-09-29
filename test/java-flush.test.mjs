@@ -22,13 +22,12 @@
  * THE LIMIT: the stubs are not Android. That AudioTrack.flush() on a real device empties the
  * hardware buffer, and that the result is silence, stays the handset's.
  */
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { methodBody } from './lib/java-facts.mjs';
 import { flushEvents } from './lib/device-probe.mjs';
+import { haveJavac, runHarness, JSON_HELPERS } from './lib/java-exec.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const JAVA = join(REPO, 'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
@@ -38,8 +37,7 @@ const ok = (name, cond, detail = '') => {
   else { fails.push(name); console.log(`  FAIL ${name}${detail ? '\n       ' + detail : ''}`); }
 };
 
-const javac = spawnSync('javac', ['-version'], { encoding: 'utf8' });
-if (javac.status !== 0) {
+if (!haveJavac()) {
   console.log('  no javac on PATH — this suite executes the shipped Java and cannot run without one');
   process.exit(1);
 }
@@ -95,9 +93,7 @@ public class Harness {
   private void flushTrack(AudioTrack t) {${bodies.flushTrack}}
   private boolean beginReplyBurst() {${bodies.beginReplyBurst}}
 
-  static String q(String s) { return "\\"" + s.replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"") + "\\""; }
-  static String list(List<String> l) { StringBuilder b = new StringBuilder("[");
-    for (int i = 0; i < l.size(); i++) { if (i > 0) b.append(','); b.append(q(l.get(i))); } return b.append(']').toString(); }
+${JSON_HELPERS}
   void fill(int p, int r) { for (int i = 0; i < p; i++) playQueue.offer(new short[AUDIO_FRAME]);
                             for (int i = 0; i < r; i++) replyQueue.offer(new short[AUDIO_FRAME]); }
   String state(String name, int ret, Throwable err) {
@@ -143,17 +139,10 @@ public class Harness {
 }
 `;
 
-const dir = mkdtempSync(join(tmpdir(), 'java-flush-'));
-writeFileSync(join(dir, 'Harness.java'), harness);
-const c = spawnSync('javac', ['-nowarn', '-d', join(dir, 'out'), join(dir, 'Harness.java')], { encoding: 'utf8', timeout: 120000 });
-ok('the shipped method bodies COMPILE against the stubs', c.status === 0, (c.stderr || '').split('\n').slice(0, 6).join('\n       '));
-let S = {};
-if (c.status === 0) {
-  const r = spawnSync('java', ['-cp', join(dir, 'out'), 'Harness'], { encoding: 'utf8', timeout: 60000 });
-  ok('and RUN', r.status === 0, (r.stderr || '').slice(0, 300));
-  for (const l of (r.stdout || '').split('\n').filter(Boolean)) { try { const j = JSON.parse(l); S[j.s] = j; } catch {} }
-}
-rmSync(dir, { recursive: true, force: true });
+const run = runHarness(harness);
+ok('the shipped method bodies COMPILE against the stubs', run.compiled, run.compileErr.split('\n').slice(0, 6).join('\n       '));
+ok('and RUN', run.ran, run.runErr.slice(0, 300));
+const S = run.out;
 
 const b = S['both-playing'] || {};
 ok('flush: BOTH queues are empty afterwards', b.play === 0 && b.reply === 0, JSON.stringify({ play: b.play, reply: b.reply }));

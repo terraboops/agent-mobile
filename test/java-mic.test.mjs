@@ -14,6 +14,8 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { methodBody, callArg, callsMethod, javaCode } from './lib/java-facts.mjs';
+import { haveJavac, runHarness, JSON_HELPERS } from './lib/java-exec.mjs';
+import { micMuteEvents } from './lib/device-probe.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PLUGIN = join(REPO, 'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
@@ -108,6 +110,89 @@ ok('control: a call named only in a COMMENT is not read as a call',
   'comments mentioning the bug would read as the bug');
 ok('control: a call named only in a STRING is not read as a call',
   callArg('Log.i("t", "calls .setMicrophoneMute(!muted) eventually");', 'setMicrophoneMute') === null);
+
+/* ---- EXECUTED. The assertions above read the source; attacked with behaviour mutants that
+ * keep the text, two defects passed every one of them:
+ *   - `if (muted) am.setMicrophoneMute(muted);` — UNMUTE never reaches the hardware. The mic
+ *     sticks muted for good while the call "passes the parameter straight through";
+ *   - `if (!muted) notifyAudioState();` — a MUTE is never announced, so the page shows a live
+ *     mic that is muted.
+ * So the shipped setMicMuted / nativeToggleMic / notifyAudioState bodies are compiled against
+ * AudioManager/Context/Activity/Log stubs and run. */
+console.log('\n  executed: the shipped bodies, compiled with javac and run\n');
+if (!haveJavac()) {
+  ok('javac is available to execute the shipped mic code', false, 'no javac on PATH');
+} else {
+  const notifyBody = methodBody(src, 'notifyAudioState');
+  ok('notifyAudioState is present in the shipped source', !!notifyBody);
+  const harness = `
+import java.util.*;
+class Context { static final String AUDIO_SERVICE = "audio";
+  Object getSystemService(String n) { return AUDIO_SERVICE.equals(n) ? Harness.am : null; } }
+class AudioManager { final List<Boolean> calls = new ArrayList<>(); boolean refuse;
+  void setMicrophoneMute(boolean m) { if (refuse) throw new SecurityException("MODIFY_AUDIO_SETTINGS denied"); calls.add(m); } }
+class Activity { void runOnUiThread(Runnable r) { r.run(); } }
+class Log { static final List<String> lines = new ArrayList<>();
+  static int i(String t, String m) { lines.add("I " + t + ": " + m); return 0; }
+  static int w(String t, String m) { lines.add("W " + t + ": " + m); return 0; }
+  static int w(String t, String m, Throwable e) { return w(t, m); }
+  static int e(String t, String m) { lines.add("E " + t + ": " + m); return 0; }
+  static int e(String t, String m, Throwable e) { return e(t, m); } }
+public class Harness {
+  static AudioManager am = new AudioManager();
+  public interface AudioSink { void onAudio(boolean running); }
+  private volatile boolean micMuted;
+  private volatile boolean connected = true;
+  private volatile AudioSink audioSink;
+  final List<Boolean> sunk = new ArrayList<>();
+  final Context ctx = new Context(); Context getContext() { return ctx; }
+  final Activity act = new Activity(); Activity getActivity() { return act; }
+  public void setMicMuted(boolean muted) {${setBody}}
+  public void nativeToggleMic() {${toggleBody}}
+  private void notifyAudioState() {${notifyBody}}
+${JSON_HELPERS}
+  String dump(String name, Throwable err) {
+    return "{\\"s\\":" + q(name) + ",\\"hw\\":" + list(am.calls) + ",\\"muted\\":" + micMuted
+      + ",\\"sunk\\":" + list(sunk) + ",\\"err\\":" + (err == null ? "null" : q(err.toString()))
+      + ",\\"log\\":" + list(Log.lines) + "}";
+  }
+  static Harness fresh() { am = new AudioManager(); Log.lines.clear(); Harness h = new Harness();
+    h.audioSink = h.sunk::add; return h; }
+  public static void main(String[] a) {
+    Harness h; Throwable err;
+    h = fresh(); err = null; try { h.setMicMuted(true); h.setMicMuted(false); } catch (Throwable e) { err = e; }
+    System.out.println(h.dump("mute-unmute", err));
+    h = fresh(); err = null; try { h.nativeToggleMic(); h.nativeToggleMic(); h.nativeToggleMic(); } catch (Throwable e) { err = e; }
+    System.out.println(h.dump("toggle3", err));
+    h = fresh(); am.refuse = true; err = null; try { h.setMicMuted(true); } catch (Throwable e) { err = e; }
+    System.out.println(h.dump("refused", err));
+  }
+}
+`;
+  const run = runHarness(harness);
+  ok('the shipped mic bodies COMPILE against the stubs', run.compiled, run.compileErr.split('\n').slice(0, 6).join('\n       '));
+  ok('and RUN', run.ran, run.runErr.slice(0, 300));
+  const mu = run.out['mute-unmute'] || {};
+  ok('exec: mute then unmute reaches the HARDWARE both times, in order',
+    JSON.stringify(mu.hw) === '[true,false]', `AudioManager saw ${JSON.stringify(mu.hw)}`);
+  ok('exec: and the web layer is told both times — mic dead, then live',
+    JSON.stringify(mu.sunk) === '[false,true]', `onAudio saw ${JSON.stringify(mu.sunk)}`);
+  ok('exec: the tracked state ends unmuted', mu.muted === false);
+  const ev = micMuteEvents((mu.log || []).map((l) => `09-29 00:00:00.000 1 1 ${l}`).join('\n'));
+  ok('exec: the lines it LOGS are the ones device-verify parses, muted then unmuted',
+    ev.length === 2 && ev[0].muted === true && ev[1].muted === false, JSON.stringify(mu.log));
+  const t3 = run.out.toggle3 || {};
+  ok('exec: the native button toggles — three taps are mute, unmute, mute',
+    JSON.stringify(t3.hw) === '[true,false,true]' && t3.muted === true, JSON.stringify(t3));
+  const rf = run.out.refused || {};
+  ok('exec: a refused mute does not throw out of the plugin', rf.err === null, rf.err);
+  ok('exec: a REFUSED mute is not recorded as muted — the hardware never took it',
+    rf.muted === false && JSON.stringify(rf.hw) === '[]', JSON.stringify({ hw: rf.hw, muted: rf.muted }));
+  ok('exec: and the page is told the mic is still LIVE, not that it went dead',
+    JSON.stringify(rf.sunk) === '[true]',
+    `onAudio saw ${JSON.stringify(rf.sunk)} — false means the badge says muted over a live mic`);
+  ok('exec: and is logged', (rf.log || []).some((l) => /^W AgentChannel: setMicMuted:/.test(l)), JSON.stringify(rf.log));
+}
 
 console.log(`\n${pass} passed, ${fails.length} failed`);
 if (fails.length) process.exit(1);

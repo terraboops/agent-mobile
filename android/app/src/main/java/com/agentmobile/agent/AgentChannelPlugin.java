@@ -407,9 +407,14 @@ public class AgentChannelPlugin extends Plugin {
      *  the reliable, path-independent mute. */
     public void setMicMuted(boolean muted) {
         try {
-            micMuted = muted;
             AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
             am.setMicrophoneMute(muted);
+            /* Recorded only once the hardware TOOK it. This was assigned first, so a refused
+             * mute left the state saying muted, notifyAudioState told the page the mic was dead,
+             * and the mic stayed live — the one lie a mute button must never tell. The next tap
+             * then "unmuted" a mic that was never muted. Found by running this body (java-mic's
+             * executed section) against an AudioManager that refuses. */
+            micMuted = muted;
             Log.i("AgentChannel", "mic " + (muted ? "MUTED" : "unmuted") + " (native)");
         } catch (Exception e) { Log.w("AgentChannel", "setMicMuted: " + e); }
         notifyAudioState();
