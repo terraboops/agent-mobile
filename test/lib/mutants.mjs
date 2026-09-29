@@ -967,6 +967,75 @@ export const MUTANTS = [
     from: '            log(np ? `webrtc ICE pair remote=${np.remote} local=${np.local || \'n/a\'}`',
     to:   '            log(np ? `webrtc selected ${np.remote} <- ${np.local || \'n/a\'}`' },
 
+  /* adb-discover #3 — REFUSED vs TIMEOUT, the distinction this whole device track turned on.
+     A refusal means the host answered and nothing is bound: the phone is up and adbd is off, so
+     the next move is a toggle. A timeout means nothing answered and proves nothing at all.
+     Conflate them and every diagnosis becomes "maybe the network" — which is how a watcher
+     polled for 3.4 hours printing a generic line while the LAN was answering ECONNREFUSED the
+     entire time. */
+  { suite: 'adb-discover', file: ADIS,
+    why: 'a refusal and a timeout being different answers',
+    breaks: 'refused and timeout are not conflated',
+    from: "  if (/refused/i.test(t)) return 'refused';",
+    to:   "  if (/refused/i.test(t)) return 'timeout';" },
+
+  /* adb-discover #4 — the IPv6 split. An address is cut at the LAST colon because an IPv6 host
+     carries its own; cut at the first and `[fd7a::1]:41641` becomes host `[fd7a` with a port
+     that does not parse, so a tailnet-only phone is invisible to discovery while the mDNS
+     record it needs is sitting right there. */
+  { suite: 'adb-discover', file: ADIS,
+    why: 'splitting host from port at the LAST colon, so IPv6 survives',
+    breaks: 'an IPv6 address is not mangled',
+    from: "    const cut = addr.lastIndexOf(':');",
+    to:   "    const cut = addr.indexOf(':');" },
+
+  /* adb-discover #5 — SKIPPED is not EMPTY, the same defect class as an assertion that cannot
+     fail. device-verify sweeps on a slower cadence than it polls mDNS, so most passes send no
+     packet; report those as "nothing open" and the log fills with a measurement nobody took,
+     which is exactly the shape that let a blind watcher look busy. */
+  { suite: 'adb-discover', file: ADIS,
+    why: 'a pass that swept nothing reporting nothing, not emptiness',
+    breaks: 'a measurement nobody took',
+    /* Aimed at the LOG, not the branch. Removing the branch made the suite throw on `null.length`
+       instead of asserting false, so the harness reported a failure with "(none named)" — caught
+       by a stack trace, which is not the same as caught by a claim. This says the untrue thing
+       instead of crashing, which is what the real regression would look like. */
+    from: "      log(`sweep of ${h} skipped this pass (slower cadence — mDNS is still being polled)`);",
+    to:   '      log(`nothing open on ${h}`);' },
+
+  /* adb-discover #6 — keeping the PAIRING record out. Android advertises both; adb connects to
+     only one, and reaching for the pairing port fails in a way that reads like the phone
+     refusing this host rather than the wrong record having been picked.
+
+     TWO LAYERS, AND THE CLAIM NAMES THE ONE THIS EDIT REACHES. "The connect service is chosen,
+     not the pairing one" is guaranteed twice over: the filter drops the pairing record, and the
+     comparator would demote it even if it survived. So no single edit falsifies that sentence —
+     loosening the filter alone still yields connect first, which is why this came back
+     WRONG-CLAIM rather than CAUGHT.
+
+     Rather than a two-edit entry that deletes the whole defence at once, the suite now asserts
+     each layer separately and each entry names its own: this one, that pairing never enters the
+     list at all; #7, that the comparator ranks TLS-connect above the plain _adb._tcp it would
+     actually be compared against. Getting here took two wrong aims — the comparator with the
+     fixture listing connect first (a stable sort proves nothing), then the same with it
+     reversed — both MISSED, and both worth recording because the obvious reading of a MISSED is
+     "weak assertion" when it can equally mean "you found the second guarantee". */
+  { suite: 'adb-discover', file: ADIS,
+    why: 'the pairing record never reaching the endpoint list',
+    breaks: 'filtered out entirely, not merely outranked',
+    from: "  const usable = services.filter((s) => /_adb(-tls-connect)?\\._tcp/.test(s.type));",
+    to:   "  const usable = services.filter((s) => /_adb/.test(s.type));" },
+
+  /* adb-discover #7 — and the tie-break itself, on the comparison it really makes: the TLS
+     record against the plain _adb._tcp that `adb tcpip` would create. Both pass the filter, so
+     this is the one place the sort order decides the outcome. */
+  { suite: 'adb-discover', file: ADIS,
+    why: 'ranking the TLS-connect record above the plain one',
+    breaks: 'the TLS-connect record outranks the plain one',
+    from: "  scored.sort((a, b) => a.score - b.score\n"
+        + "    || (/_adb-tls-connect/.test(b.type) ? 1 : 0) - (/_adb-tls-connect/.test(a.type) ? 1 : 0));",
+    to:   '  scored.sort((a, b) => a.score - b.score);' },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',

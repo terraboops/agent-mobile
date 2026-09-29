@@ -38,8 +38,50 @@ const ok = (name, cond, detail = '') => {
     svc[0].host === '192.168.1.42' && svc[0].port === 37129, JSON.stringify(svc[0]));
 
   const picks = pickAdbEndpoints(svc);
-  ok('mdns: the CONNECT service is chosen, not the pairing one',
+  ok('mdns: the CONNECT service is kept ahead of the pairing one',
     picks[0].type === '_adb-tls-connect._tcp', JSON.stringify(picks[0]));
+
+  /* THE ORDER IN THE FIXTURE ABOVE IS THE CONNECT SERVICE FIRST, so the assertion on it passes
+   * whether or not pickAdbEndpoints prefers anything — a stable sort leaves an already-correct
+   * list alone. Deleting the connect/pairing tie-break entirely left that assertion green.
+   * Found by mutation, not by reading.
+   *
+   * Android advertises both records and the order it advertises them in is not ours to choose,
+   * so the case that matters is the one where pairing comes first. Connecting to the pairing
+   * port fails in a way that reads like the phone refusing this host rather than the wrong
+   * record having been picked, which is an expensive thing to debug from a phone screen. */
+  const reversed = parseMdnsServices([
+    'List of discovered mdns services',
+    'adb-39091FDJH004TF-pairing\t_adb-tls-pairing._tcp\t192.168.1.42:41003',
+    'adb-39091FDJH004TF-vWDsdX\t_adb-tls-connect._tcp\t192.168.1.42:37129',
+  ].join('\n'));
+  ok('mdns: pairing listed first is still not the one chosen',
+    reversed.length === 2 && reversed[0].type === '_adb-tls-pairing._tcp',
+    'the reversed fixture did not parse in the order it was written, so the next assertion '
+    + 'would prove nothing');
+  ok('mdns: the CONNECT service is chosen, not the pairing one',
+    pickAdbEndpoints(reversed)[0].type === '_adb-tls-connect._tcp',
+    JSON.stringify(pickAdbEndpoints(reversed)[0]));
+  ok('mdns: the pairing record is filtered out entirely, not merely outranked',
+    !pickAdbEndpoints(reversed).some((p) => /pairing/.test(p.type)),
+    'a pairing endpoint that survives into the list can still be reached for by a later caller');
+
+  /* AND THE TIE-BREAK, which the two cases above do NOT exercise. The filter drops pairing
+   * outright, so the sort never sees it — a mutation aimed at the comparator came back MISSED
+   * because the claim it was aimed at is carried by the regex. What the comparator actually
+   * decides is _adb-tls-connect._tcp against the plain _adb._tcp, both of which pass the
+   * filter. Listed with the plain one first, so only the comparator can reorder it. */
+  const mixed = parseMdnsServices([
+    'adb-33250DLH2000CB-plain\t_adb._tcp\t192.168.1.42:5555',
+    'adb-33250DLH2000CB-vWDsdX\t_adb-tls-connect._tcp\t192.168.1.42:37129',
+  ].join('\n'));
+  ok('mdns: both the plain and the TLS record survive the filter',
+    mixed.length === 2 && pickAdbEndpoints(mixed).length === 2,
+    JSON.stringify(mixed));
+  ok('mdns: the TLS-connect record outranks the plain one',
+    pickAdbEndpoints(mixed)[0].type === '_adb-tls-connect._tcp',
+    'wireless debugging is TLS; picking the plain record first means connecting to a port that '
+    + 'only exists after `adb tcpip`, which is not the mode this phone is in');
 }
 {
   /* The address is split on the LAST colon — IPv6 carries its own. */
