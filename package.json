@@ -74,7 +74,8 @@
     "stop-flush": "node test/stop-flush.test.mjs",
     "ws-fallback": "node test/ws-fallback.test.mjs",
     "device-handoff": "node test/device-handoff.mjs",
-    "handoff": "node test/handoff.test.mjs"
+    "handoff": "node test/handoff.test.mjs",
+    "dead-predicates": "node test/dead-predicates.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

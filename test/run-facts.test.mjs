@@ -131,6 +131,12 @@ ok('a REPEATED stage name is caught',
   'two rows with one name means the later verdict silently replaces the earlier when anyone '
   + 'reads the file by name');
 ok('a non-object report is caught', !validateReport(null).ok && !validateReport('x').ok);
+/* AND SAYS SO. Without the typeof check a string still failed — by reporting that its
+ * `generated` field was missing, which is true and useless. The conjunct was live and nothing
+ * told the two apart, which is how a dead-predicate sweep flags it. */
+ok('a non-object report is reported as NOT AN OBJECT, not as missing fields',
+  validateReport('x').problems.join() === 'the report is not an object',
+  `got: ${validateReport('x').problems.join(' | ')}`);
 ok('a report whose entries are not objects is caught',
   !validateReport({ ...good, report: ['a', 'b'] }).ok);
 
@@ -182,6 +188,14 @@ ok('a dry run reads as a dry run whatever it contains',
   === 'dry-run',
   'a dry run with verified stages must not read as a device pass');
 ok('an empty report is not a pass', reportKind({ dryRun: false, report: [] }).kind === 'empty');
+/* And a MISSING one. The `obj &&` guard in reportKind had nothing behind it — a dead-predicate
+ * sweep removed it and every test still passed, because none of them passed null. A report that
+ * does not exist and one that exists and is empty are different situations, and the first is
+ * what a caller gets before any run has happened. */
+ok('no report at all does not throw, and is not a pass',
+  (() => { const k = reportKind(null); return k && k.kind !== 'full'; })(),
+  'reading device-verify.json before any run would crash the caller');
+ok('and neither does an undefined one', (() => { const k = reportKind(); return k && k.kind !== 'full'; })());
 ok('device-verify validates its own report as it writes it',
   /validateReport\(doc\)/.test(dv) && /REPORT IS MALFORMED/.test(dv));
 ok('device-verify says when the file is not a device verification',

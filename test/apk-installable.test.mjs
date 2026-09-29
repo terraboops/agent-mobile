@@ -21,7 +21,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bundleMatchesWww, declaredMinSdk, APK, DEBUG_APK, RELEASE_APK }
   from './lib/apk-facts.mjs';
-import { launcherActivity, canAmStart, parseAmStartRefusal, parseInstallFailure }
+import { launcherActivity, canAmStart, parseAmStartRefusal, parseInstallFailure,
+         parseActivities }
   from './lib/manifest-facts.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -119,6 +120,29 @@ ok('control: a component that is not in the manifest is refused',
   !canAmStart(xmltree, '.NoSuchActivity').ok
   && /does not exist/.test(canAmStart(xmltree, '.NoSuchActivity').reason),
   canAmStart(xmltree, '.NoSuchActivity').reason);
+/* A SIBLING ELEMENT ENDS THE ACTIVITY. The `/^E: /` half of that test had nothing behind it:
+ * every fixture had well-formed nesting, so dropping it — which would end an activity on any
+ * shallower line at all, including an attribute — changed nothing. A manifest with a provider
+ * after the activity is the ordinary case. */
+{
+  const TWO = ['  E: activity (line=1)',
+               '    A: http://schemas.android.com/apk/res/android:name(0x01010003)="com.x.Main" (Raw: "")',
+               '    A: http://schemas.android.com/apk/res/android:exported(0x01010010)=true',
+               '      E: intent-filter (line=4)',
+               '          E: category (line=5)',
+               '            A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.category.LAUNCHER" (Raw: "")',
+               '  E: provider (line=7)',
+               '    A: http://schemas.android.com/apk/res/android:name(0x01010003)="com.x.Provider" (Raw: "")',
+               '    A: http://schemas.android.com/apk/res/android:exported(0x01010010)=false'].join('\n');
+  const acts = parseActivities(TWO);
+  ok('control: a provider after the activity does not become part of it',
+    acts.length === 1 && acts[0].name === 'com.x.Main' && acts[0].exported === true,
+    JSON.stringify(acts));
+  ok('control: and the provider\'s exported=false does not overwrite the activity\'s',
+    canAmStart(TWO, '.Main').ok,
+    'a later element bleeding into the activity would report the launcher as not exported');
+}
+
 ok('control: an empty dump does not read as startable',
   !canAmStart('', dvComponent).ok && launcherActivity('') === null);
 

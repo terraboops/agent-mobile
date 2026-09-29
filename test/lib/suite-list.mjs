@@ -23,6 +23,9 @@ export const UTILITIES = {
     + 'It asserts nothing itself — its DECISIONS (the probe schedule, which passes to run, and '
     + 'a verdict that cannot read as a pass when nothing appeared) live in lib/handoff.mjs and '
     + 'are covered by the handoff suite',
+  'dead-predicates': 'a detector, not a suite: it removes each guard conjunct in the libs and '
+    + 'reports which ones no assertion can tell from their absence. It asserts nothing '
+    + 'itself — mutating it would only test the test',
   'ctrlbar-shot': 'renders screenshots for a human to look at; makes no assertions',
   'ice-candidates': 'a reachability report; exits 0 by design whatever it finds',
   'vendor-refresh': 'copies the installed plugin into vendor/; one-way, no assertions',

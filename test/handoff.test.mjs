@@ -120,6 +120,16 @@ ok('with a LAN path available the slow sweep gives way to the fast one',
   (() => { const p = tickPlan({ elapsedS: 99999, lastLanSweepS: 0, lastTailnetSweepS: 0,
                                 hasLan: true });
            return p.lanSweep && !p.tailnetSweep; })());
+/* The tailnet CADENCE, which had nothing behind it: every assertion varied lanSweep, never the
+ * clock, so removing the time check left the sweep firing on every tick — minutes of timeouts,
+ * repeatedly, crowding out the tiers that answer in seconds. */
+ok('the tailnet sweep respects its cadence',
+  !tickPlan({ elapsedS: 10, lastTailnetSweepS: 0, hasLan: false }).tailnetSweep,
+  'it would run on every tick, and each run is minutes of timeouts');
+ok('and fires once the cadence is due',
+  tickPlan({ elapsedS: TAILNET_SWEEP_EVERY_S + 1, lastTailnetSweepS: 0, hasLan: false })
+    .tailnetSweep);
+
 ok('without one, the slow sweep is all there is',
   (() => { const p = tickPlan({ elapsedS: 99999, lastTailnetSweepS: 0, hasLan: false });
            return p.tailnetSweep; })());

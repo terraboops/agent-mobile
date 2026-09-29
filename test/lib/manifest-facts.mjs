@@ -44,8 +44,14 @@ export function parseActivities(xmltree) {
       continue;
     }
     if (!cur) continue;
-    /* A sibling or shallower element ends this activity. */
-    if (/^E: /.test(t) && ind <= depth) { out.push(cur); cur = null; continue; }
+    /* A sibling or shallower element ends this activity.
+     *
+     * The indent alone carries this. aapt2 indents an element's attributes DEEPER than the
+     * element, so any line at or above the activity's own indent is necessarily another
+     * element — an `/^E: /` test beside it could never change the answer, which a
+     * dead-predicate sweep showed by removing it with every assertion still passing. Removed
+     * rather than covered: asserting a case the format cannot produce is the same disease. */
+    if (ind <= depth) { out.push(cur); cur = null; continue; }
 
     /* The attribute's namespace is a URL, which contains colons — so the name is what
      * follows the LAST colon before the `(0x...)` id, not the first. A lazier pattern

@@ -111,12 +111,15 @@ export function parsePhaseSelector({ only = null, from = null } = {}) {
     return run;
   };
 
-  if (only !== null && only !== false) {
+  /* `flag()` returns null, a string, or true — never false — so a `!== false` guard here was
+   * unreachable defensive code. Asserting a case that cannot occur is the same disease as a
+   * guard that cannot fire, so it is removed rather than covered. */
+  if (only !== null) {
     const { names, error } = check(only, '--only');
     if (error) return bad(error);
     return { run: withImplied(new Set(names)), kind: 'only', error: null };
   }
-  if (from !== null && from !== false) {
+  if (from !== null) {
     const { names, error } = check(from, '--from');
     if (error) return bad(error);
     if (names.length > 1) {

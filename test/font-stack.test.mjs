@@ -86,6 +86,16 @@ ok('control: an Apple-only stack resolves to NOTHING on Android',
 ok('control: an Apple-first stack is caught diverging',
   resolveOn('-apple-system, system-ui, sans-serif', 'apple') !== resolveOn('-apple-system, system-ui, sans-serif', 'android'),
   'this is the exact stack this surface shipped until tonight, and it must read as divergent');
+/* An UNKNOWN family reaching resolveOn. The `where &&` guard had nothing behind it: every test
+ * resolved stacks made of families the table knows, so dropping the guard — which would throw on
+ * `undefined.includes` — changed nothing. A stack naming a font nobody has listed is exactly the
+ * case the guard is for. */
+ok('an unknown family does not throw, it is skipped',
+  resolveOn('Comic Sans MS, sans-serif', 'android') === 'sans-serif',
+  'resolveOn would crash on a family the platform table does not list');
+ok('a stack of ONLY unknown families resolves to nothing rather than throwing',
+  resolveOn('Comic Sans MS, Wingdings', 'android') === null);
+
 ok('control: an unknown family is reported',
   unknownFamilies('Comic Sans MS, sans-serif').join() === 'comic sans ms');
 ok('control: quotes and case do not change the answer',

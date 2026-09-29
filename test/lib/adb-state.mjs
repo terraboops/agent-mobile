@@ -95,7 +95,16 @@ export function describeBlocked({ classified, connectTarget, connectError, tailn
         + `(${tailnet.note || 'tailscale ping failed'}). It is powered off, asleep, or off the `
         + `tailnet — adb cannot reach it until Tailscale on the phone is up again.`;
     }
-    if (tailnet && tailnet.checked && tailnet.reachable) {
+    /* `.checked` is redundant here and stays out: tailnetProbe never reports reachable without
+     * having checked, so the conjunct could not change the answer — a dead-predicate sweep
+     * removed it with every assertion still passing.
+     *
+     * `.reachable` is a different case and stays IN even though the sweep flags it too. It is
+     * dead only because the branch above already returned for a checked-but-unreachable peer;
+     * dropping it would make this branch's correctness depend on the order of two returns
+     * rather than on its own condition. Dead by reachability is not the same as dead by
+     * construction, and the second one is worth keeping. */
+    if (tailnet && tailnet.reachable) {
       return `no device${waited}: the phone IS reachable on the tailnet but nothing is `
         + `listening on ${connectTarget}`
         + (connectError ? ` (${connectError})` : '')

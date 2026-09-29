@@ -170,6 +170,26 @@ for (const a of ['172.15.0.1', '172.32.0.1', '108.175.227.79', '8.8.8.8']) {
  * be reported as exercised, and the stage becomes a permanent red that people route around. */
 ok('a tailnet address is not a LAN address', !isPrivateAddr('100.112.255.69'),
   'treating 100.64/10 as private classifies every tailnet path as local');
+
+/* THE FIRST OCTET, which nothing asserted until a dead-predicate sweep removed it and every
+ * test still passed. The boundary cases above all vary the SECOND octet (172.15 / 172.32), so
+ * dropping `o[0] === 172` left `o[1] >= 16 && o[1] <= 31` matching any address at all with a
+ * second octet in that range — including 100.20.x.x, a TAILNET address, which would then
+ * classify as direct-lan and report a remote path as local. The check was live; the coverage
+ * was not, and those look identical from a green run. */
+for (const a of ['100.20.1.1', '8.20.0.1', '42.20.0.1']) {
+  ok(`the 172.16/12 range does not admit ${a}`, !isPrivateAddr(a),
+    'only the second octet was ever varied, so the first-octet test had nothing behind it');
+}
+for (const a of ['100.168.1.1', '8.168.0.1']) {
+  ok(`the 192.168/16 range does not admit ${a}`, !isPrivateAddr(a));
+}
+for (const a of ['100.254.1.1', '8.254.0.1']) {
+  ok(`the 169.254/16 range does not admit ${a}`, !isPrivateAddr(a));
+}
+for (const a of ['100.0.0.1', '11.0.0.1']) {
+  ok(`10/8 does not admit ${a}`, !isPrivateAddr(a));
+}
 ok('private: junk is not private', !isPrivateAddr('') && !isPrivateAddr(null)
   && !isPrivateAddr('192.168.10') && !isPrivateAddr('999.1.1.1'));
 

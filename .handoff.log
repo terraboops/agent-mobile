@@ -6,3 +6,28 @@ device-handoff — arming for 6h, then two passes
 
   self  192.168.10.55 (excluded from every sweep)
   [4s] swept 253 addresses on 192.168.10.0/24 in 3.6s — 11 alive (subnet sweep due (254 hosts, one port — refusals are instant))
+  [78s] swept 192.168.10.53 full range in 54s — 0 port(s) open
+  [124s] swept 192.168.10.51 full range in 46s — 0 port(s) open
+  [147s] swept 253 addresses on 192.168.10.0/24 in 3.6s — 10 alive (subnet sweep due (254 hosts, one port — refusals are instant))
+  [213s] swept 192.168.10.1 full range in 45s — 0 port(s) open
+  [266s] swept 192.168.10.73 full range in 53s — 0 port(s) open
+  [289s] swept 253 addresses on 192.168.10.0/24 in 3.6s — 10 alive (subnet sweep due (254 hosts, one port — refusals are instant))
+  [363s] swept 192.168.10.63 full range in 53s — 0 port(s) open
+  [417s] swept 192.168.10.52 full range in 54s — 0 port(s) open
+  [440s] swept 253 addresses on 192.168.10.0/24 in 3.6s — 11 alive (subnet sweep due (254 hosts, one port — refusals are instant))
+  [514s] swept 192.168.10.59 full range in 54s — 0 port(s) open
+  [561s] swept 192.168.10.54 full range in 47s — 5 port(s) open
+  CANDIDATE 192.168.10.54:32400 after 561s — by sweeping a live host found on the /24
+    5 port(s) open
+  REJECTED: adb reports it offline — it answered TCP but does not speak adb
+  [595s] swept 253 addresses on 192.168.10.0/24 in 3.6s — 11 alive (subnet sweep due (254 hosts, one port — refusals are instant))
+  [664s] swept 192.168.10.72 full range in 49s — 0 port(s) open
+  [718s] swept 192.168.10.58 full range in 54s — 0 port(s) open
+  [742s] swept 253 addresses on 192.168.10.0/24 in 3.6s — 11 alive (subnet sweep due (254 hosts, one port — refusals are instant))
+  [810s] swept 192.168.10.61 full range in 48s — 3 port(s) open
+  CANDIDATE 192.168.10.61:49152 after 810s — by sweeping a live host found on the /24
+    3 port(s) open
+  REJECTED: adb reports it offline — it answered TCP but does not speak adb
+  [894s] swept 192.168.10.57 full range in 54s — 0 port(s) open
+  [940s] swept 192.168.10.1 full range in 46s — 0 port(s) open
+  [964s] swept 253 addresses on 192.168.10.0/24 in 3.6s — 12 alive (subnet sweep due (254 hosts, one port — refusals are instant))

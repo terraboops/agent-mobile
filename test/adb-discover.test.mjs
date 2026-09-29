@@ -120,7 +120,19 @@ console.log(`\n  stood up a stand-in endpoint on 127.0.0.1:${realPort} (nothing 
 {
   const found = await scanPorts('127.0.0.1', [[realPort - 3, realPort + 3]], { timeoutMs: 800 });
   ok('scan: finds the open port', found.includes(realPort), `found [${found}]`);
-  ok('scan: does not invent closed ones', found.length >= 1 && found.length <= 3, `found [${found}]`);
+  /* A fake socket WITHOUT setTimeout, which is the only case that guard is for. Every existing
+ * scan test uses a stub that happens to have one, so dropping `sock.setTimeout &&` — which
+ * would throw — changed nothing. Found by removing it and watching the suite pass. */
+{
+  const { EventEmitter } = await import('node:events');
+  const bare = () => { const e = new EventEmitter(); e.destroy = () => {};
+                       setTimeout(() => e.emit('error', new Error('refused')), 1); return e; };
+  const open = await scanPorts('x', [[1, 3]], { connect: bare, timeoutMs: 50 });
+  ok('scan: a socket with no setTimeout does not crash the sweep', Array.isArray(open),
+    'the guard exists for exactly this and nothing exercised it');
+}
+
+ok('scan: does not invent closed ones', found.length >= 1 && found.length <= 3, `found [${found}]`);
 }
 {
   const found = await scanPorts('127.0.0.1', [[realPort + 10, realPort + 20]], { timeoutMs: 800 });
