@@ -65,7 +65,9 @@ s._onFrame = function (raw) {
   } else if (f.type === T.audio) { wsAudioFrames++; }   // the FALLBACK path we want to see unused
 };
 await s.connect();
-ok(true, 'AEAD control channel up');
+/* Was `ok(true, ...)`: an assertion that cannot fail, reporting a fact it never checked. If
+ * connect() ever resolved without a channel, this printed a green tick saying otherwise. */
+ok(!!s.channel, 'AEAD control channel up', 'connect() resolved but no channel was established');
 
 // ---- 3. the phone's PeerConnection: offer with a real mic track --------------
 /* AGENTMOB_OPUS_PT pins the opus payload type this client OFFERS.
@@ -118,7 +120,11 @@ if (!answer || !answer.sdp) { console.log('\nno answer — aborting'); process.e
 const opusPT = (answer.sdp.match(/a=rtpmap:(\d+)\s+opus\/48000/i) || [])[1];
 ok(!!opusPT, `answer negotiates opus, payload type ${opusPT}`);
 await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
-ok(true, 'answer applied as remote description');
+/* Was `ok(true, ...)`. setRemoteDescription resolving is not the same as the description being
+ * in place — check the peer actually holds it and left have-local-offer. */
+ok(!!pc.remoteDescription && pc.signalingState === 'stable',
+  'answer applied as remote description',
+  `remoteDescription=${!!pc.remoteDescription} signalingState=${pc.signalingState}`);
 
 // Trickle any candidate we gathered after the offer, exactly as the phone does.
 let cands = 0;

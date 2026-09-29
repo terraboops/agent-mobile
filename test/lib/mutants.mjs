@@ -32,6 +32,7 @@ const GRADLE_APP = join(REPO, 'android/app/build.gradle');
 const GS = join(REPO, 'test/lib/gateway-scope.mjs');
 const SCOPEDGW = join(REPO, 'test/lib/scoped-gateway.mjs');
 const GRADLE_VARS = join(REPO, 'android/variables.gradle');
+const AEADTRIG = join(REPO, 'test/lib/aead-trigger.mjs');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
  * instance's own copy, so the production adapter is never modified and never needs restoring. */
 const SCOPED_AD = join(homedir(), '.hermes/profiles/agentmobtest/plugins/agentmob/adapter.py');
@@ -130,7 +131,7 @@ export const MUTANTS = [
     to: 'const trig = { ok: true, error: null }; void typedTurn;' },
 
   { suite: 'ice-tailnet', file: SC, restart: true, why: 'gathering the tailnet address as a host candidate',
-    breaks: 'the answer contains a tailnet candidate (100.125.53.51)',
+    breaks: 'the answer contains a tailnet candidate',
     from: 'const ICE_HOST_ADDRS = tailnetAddresses();',
     to: 'const ICE_HOST_ADDRS = [];' },
 
@@ -157,7 +158,7 @@ export const MUTANTS = [
    * awkward to mutate, not exempt from it. */
 
   { suite: 'ux-audit', file: INDEX, why: 'noticing that the page rendered nothing',
-    breaks: ': 20 issue(s), 0 unexpected page error(s)',
+    breaks: 'unexpected page error(s)',
     from: '</head>',
     to: '<style>#ui,#surface,#badge,#ctrlbar{visibility:hidden!important}</style>\n</head>' },
 
@@ -167,7 +168,7 @@ export const MUTANTS = [
     to: "      ack({ webrtc: { rtype: 'answer' } });" },
 
   { suite: 'e2e-interrupt', file: SC, restart: true, why: 'cutting the reply short on interrupt',
-    breaks: 'downlink stopped after the interrupt (61 -> 177 -> 271)',
+    breaks: 'downlink stopped after the interrupt',
     from: '        if (tok.cancelled || !target.webrtc || !target.webrtc.connected) {',
     to: '        if (false) {' },
 
@@ -188,7 +189,7 @@ export const MUTANTS = [
    * suite, and a table that still points somewhere else. */
   { suite: 'e2e-voice-render', file: SCOPED_AD, scope: 'gateway',
     why: 'the one spoken line over a purely visual reply',
-    breaks: 'the reply was spoken (TTS audio frames arrived)',
+    breaks: 'speech arrived AFTER the render envelope',
     from: '        if self._tts_voice:\n            await self._schedule_speak(self._narrate_components([c for c in comp_types if c]))',
     to: '        pass  # narration removed' },
 
@@ -218,7 +219,7 @@ export const MUTANTS = [
      the suite fails on twice (no downlink RTP, and ws frames > 0). */
   { suite: 'e2e-webrtc-pt111', file: WRTC, restart: true,
     why: 'the RTP downlink being used at all instead of the WebSocket fallback',
-    breaks: 'agent TTS arrived as RTP on the WebRTC downlink (0 pkts,',
+    breaks: 'arrived as RTP on the WebRTC downlink',
     from: '    get ready() { return this.connected && !!this.opusPT; }',
     to: '    get ready() { return false; }' },
 
@@ -301,7 +302,7 @@ export const MUTANTS = [
 
   { suite: 'webrtc-pt', file: SC, restart: true,
     why: 'returning the answer SDP unmodified, with the offerer\'s payload types intact',
-    breaks: 'the answer echoes the offered payload type (111)',
+    breaks: 'the answer echoes the offered payload type',
     from: "      ack({ webrtc: { rtype: 'answer', sdp: ans.sdp } });",
     to: "      ack({ webrtc: { rtype: 'answer', sdp: ans.sdp.replace(/a=rtpmap:\\d+ opus/gi, 'a=rtpmap:96 opus') } });" },
 
@@ -535,6 +536,355 @@ export const MUTANTS = [
     from: '          const missing = (deps || []).find(d => !assets[d]);',
     to: '          const missing = true;' },
 
+  /* e2e-webrtc #2 — choosing the WEBRTC downlink over the WS fallback, not the SDP answer
+     (entry #1). `viaW` is the whole decision: force it false and every reply goes out over the
+     WebSocket while ICE sits connected, which is the silent demotion this suite exists to catch
+     (it reads as working audio with none of WebRTC's pacing or AEC). */
+  { suite: 'e2e-webrtc', file: SC, restart: true,
+    why: 'choosing the WebRTC downlink when the peer is ready',
+    breaks: 'did NOT fall back to the WebSocket',
+    from: '    const viaW = !!(target.webrtc && target.webrtc.ready);',
+    to: '    const viaW = false;' },
+
+  /* e2e-voice #2 — CLEARING the speaking indicator, where entry #1 covers raising the heard
+     one. A pill that never clears reads as "still talking" for ever.
+
+     TWO EDITS, because the property has two independent guarantees and a single-edit mutation
+     cannot falsify it. _clear_speaking_after() clears on the estimated duration; the barge-in /
+     turn-teardown path clears again. Deleting either alone left the suite green — MISSED — and
+     the obvious reading of that verdict ("the assertion is weak") was wrong twice over:
+
+       1. the assertion WAS weak, separately. It was two unordered `some()` calls, so a
+          speaking=False pushed BEFORE the reply satisfied the "and then cleared" half. That is
+          fixed in the suite now: it looks for a clear at a later index than the last raise.
+       2. with that fixed it still MISSED, because the other clear still fires.
+
+     So the mutation removes both. Recorded because "MISSED" on a defence-in-depth property
+     looks exactly like "MISSED" on a scaffolding test, and the two want opposite responses. */
+  { suite: 'e2e-voice', file: SCOPED_AD, scope: 'gateway',
+    why: 'clearing the speaking indicator when the reply finishes',
+    breaks: 'speaking indicator was raised and then cleared',
+    edits: [
+      /* the timed clear, driven off the estimated speech duration */
+      { file: SCOPED_AD,
+        from: '        except asyncio.CancelledError:\n            pass\n'
+            + '        self._push_status(speaking=False)',
+        to:   '        except asyncio.CancelledError:\n            pass' },
+      /* and the teardown clear, which covers for it */
+      { file: SCOPED_AD,
+        from: '        self._pending_speak = None\n        self._push_status(speaking=False)',
+        to:   '        self._pending_speak = None' },
+    ] },
+
+  /* e2e-interrupt #2 — the LEDGER entry for a truncated reply, not the truncation itself
+     (entry #1 stops the frames). `finish(note)` is the only record of whether a reply ran to
+     completion; drop the note and the log line is byte-identical to a clean send, so a
+     barge-in becomes invisible after the fact — which is the state this suite was written in
+     response to. */
+  { suite: 'e2e-interrupt', file: SC, restart: true,
+    why: 'recording that a truncated reply was truncated',
+    breaks: 'recorded the playback as CUT SHORT',
+    from: "          return finish(`cut short after ${i}/${n} frames: `\n"
+        + "            + (tok.cancelled ? 'superseded or interrupted' : 'peer gone (ICE drop/disconnect)'));",
+    to:   '          return finish();' },
+
+  /* e2e-voice-render #2 — the turn being SPOKEN AT ALL, where entry #1 covers its ordering.
+     Two claims live in the render branch and they need different edits: removing the narration
+     call leaves the turn's other speech in place, so only the ordering assertion moves. To
+     reach "narrated at all" the whole speech path has to go.
+
+     WHY THIS ENTRY EXISTS IN THIS SHAPE. The obvious second mutation — moving the narration
+     ABOVE the render push — was written first and came back MISSED. _schedule_speak COALESCES:
+     it accumulates text and synthesises once at the end of the turn, so calling it earlier
+     changes nothing on the wire and the ordering assertion cannot see the difference. The call
+     site's position is not what makes narration arrive after the render, and an entry pointed
+     at it would have been testing a line that does not carry the property. */
+  { suite: 'e2e-voice-render', file: SCOPED_AD, scope: 'gateway',
+    why: 'the render turn producing any speech at all',
+    breaks: 'a render-only reply was narrated at all',
+    from: '        text = (text or "").strip()\n        if not text:\n            return',
+    to:   '        return' },
+
+  /* e2e-webrtc-pt111 #2 — the reason this variant exists at all. werift negotiates opus at 96;
+     a real Android libwebrtc client sends 111. Any payload-type assumption on the INBOUND path
+     is therefore invisible to e2e-webrtc and fatal on the handset: the phone's mic audio is
+     dropped while ICE, DTLS and the control channel all read healthy. This mutation plants
+     exactly that assumption, and it must be CAUGHT here and MISSED at 96 — the asymmetry is
+     the coverage. */
+  { suite: 'e2e-webrtc-pt111', file: WRTC, restart: true,
+    why: 'accepting mic RTP at whatever payload type was negotiated, not a hardcoded one',
+    breaks: 'transcribed the SRTP mic audio',
+    from: '          if (this.handler.onUtterance) this.handler.onUtterance(pkt.payload);',
+    to:   '          if (this.handler.onUtterance && pkt.header.payloadType === 96) this.handler.onUtterance(pkt.payload);' },
+
+  /* port-in-use #2 — the ctl port is OPTIONAL and the ws port is not. Entry #1 proves the fatal
+     side; this proves the degrading side, which is the one that regressed: a ctl EADDRINUSE
+     used to take the whole sidecar down, so a stray second copy on 8124 killed the phone
+     channel over a side channel nobody needs. */
+  { suite: 'port-in-use', file: SC,
+    why: 'surviving a ctl-port conflict instead of dying with it',
+    breaks: 'ctl port in use: the sidecar KEEPS RUNNING',
+    from: "    log(`ctl port ${CTL_PORT} in use — continuing WITHOUT the ctl channel `\n"
+        + "      + `(another sidecar may be running; set AGENTMOB_SIDECAR_PORT to change it)`);",
+    to:   '    process.exit(69);' },
+
+  /* orphan-reap #2 — the SIDECAR's own half of the contract. Entry #1 mutates the spawn side
+     (its process group); this is the watchdog that makes a SIGKILLed host survivable, where no
+     signal is ever delivered and the only thing left to notice is the reparent to init. */
+  { suite: 'orphan-reap', file: SC,
+    why: 'the sidecar exiting when its parent is gone',
+    breaks: 'SIGKILL of the host still frees the port',
+    from: '    if (ppid === 1 || (startPpid !== 1 && ppid !== startPpid)) {',
+    to:   '    if (false) {' },
+
+  /* respawn-escalation #2 — the BACKOFF, not the escalation (entry #1). Pinned at the base
+     delay the supervisor hammers a wedged sidecar every 3s for ever; the logs look supervised
+     and the machine is not. */
+  { suite: 'respawn-escalation', file: AD,
+    why: 'backing off between respawns instead of retrying at a fixed interval',
+    breaks: 'the delay BACKS OFF instead of pinning at the base',
+    from: '                        delay = min(_RESPAWN_BASE_S * (2 ** (self._sidecar_fails - 1)),\n'
+        + '                                    _RESPAWN_MAX_S)',
+    to:   '                        delay = _RESPAWN_BASE_S' },
+
+  /* bridge-recovery #2 — the LOOP, not the logging of the loss (entry #1). Return instead of
+     going round again and the bridge dies silently on its first drop: the sidecar is up, the
+     adapter is up, and nothing carries messages between them. */
+  { suite: 'bridge-recovery', file: AD,
+    why: 'reconnecting after the bridge drops',
+    breaks: 'the adapter RECONNECTED on its own',
+    from: '                logger.warning("agentmob: loopback bridge lost while the sidecar is running "\n'
+        + '                               "— reconnecting")',
+    to:   '                return' },
+
+  /* inbound-resilience #2 — the escalation being ONCE, not the counting (entry #1). `==` is
+     load-bearing: `>=` re-escalates on every subsequent event, and an ERROR per inbound message
+     is how the log stops being read at all. */
+  { suite: 'inbound-resilience', file: AD,
+    why: 'escalating once rather than on every event after the threshold',
+    breaks: 'it does not escalate once per event',
+    from: '                if handler_errors == _INBOUND_ERROR_ESCALATE:',
+    to:   '                if handler_errors >= _INBOUND_ERROR_ESCALATE:' },
+
+  /* dispatch-delivery #2 — the PRE-delivery retry, where entry #1 covers the uncertain side.
+     The whole point of the boundary is that the two sides behave differently; if the retry
+     never happens, an utterance the agent provably never saw is dropped as if it might have
+     been answered. */
+  { suite: 'dispatch-delivery', file: AD,
+    why: 'retrying an utterance that provably never reached the agent',
+    breaks: 'pre-delivery: the utterance was RETRIED and delivered',
+    from: '                    await self.dispatch_text(text, message_id, force=True)',
+    to:   '                    pass' },
+
+  /* transcribe-capture #2 — the DIRECTORY, not the retry loop (entry #1). This is the defect
+     the suite was written for: unlinking the wav and leaving the mkdtemp directory behind, 14
+     of which had piled up before anyone looked. */
+  { suite: 'transcribe-capture', file: AD,
+    why: 'removing the capture DIRECTORY, not just the wav inside it',
+    breaks: 'the temp DIRECTORY is gone too',
+    from: '                parent.rmdir()',
+    to:   '                pass' },
+
+  /* stt-failfast #2 — a MISSING capture, where entry #1 covers a broken backend. Both are
+     permanent and neither is retryable, but they arrive as different exceptions: drop this
+     branch and a vanished file burns the full retry budget re-reading a path that will not
+     come back. */
+  { suite: 'stt-failfast', file: AD,
+    why: 'not retrying a capture file that is gone',
+    breaks: 'missing capture: not retried',
+    from: '                raise SttUnavailable(\n'
+        + '                    f"the capture is missing ({e}); nothing to transcribe.") from e',
+    to:   '                last = e' },
+
+  /* tts-failfast #2 — REMEMBERING a dead engine, where entry #1 covers recognising one. The
+     memory is what makes it fail fast on the NEXT reply; without it every reply re-discovers
+     the same ImportError, loses a step of the fallback chain, and buries the real cause. */
+  { suite: 'tts-failfast', file: AD,
+    why: 'skipping an engine already proven unavailable',
+    breaks: 'a known-dead engine is not tried on the next reply',
+    from: '            if name in self._tts_dead:',
+    to:   '            if False:' },
+
+  /* outbound-queue #2 — the ORDER of the flush, not the decision to hold (entry #1). Replies
+     delivered backwards are worse than delayed ones: the phone shows the answer before the
+     question it answers. */
+  { suite: 'outbound-queue', file: AD,
+    why: 'flushing held messages in the order they were queued',
+    breaks: 'flush: they arrive in order',
+    from: '        for when, payload in held:',
+    to:   '        for when, payload in reversed(held):' },
+
+  /* adapter-fields #2 — deliberately a DIFFERENT field from entry #1. The check claims to
+     derive REQUIRED from the real constructor rather than a hand-kept list; one entry only
+     proves it notices `_undelivered`. Two different fields is the cheapest evidence that it
+     scans, and it is the shape that would catch the check being quietly pinned to one name. */
+  { suite: 'adapter-fields', file: AD,
+    why: 'deriving the required fields from the constructor, for every field',
+    breaks: 'every REQUIRED field is genuinely set by the real constructor',
+    from: '        self._outbound_q = collections.deque(maxlen=_OUTBOUND_QUEUE_MAX)',
+    to:   '        pass' },
+
+  /* flush-live #2 — the flush being CALLED on reconnect, where entry #1 covers the queueing
+     decision. Held and never delivered is the same outcome as dropped, and it is the harder
+     failure to see: the queue log says the reply was kept. */
+  { suite: 'flush-live', file: AD,
+    why: 'flushing the held queue when the bridge comes back',
+    breaks: 'REACHED the new sidecar after reconnect',
+    from: '                self._flush_outbound()',
+    to:   '                pass' },
+
+  /* aead-trigger #2 — the LIVE turn, where entry #1 only checks device-verify still imports
+     this helper. Send nothing and the trigger reports ok with no turn behind it, which is the
+     exact shape the old `adb shell input text` trigger had: a green step that moved no audio. */
+  { suite: 'aead-trigger', file: AEADTRIG,
+    why: 'actually sending the typed turn over the AEAD channel',
+    breaks: 'the sidecar logged the reply audio',
+    from: '    s.cmd(String(text)).catch(() => {});',
+    to:   '    /* no turn sent */' },
+
+  /* adb-isolation #2 — the PORT, where entry #1 covers the flag. The isolation is only as good
+     as the number: point it back at 5037 and every `-P` in the file is still there, still
+     correct, and still talking to the operator's own adb server. That is the regression this
+     suite exists to prevent, and it is invisible to a flag-shaped check. */
+  { suite: 'adb-isolation', file: DV,
+    why: 'the isolated adb server being a DIFFERENT server, not just a flag',
+    breaks: 'the isolated run reported NO device of any state',
+    from: "const ADB_PORT = Number(flag('--adb-port', process.env.AGENTMOB_ADB_PORT || 5039));",
+    to:   'const ADB_PORT = 5037;' },
+
+  /* containment #2 — the TRUST BOUNDARY, where entry #1 covers egress. The webview is agent-
+     controlled content; a padlock or a "PINNED" drawn inside it is drawn by the thing it claims
+     to vouch for. The real badge is the native overlay. This plants exactly the forgery the
+     rule forbids, in the header, where it would look most convincing. */
+  { suite: 'containment', file: INDEX,
+    why: 'keeping every trust claim out of agent-controlled markup',
+    breaks: 'NO trust claim',
+    from: '  <header id="badge" title="tap to change theme">agent terminal<i class="cursor"></i>',
+    to:   '  <header id="badge" title="tap to change theme">agent terminal ✓ PINNED<i class="cursor"></i>' },
+
+  /* device-watch-test #2 — reading the identity CLEANLY, where entry #1 covers classifying the
+     session. The sidecar's PAIRING line carries trailing prose after an em dash; keep it and the
+     pin command the watcher prints contains that prose, so the operator pins a string the
+     allowlist will never match. A wrong pin locks the phone out. */
+  { suite: 'device-watch-test', file: DWATCH,
+    why: 'stripping the trailing prose off the pairing identity',
+    breaks: 'the trailing prose is stripped off the identity',
+    from: "    cur.clientId = m[1]; cur.identity = m[2].replace(/\\s*—.*$/, '');",
+    to:   '    cur.clientId = m[1]; cur.identity = m[2];' },
+
+  /* ice-tailnet #2 — the SUBTLE version of entry #1. That one removes tailnet ICE entirely;
+     this narrows the CGNAT range by one octet, which is the shape a real edit produces and the
+     shape a green suite would happily carry. 100.64.0.0/10 runs to 100.127, and this host sits
+     at 100.125 — an off-by-one here and a remote phone has no routable pair at all. */
+  { suite: 'ice-tailnet', file: SC,
+    why: 'the full CGNAT range Tailscale allocates from, not part of it',
+    breaks: 'ICE reached connected over the tailnet address alone',
+    from: '        if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) out.push(a.address);',
+    to:   '        if (o[0] === 100 && o[1] >= 64 && o[1] <= 100) out.push(a.address);' },
+
+  /* identity-pin #2 — the REASON, where entry #1 covers the gate. A rejection that reads as a
+     generic failure is indistinguishable from a crypto fault or a version skew, and the first
+     thing anyone does with one of those is start disabling things. Naming unknown_client is
+     what tells the operator to pin the client instead. */
+  { suite: 'identity-pin', file: SCOPED_SC, scope: 'gateway',
+    why: 'naming the reason a client was refused',
+    breaks: 'names unknown_client',
+    from: "            if (e.message === 'unknown_client') log(`REJECT unknown client ${msg && msg.client_id} (${msg && msg.client_identity})`);",
+    to:   "            if (e.message === 'unknown_client') log('handshake failed');" },
+
+  /* mute-webrtc #2 — barge-in opened from the SILENCE path, where entry #1 lowers the RMS
+     threshold. Same defect (issue #1: a muted mic cutting the agent off mid-reply) reached by a
+     different route, and the route matters: a suite that only watches the threshold would pass a
+     rewrite that counts quiet frames instead. */
+  { suite: 'mute-webrtc', file: SCOPED_SC, scope: 'gateway',
+    why: 'silence never opening an utterance, by any counter',
+    breaks: 'recorded NO truncation',
+    from: '  } else {\n    conn.speechStreak = 0;',
+    to:   '  } else {\n    if ((conn.speechStreak = (conn.speechStreak || 0) + 1) >= MIN_SPEECH_FRAMES) '
+        + '{ maybeBargeIn(conn); conn.speechStreak = 0; }' },
+
+  /* plugin-drift #2 — what must NEVER be vendored, where entry #1 covers what must match. The
+     sidecar's .identity.json holds the PRIVATE key the phone pins; vendoring it commits the
+     server's identity to a repo. The forbidden list is the only thing standing between a
+     refresh and that commit. */
+  { suite: 'plugin-drift', file: VF,
+    why: 'refusing to vendor the sidecar identity keypair',
+    breaks: 'identity keypair is NOT vendored',
+    from: 'export const FORBIDDEN = [/(^|\\/)\\.identity\\.json$/, /(^|\\/)node_modules(\\/|$)/, /\\.env$/];',
+    to:   'export const FORBIDDEN = [/(^|\\/)node_modules(\\/|$)/, /\\.env$/];' },
+
+  /* plugin-drift-soundness #2 — the PYTHON branch, where entry #1 exercises the JS one. They are
+     separate implementations (node --check vs py_compile under the gateway's own interpreter),
+     so proving one works says nothing about the other — and adapter.py is the larger half of
+     what a restore-from-vendored would reinstall. */
+  { suite: 'plugin-drift-soundness', file: VF,
+    why: 'the python half of the syntax check being a real check',
+    breaks: 'py: broken module fails',
+    from: "    try { await run(py, ['-m', 'py_compile', absPath]); return { ok: true, error: null }; }\n"
+        + '    catch (e) { return { ok: false, error: firstLine(e.stderr || e.message) }; }',
+    to:   '    return { ok: true, error: null };' },
+
+  /* surface-assets #2 — GIVING BYTES BACK, where entry #1 covers freeing them on replacement.
+     The cap itself already has an entry under surface-core, and duplicating it here would be a
+     second tick for the same edit. Unregister is the other half of the accounting and the one
+     with no natural pressure to be right: nothing visibly breaks when freed bytes are not
+     returned, the surface just fills up over a long session and stops accepting assets. */
+  { suite: 'surface-assets', file: SCORE,
+    why: 'returning an unregistered asset’s bytes to the cap',
+    breaks: 'unregister_asset removes a complete asset and frees its bytes',
+    from: '          if (assets[name]) { freed += assets[name].size || 0; delete assets[name]; }',
+    to:   '          if (assets[name]) { delete assets[name]; }' },
+
+  /* surface-chunks #2 — the EMPTY payload, where entry #1 covers sequence order. A zero-byte
+     register_asset used to be accepted silently, which registers a name with no source behind
+     it: every widget type that depends on it then fails to mount for a reason nothing reports. */
+  { suite: 'surface-chunks', file: SCORE,
+    why: 'reporting a register_asset with no payload',
+    breaks: 'register_asset without b64 is reported',
+    from: '          if (!bytes) { abort(`register_asset ${name}: empty payload (b64 missing)`); break; }',
+    to:   '          if (false) { abort(`register_asset ${name}: empty payload (b64 missing)`); break; }' },
+
+  /* surface-integration #2 — publish reaching a LIVE widget, where entry #1 covers registering a
+     type. This is the in-place data path the whole surface exists for: the tile stays mounted
+     and its data changes. Break it and every chart on the phone freezes at its first value
+     while the agent believes it is streaming. */
+  { suite: 'surface-integration', file: SCORE,
+    why: 'delivering published data to a mounted widget',
+    breaks: 'publish -> data',
+    from: "          emit({ event: 'data', key: op.key, data: op.data });",
+    to:   '          break;' },
+
+  /* surface-protocol #2 — the UNKNOWN-KEY report, where entry #1 covers a type becoming ready.
+     This is the defect the suite was written for: an op against a key that was never added used
+     to vanish, so the agent believed it had rendered while the screen stayed blank, and the
+     register -> test -> build feedback loop never fired. */
+  { suite: 'surface-protocol', file: SCORE,
+    why: 'telling the agent that a publish went to a key that does not exist',
+    breaks: 'publish to unknown key reports ok:false',
+    from: "          if (!widgets[op.key]) { emit({ event: 'render_result', ok: false, key: op.key,\n"
+        + '            error: `publish: no widget with key "${op.key}" (add_widget first)` }); break; }',
+    to:   '          if (!widgets[op.key]) { break; }' },
+
+  /* ux-audit #2 — an ACCESSIBILITY regression, where entry #1 covers a blank render. Disabling
+     pinch-zoom is one attribute, passes every functional test, and is exactly the kind of thing
+     that gets added to stop a layout wobbling. On a voice-first surface the people most likely
+     to need the zoom are the ones least likely to file a bug about it. */
+  { suite: 'ux-audit', file: INDEX,
+    why: 'the audit noticing an accessibility regression, not only a blank page',
+    breaks: 'unexpected page error(s)',
+    from: '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    to:   '<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">' },
+
+  /* webrtc-pt #2 — the sidecar not REWRITING the offered payload type, where entry #1 covers it
+     answering at all. werift negotiates opus at 96 and a real Android client offers 111, so the
+     tempting "fix" is to normalise the offer on the way in. Do that and the answer echoes a
+     number the phone never proposed: it decodes nothing and every state still reads healthy. */
+  { suite: 'webrtc-pt', file: WRTC, restart: true,
+    why: 'answering at the payload type the client offered, unmodified',
+    breaks: 'the answer echoes the offered payload type',
+    from: "      await this.pc.setRemoteDescription({ type: 'offer', sdp });",
+    to:   "      await this.pc.setRemoteDescription({ type: 'offer', sdp: String(sdp).replace(/ 111/g, ' 96') });" },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',
@@ -590,7 +940,7 @@ export const MUTANTS = [
     from: '<meta http-equiv="Content-Security-Policy"', to: '<meta http-equiv="X-Disabled-CSP"' },
 
   { suite: 'ctrlbar-geometry', file: INDEX, why: 'the reserved mic band',
-    breaks: '320dp @ font x1.3: Stop clears the mic by >= 8dp',
+    breaks: 'Stop clears the mic by',
     from: 'calc(50% + 48px)', to: '108px' },
 
   /* The classifier is the opus-PT comparison, not the STACKS label; mutating the label alone

@@ -144,10 +144,24 @@ ok('the sidecar reported hearing the utterance (status.heard)', heard.length > 0
  * speech is missing rather than being excused. */
 ok('the reply was spoken (TTS audio frames arrived)', audioFrames > 0,
   `${audioFrames} frames — a render-only reply must still be narrated, not left silent`);
+/* "raised AND THEN cleared" — the order is the claim, and it used to go unchecked.
+ *
+ * This was two independent `some()` calls: one true anywhere, one false anywhere. The adapter
+ * pushes a status with speaking=False well before it starts speaking, so that second call was
+ * satisfied by a frame from BEFORE the reply. Deleting the clear at the end of the turn — the
+ * exact defect this assertion names, a stuck speaking pill — left it green. Caught by the
+ * mutation table (e2e-voice #2 came back MISSED), not by reading it.
+ *
+ * Now it looks for a clear at a LATER index than the last raise, which is what "and then"
+ * means and the only version a stuck pill can fail. */
+const lastRaise = events.reduce((ix, d, i) =>
+  (d.type === 'status' && d.speaking === true ? i : ix), -1);
+const clearedAfter = lastRaise >= 0 && events.slice(lastRaise + 1)
+  .some((d) => d.type === 'status' && d.speaking === false);
 ok('the speaking indicator was raised and then cleared',
-  events.some((d) => d.type === 'status' && d.speaking === true)
-  && events.some((d) => d.type === 'status' && d.speaking === false),
-  'the phone would be left with a stuck speaking pill');
+  lastRaise >= 0 && clearedAfter,
+  lastRaise < 0 ? 'the indicator was never raised at all'
+                : 'raised and never cleared — the phone would be left with a stuck speaking pill');
 ok('no chart carried hard-coded colours (the surface themes them)',
   chartColourViolations.length === 0,
   chartColourViolations.join(', '));

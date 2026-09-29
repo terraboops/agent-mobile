@@ -139,6 +139,36 @@ ok('a suite with several entries mutates a different place each time', samePlace
   const tooVague = MUTANTS.filter((m) => typeof m.breaks === 'string' && m.breaks.trim().length < 8);
   ok('no `breaks` value is too short to identify one assertion', tooVague.length === 0,
     tooVague.map((m) => `${m.suite}: "${m.breaks}"`).join(', '));
+
+  /* A `breaks` value carrying NUMBERS must be a literal in the suite's source.
+   *
+   * WHERE THIS CAME FROM. `breaks` is written by running the mutation and copying a line of the
+   * failure output. Do that on an assertion whose message is a template literal and the numbers
+   * of that one run come along: "downlink stopped after the interrupt (61 -> 177 -> 271)",
+   * "the answer echoes the offered payload type (111)", "the answer contains a tailnet candidate
+   * (100.125.53.51)" — that last one is this machine's Tailscale address, so it could only ever
+   * have matched on this host. Five entries were carrying a number in this shape.
+   *
+   * It does not produce a false pass: a stale number surfaces as WRONG-CLAIM, loudly. It does
+   * produce a table that stops being able to tell a mis-pointed entry from a re-run, which is
+   * the one job `breaks` has. Two of the five were already failing this way.
+   *
+   * Prose with no digits is exempt — plenty of assertion names are composed (`${rel}: installed
+   * matches vendored`) and are perfectly stable. It is the NUMBERS that come from a run. */
+  const scriptSrc = (suite) => {
+    let out = '';
+    for (const tok of String(scripts[suite] || '').split(/\s+/)) {
+      if (!/\.(mjs|py|js)$/.test(tok)) continue;
+      try { out += readFileSync(join(REPO, tok), 'utf8'); } catch { /* not a repo path */ }
+    }
+    return out;
+  };
+  const numeric = MUTANTS.filter((m) => typeof m.breaks === 'string' && /\d/.test(m.breaks)
+                                     && !scriptSrc(m.suite).includes(m.breaks));
+  ok('no `breaks` value carries a number copied out of one run', numeric.length === 0,
+    numeric.map((m) => `${m.suite}: "${m.breaks}"`).join('\n       ')
+    + '\n       Numbers in an assertion message are interpolated per run. Trim the claim back '
+    + 'to the part that is written literally in the suite source.');
 }
 
 /* ---- 5c. a mutation must not edit its own suite's test file ---------------------------------
@@ -166,6 +196,41 @@ ok('a suite with several entries mutates a different place each time', samePlace
   ok('no mutation edits the test file of the suite it belongs to', selfEdits.length === 0,
     `${selfEdits.join(', ')} — mutating an assertion cannot fail the suite that owns it; `
     + 'point the entry at the code under test instead');
+}
+
+/* ---- 5d. no assertion may be unfalsifiable by construction ----------------------------------
+ * `ok(true, 'AEAD control channel up')` reports a fact it never checked. It cannot fail, it pads
+ * the count, and it reads in the output exactly like a real check — which is how three of them
+ * sat in suites already marked as mutation-covered: two in e2e-webrtc, one in ice-tailnet. If
+ * connect() had ever resolved without a channel, the first printed a green tick saying otherwise.
+ *
+ * A mutation entry cannot catch this: the entry proves the SUITE fails, and these assertions are
+ * simply along for the ride. Only reading the source finds them, so it is read here.
+ *
+ * Scanned with comments stripped — this very paragraph contains the pattern. */
+{
+  const { readdirSync } = await import('node:fs');
+  const files = [];
+  for (const d of ['test', 'test/audit']) {
+    for (const f of readdirSync(join(REPO, d))) {
+      if (/\.(test\.mjs|mjs)$/.test(f) && !/^(lib|audit)$/.test(f)) files.push(join(d, f));
+    }
+  }
+  for (const f of readdirSync(REPO)) if (/^test-.*\.mjs$/.test(f)) files.push(f);
+
+  const offenders = [];
+  for (const rel of files) {
+    let src;
+    try { src = readFileSync(join(REPO, rel), 'utf8'); } catch { continue; }
+    const code = codeOnly(src, 'js');
+    /* ok(true, ...) and ok(<name>, true) — both orders are in use across these suites. */
+    if (/\bok\(\s*true\s*[,)]/.test(code) || /\bok\([^,()]*,\s*true\s*[,)]/.test(code)) {
+      offenders.push(rel);
+    }
+  }
+  ok('no suite asserts a literal true', offenders.length === 0,
+    `${offenders.join(', ')} — an assertion whose condition is a constant cannot fail; it pads `
+    + 'the count and reads like a check. Assert the thing it claims, or delete it and say why.');
 }
 
 /* ---- 6. every mutation must change EXECUTABLE CODE -----------------------------------------

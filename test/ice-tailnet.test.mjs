@@ -180,11 +180,26 @@ ok(connected, `ICE reached connected over the tailnet address alone (state: ${pc
 if (connected) {
   const pair = pc.iceTransports?.[0]?.connection?.nominated?.[0];
   const local = pair?.local || pair?.protocol?.localCandidate;
-  console.log(`\n  nominated pair uses ${local?.host || addr} — tailnet <-> tailnet`);
+  /* Print what werift ACTUALLY exposes. This used to fall back to `addr` when the nominated
+   * candidate carried no host, so it printed the tailnet address as though it had been measured
+   * — a log line asserting the very thing under test, from a default. */
+  console.log(local?.host
+    ? `\n  nominated pair uses ${local.host}`
+    : '\n  nominated pair: werift does not expose the local candidate host here');
   /* Media must actually move, not merely handshake. */
   let rtp = 0;
   pc.onTrack.subscribe((t) => { t.onReceiveRtp.subscribe(() => { rtp++; }); });
-  ok(true, 'DTLS/ICE established with no LAN or srflx path available');
+  /* No assertion here, deliberately.
+   *
+   * There used to be `ok(true, 'DTLS/ICE established...')`, which cannot fail. Replacing it with
+   * a check on the nominated pair's address does not work either: werift does not expose the
+   * host for this transport, so the check would pass on an empty string — the same nothing,
+   * wearing a condition.
+   *
+   * The claim is already made, and made properly, by "ICE reached connected over the tailnet
+   * address alone" above: the answer was filtered to the tailnet candidate, so a pair that
+   * formed at all could only have formed against it. A second assertion that cannot observe the
+   * address adds a green tick and no evidence. */
   /* Named precisely. The pair is tailnet<->tailnet at both ends and no other path existed —
    * that is the claim. Reachability ACROSS the tailnet from another host is item #3 in
    * test/lib/device-acceptance.mjs and stays unproven here by construction. */
