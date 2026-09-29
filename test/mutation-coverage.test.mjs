@@ -123,6 +123,35 @@ const samePlace = Object.entries(perSuite)
 ok('a suite with several entries mutates a different place each time', samePlace.length === 0,
   samePlace.join(', '));
 
+/* ---- 5b. every entry must name the CLAIM it takes down -------------------------------------
+ * Check 6 below asks whether a mutation changes executable code. That is a weaker bar than it
+ * reads: a mutation can change real code, fail the suite, and still guard nothing — because it
+ * broke a PRECONDITION rather than the claim.
+ *
+ * Measured, not hypothetical: mute-midreply's entry sat on SILENCE_MS, which stops an utterance
+ * ever closing. The suite failed at "the sidecar transcribed the utterance" and never reached
+ * the mute behaviour it existed to protect. The table read CAUGHT for months of runs while the
+ * mute claim was untested.
+ *
+ * `breaks` names a substring of the assertion the mutation must take down. The harness then
+ * reports WRONG-CLAIM when the suite fails on something else — caught, but not the thing
+ * claimed. Demonstrated: pointing mute-webrtc's `breaks` at an assertion its mutation does not
+ * touch produced "expected to break ... but the failures were ...".
+ *
+ * Required, not optional: an entry without it is one nobody has had to think about. */
+{
+  const noBreaks = MUTANTS.filter((m) => typeof m.breaks !== 'string' || !m.breaks.trim());
+  ok('every mutation entry names the assertion it must break', noBreaks.length === 0,
+    `${noBreaks.length} entr(ies) with no breaks field: `
+    + `${noBreaks.map((m) => m.suite).join(', ')}\n`
+    + '       Run the mutation, see which assertion fails, and record a substring of it. If the '
+    + 'failure is a PRECONDITION rather than the claim, the entry points at the wrong code.');
+  /* A `breaks` value nobody could match is as bad as none. */
+  const tooVague = MUTANTS.filter((m) => typeof m.breaks === 'string' && m.breaks.trim().length < 8);
+  ok('no `breaks` value is too short to identify one assertion', tooVague.length === 0,
+    tooVague.map((m) => `${m.suite}: "${m.breaks}"`).join(', '));
+}
+
 /* ---- 6. every mutation must change EXECUTABLE CODE -----------------------------------------
  * An entry that edits a comment still applies cleanly, still changes the file, and still counts
  * as covered — while testing nothing. One of mine literally appended `// ` to a declaration and

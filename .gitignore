@@ -20,3 +20,5 @@ test/audit/out/
 .device-arm.log
 .full-mutation.log
 test/audit/out/suite-failures/
+.mut-breaks.log
+.mut-verify.log

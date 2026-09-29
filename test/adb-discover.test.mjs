@@ -88,14 +88,25 @@ console.log(`\n  stood up a stand-in endpoint on 127.0.0.1:${realPort} (nothing 
 /* ---- 3. discover(): mDNS wins when it can see the phone ----------------------------------- */
 {
   const log = [];
+  let scanRan = false;
   const r = await discover({
     host: '100.112.255.69',
     runMdns: async () => 'List of discovered mdns services\n'
       + 'adb-p\t_adb-tls-connect._tcp\t100.112.255.69:44444',
-    scan: async () => { throw new Error('the scan must not run when mDNS answered'); },
+    /* RECORD the call rather than throwing.
+     *
+     * This used to `throw` to prove the scan is not run when mDNS answered — which works, right
+     * up until mDNS discovery itself breaks. Then discover() falls through to the scan path, the
+     * throw escapes as an unhandled rejection, and the suite DIES instead of failing an
+     * assertion. The mutation harness recorded that as CAUGHT with no named claim: caught by a
+     * stack trace, not by a check. A flag gives the same guarantee and still fails by name. */
+    scan: async () => { scanRan = true; return []; },
     log: (m) => log.push(m),
   });
   ok('discover: uses the mDNS endpoint', r.endpoint === '100.112.255.69:44444', String(r.endpoint));
+  ok('discover: does not run the scan when mDNS answered', scanRan === false,
+    'the scan ran even though mDNS returned an endpoint — on a remote phone that is a 35,000 '
+    + 'port sweep nobody needed');
   ok('discover: reports how it found it', r.via === 'mdns', r.via);
   ok('discover: does not scan unnecessarily', !r.tried.includes('scan'), String(r.tried));
 }

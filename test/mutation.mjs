@@ -61,6 +61,36 @@ const chosen = only ? MUTANTS.filter((m) => m.suite.includes(only)) : MUTANTS;
 const editsOf = (m) => (Array.isArray(m.edits) && m.edits.length ? m.edits
                                                                  : [{ file: m.file, from: m.from, to: m.to }]);
 const touched = [...new Set(chosen.flatMap((m) => editsOf(m).map((e) => e.file)))];
+
+/* REFUSE TO START if a previous run left backups behind.
+ *
+ * Restore lives in a finally, and a finally does not run when the HOST dies. The 16:36 reboot
+ * killed a full-table run mid-flight and left 20 .mutation-backup files plus one genuinely
+ * mutated file — the scoped sidecar still carrying SPEECH_RMS = -1. The live plugin happened to
+ * be clean, but only because of where the run had got to; a reboot a few entries earlier would
+ * have left Terra's production adapter mutated with nothing anywhere saying so.
+ *
+ * Backups on disk mean exactly one thing: a run did not finish. Starting a new one would copy the
+ * CURRENT (possibly mutated) file over the good backup and destroy the only record of what the
+ * file should be. So stop, and say what to do. */
+{
+  const orphaned = touched.filter((f) => existsSync(`${f}.mutation-backup`));
+  if (orphaned.length) {
+    console.error('\nREFUSING TO RUN: a previous mutation run did not finish.\n');
+    console.error(`${orphaned.length} file(s) still have a .mutation-backup beside them:`);
+    for (const f of orphaned) {
+      const same = readFileSync(f, 'utf8') === readFileSync(`${f}.mutation-backup`, 'utf8');
+      console.error(`  ${same ? 'clean  ' : 'MUTATED'}  ${f.replace(process.env.HOME || '~', '~')}`);
+    }
+    console.error('\nA new run would overwrite those backups with the current (possibly mutated)'
+      + '\ncontents and destroy the only record of the originals.\n');
+    console.error('Check each one, restore anything marked MUTATED from its backup, then delete');
+    console.error('the .mutation-backup files:');
+    console.error('  for b in $(find . ~/.hermes/plugins/agentmob ~/.hermes/profiles -name "*.mutation-backup"); do');
+    console.error('    f="${b%.mutation-backup}"; cmp -s "$b" "$f" || cp "$b" "$f"; rm "$b"; done');
+    process.exit(3);
+  }
+}
 const backups = new Map();
 for (const f of touched) {
   if (!existsSync(f)) continue;
@@ -157,8 +187,37 @@ try {
     else if (m.restart) reloadSidecar();
     const failed = r.status !== 0;
     const n = (r.stdout || '').match(/(\d+) (?:passed|failed)/g) || [];
-    results.push({ ...m, verdict: failed ? 'CAUGHT' : 'MISSED', note: n.join(' ') });
-    console.log(`  ${failed ? 'CAUGHT ' : 'MISSED '} ${m.suite.padEnd(24)} (${m.why})`);
+    /* WHICH assertions broke, not just that something did.
+     *
+     * "the suite failed" is a weaker fact than it looks. A mutation can break a PRECONDITION —
+     * my own mute-midreply entry sat on SILENCE_MS, so it stopped the utterance ever closing and
+     * the suite failed at "the sidecar transcribed the utterance", never reaching the mute claim
+     * it was supposed to guard. The table read CAUGHT and the mute behaviour was untested.
+     *
+     * So an entry may declare `breaks`: a substring of the assertion it must take down. If the
+     * suite fails on something else, that is WRONG-CLAIM — caught, but not the thing claimed. */
+    const failedLines = (r.stdout || '').split('\n')
+      .filter((l) => /^\s*FAIL/.test(l)).map((l) => l.trim().replace(/^FAIL\s*/, ''));
+    let verdict = failed ? 'CAUGHT' : 'MISSED';
+    let claimNote = '';
+    if (failed && m.breaks) {
+      const hit = failedLines.some((l) => l.includes(m.breaks));
+      if (!hit) {
+        verdict = 'WRONG-CLAIM';
+        claimNote = `expected to break "${m.breaks}" but the failures were: `
+          + (failedLines.slice(0, 3).map((l) => l.slice(0, 70)).join(' | ') || '(none named)');
+      }
+    }
+    results.push({ ...m, verdict, note: [n.join(' '), claimNote].filter(Boolean).join(' — '),
+                   failedLines });
+    console.log(`  ${verdict.padEnd(11)} ${m.suite.padEnd(24)} (${m.why})`);
+    if (claimNote) console.log(`              ${claimNote}`);
+    /* Print WHICH assertion fell. Without this the operator sees "CAUGHT" and has to take on
+     * faith that it broke something that matters — and it is also the raw material for filling
+     * in an entry's `breaks` field from observation rather than from a guess. */
+    else if (failed && failedLines.length) {
+      console.log(`              broke: ${failedLines[0].slice(0, 90)}`);
+    }
   }
 } finally {
   restoreAll();
@@ -192,11 +251,13 @@ if (clean) {
 }
 
 const blocked = results.filter((r) => r.verdict === 'BLOCKED');
+const wrongClaim = results.filter((r) => r.verdict === 'WRONG-CLAIM');
 const missed = results.filter((r) => r.verdict === 'MISSED');
 const stale = results.filter((r) => r.verdict === 'STALE');
 const caught = results.filter((r) => r.verdict === 'CAUGHT');
 console.log(`\n${caught.length} caught, ${missed.length} MISSED, ${stale.length} stale, `
-  + `${blocked.length} blocked, of ${results.length}`);
+  + `${blocked.length} blocked, ${wrongClaim.length} wrong-claim, of ${results.length}`);
+for (const r of wrongClaim) console.log(`  WRONG-CLAIM: ${r.suite} — ${r.note}`);
 for (const r of blocked) console.log(`  BLOCKED: ${r.suite} — ${r.note}`);
 for (const r of missed) console.log(`  MISSED: ${r.suite} — passed with "${r.why}" deleted; it is asserting on scaffolding`);
 for (const r of stale) console.log(`  STALE : ${r.suite} — ${r.note}`);
@@ -204,4 +265,5 @@ for (const r of stale) console.log(`  STALE : ${r.suite} — ${r.note}`);
  * mutation that may not have applied produces a MISSED that sends you auditing a test that is
  * fine. There is deliberately no softer "not run" verdict any more — the scoped instance removed
  * the case that needed one, and a verdict nothing can emit is scaffolding. */
-process.exit(!clean || livePidMoved || missed.length || stale.length || blocked.length ? 1 : 0);
+process.exit(!clean || livePidMoved || missed.length || stale.length || blocked.length
+  || wrongClaim.length ? 1 : 0);
