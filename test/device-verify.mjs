@@ -42,6 +42,7 @@ import { classifyDevices, stateLabel, describeBlocked, connectErrorOf } from './
 import { discover, scanPorts, DEFAULT_SCAN_RANGES, parseTailscalePeer } from './lib/adb-discover.mjs';
 import { typedTurn } from './lib/aead-trigger.mjs';
 import { localApkPreflight, APK } from './lib/apk-facts.mjs';
+import { classifyIcePath } from './lib/ice-path.mjs';
 import { logStamp, logSince as logSinceReal } from './lib/gateway-log.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -544,18 +545,18 @@ if (!DRY && serial) {
    * are indistinguishable from the outside, so a run done on the sofa could "verify" a property
    * that has never once been exercised. The sidecar now logs the nominated pair on the
    * connected transition; this reads it back and names which one happened. */
-  const pair = await waitForLog(logOff, /\[sidecar\] webrtc ICE pair remote=(\S+)/, 20000);
-  if (!pair) {
+  /* Either shape ends the wait. Matching only `remote=` meant the UNKNOWN line — which the
+   * sidecar logs the instant it cannot read a pair — sat out the full 20s before the run
+   * concluded the same thing. Dead time in front of someone holding the phone. */
+  const pair = await waitForLog(logOff,
+    /\[sidecar\] webrtc ICE pair (?:remote=(\S+)|unknown)/, 20000);
+  const path = classifyIcePath(pair && pair[1]);
+  if (path.via === 'unknown') {
     stage('ICE path (tailnet vs LAN)', 'blocked',
       'the sidecar logged no nominated pair — werift did not expose one');
   } else {
-    const viaTailnet = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(pair[1]);
-    stage(viaTailnet ? 'ICE over the Tailscale TUN' : 'ICE connected, but over the LAN',
-      viaTailnet ? 'verified' : 'blocked',
-      viaTailnet
-        ? `nominated remote ${pair[1]} — the CGNAT range, so this is the tailnet path`
-        : `nominated remote ${pair[1]} — same-network run: the remote-phone claim is NOT `
-          + 'exercised here. Re-run with the Pixel off this Wi-Fi (mobile data) to prove it.');
+    stage(path.via === 'tailnet' ? 'ICE over the Tailscale TUN' : 'ICE connected, but over the LAN',
+      path.via === 'tailnet' ? 'verified' : 'blocked', path.note);
   }
 
   stage('screenshot: connected control bar', shot('02-connected.png') ? 'verified' : 'blocked',

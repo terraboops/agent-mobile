@@ -199,6 +199,17 @@ if (connected) {
    *
    * So it is logged, not asserted. An assertion that fails for a reason unrelated to the claim
    * teaches people to ignore it. */
+  /* NOT MUTATION-COVERED, and it cannot be. The answer was filtered above to candidates
+   * containing `addr`, so no other pair can form, and this line sits inside `if (connected)` —
+   * break the sidecar's tailnet path and nothing connects, so this never runs; leave it alone
+   * and the only nominatable pair is the tailnet one. Every candidate mutation comes back
+   * naming the gathering assertions instead (watched: ice-tailnet #3, WRONG-CLAIM).
+   *
+   * It stays because it guards the thing that was actually wrong: this block read
+   * `nominated?.[0]` — a subscript on an object — so `local?.host` was falsy for every run that
+   * has ever happened, and I turned that into a comment claiming werift does not expose the
+   * host. This fails loudly if the accessor path changes shape again. A regression guard, named
+   * as one rather than counted as coverage. */
   ok(!!remote?.host && remote.host === addr,
     `the nominated pair's REMOTE candidate is the tailnet address (${remote?.host ?? 'not exposed'})`,
     'the peer nominated a non-tailnet path');

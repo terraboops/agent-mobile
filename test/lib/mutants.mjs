@@ -33,6 +33,7 @@ const GS = join(REPO, 'test/lib/gateway-scope.mjs');
 const SCOPEDGW = join(REPO, 'test/lib/scoped-gateway.mjs');
 const GRADLE_VARS = join(REPO, 'android/variables.gradle');
 const AEADTRIG = join(REPO, 'test/lib/aead-trigger.mjs');
+const ICEPATH = join(REPO, 'test/lib/ice-path.mjs');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
  * instance's own copy, so the production adapter is never modified and never needs restoring. */
 const SCOPED_AD = join(homedir(), '.hermes/profiles/agentmobtest/plugins/agentmob/adapter.py');
@@ -909,6 +910,62 @@ export const MUTANTS = [
     breaks: 'the answer echoes the offered payload type',
     from: "      await this.pc.setRemoteDescription({ type: 'offer', sdp });",
     to:   "      await this.pc.setRemoteDescription({ type: 'offer', sdp: String(sdp).replace(/\\b111\\b/g, '96') });" },
+
+  /* ice-tailnet #3 — the last step of the tailnet-ICE PIPELINE: gather the address (#1), accept
+     the whole CGNAT range (#2), then hand the list to werift. This breaks the handing-over while
+     leaving the other two intact, so the three together say the path fails if ANY step does.
+
+     IT NAMES THE SAME CLAIM AS #1, DELIBERATELY, AND THAT IS THE FINDING. It was first written
+     against "the nominated pair's REMOTE candidate is the tailnet address" and came back
+     WRONG-CLAIM: the failures were the gathering ones instead. That is not a mis-aimed mutation,
+     it is a property of the suite. ice-tailnet FILTERS the answer down to candidates containing
+     the tailnet address before applying it, so no other pair can form — and the nominated-pair
+     assertion sits inside `if (connected)`. Break the advertising and nothing connects, so that
+     assertion never runs; leave the advertising alone and the only pair that CAN be nominated is
+     the tailnet one. There is no sidecar edit that produces "connected, over something else".
+
+     So the nominated-pair assertion is not independently falsifiable here, and it is not
+     pretending to be: it is a regression guard on the ACCESSOR, which is the thing that was
+     actually broken (`nominated?.[0]` on an object). It fails if werift stops exposing the pair
+     or the path changes shape. That is recorded next to the assertion too, so nobody reads a
+     green tick there as mutation-covered. */
+  { suite: 'ice-tailnet', file: SC, restart: true,
+    why: 'advertising the gathered tailnet address to the peer',
+    breaks: 'the answer contains a tailnet candidate',
+    from: '        iceAdditionalHostAddresses: ICE_HOST_ADDRS.length ? ICE_HOST_ADDRS : undefined }',
+    to:   '        iceAdditionalHostAddresses: undefined }' },
+
+  /* ice-path #1 — the TOP of the CGNAT range. 100.64.0.0/10 ends at 100.127, and this host sits
+     at 100.125: stop the range one short of 126 and real tailnet traffic is reported as a LAN
+     run, so the device stage says "not exercised" for the exact case it was built to confirm.
+     The boundary is the entire content of the predicate, which is why it is what gets mutated. */
+  { suite: 'ice-path', file: ICEPATH,
+    why: 'the CGNAT range reaching 100.127, not stopping short of this host',
+    breaks: 'is tailnet (the last)',
+    from: '  return o[0] === 100 && o[1] >= 64 && o[1] <= 127;',
+    to:   '  return o[0] === 100 && o[1] >= 64 && o[1] <= 124;' },
+
+  /* ice-path #2 — UNKNOWN is not LAN. A pair that was never logged and a pair that was logged
+     as a LAN address are different answers: one is a measurement, the other is its absence.
+     Collapse them and device-verify reports "ICE connected, but over the LAN" for a run where
+     ICE state was never observed at all — a verdict nobody took, which is the failure this
+     whole project keeps finding in its own tooling. */
+  { suite: 'ice-path', file: ICEPATH,
+    why: 'telling "no pair was observed" apart from "the pair was a LAN one"',
+    breaks: 'nothing logged is unknown, not lan',
+    from: "  if (!raw) return { via: 'unknown', host: null, note: 'no nominated pair was logged' };",
+    to:   "  if (!raw) return { via: 'lan', host: null, note: 'no nominated pair was logged' };" },
+
+  /* ice-path #3 — the two halves of the device stage still agreeing. The sidecar WRITES the
+     pair line and device-verify READS it with a regex; neither half runs without a handset, so
+     a rename on either side would surface as "ICE path: blocked" during the ten minutes someone
+     is standing over the phone — and blocked is exactly what the honest no-pair case looks
+     like. This renames the writer's half. */
+  { suite: 'ice-path', file: SC, restart: true,
+    why: 'the sidecar still writing the line device-verify reads',
+    breaks: 'the sidecar still WRITES that line',
+    from: '            log(np ? `webrtc ICE pair remote=${np.remote} local=${np.local || \'n/a\'}`',
+    to:   '            log(np ? `webrtc selected ${np.remote} <- ${np.local || \'n/a\'}`' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
