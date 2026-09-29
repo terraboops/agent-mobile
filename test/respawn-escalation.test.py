@@ -156,9 +156,17 @@ ok("the escalation says the phone cannot connect and will not self-heal",
 ok("the escalation includes the sidecar's own last output (WHY, not just THAT)",
    any("canary: could not start" in m for m in errors), "; ".join(errors[:1]))
 ok("the wedged flag is set for anything else to read", adapter._sidecar_wedged is True)
+# "Fewer errors than attempts" is not the claim and does not test it. Escalating on EVERY
+# attempt past the threshold still gives fails-minus-threshold errors, which is comfortably
+# below fails — so forcing the periodic condition to always-true left this green. The claim is
+# that escalation is PERIODIC: one when it first wedges, then one every _RESPAWN_ESCALATE_EVERY.
+# (The identical `len(a) < len(b)` shape was fixed in inbound-resilience earlier tonight; I did
+# not think to look for the second copy of it, and a mutation had to point here.)
+_esc_budget = 2 + adapter._sidecar_fails // mod._RESPAWN_ESCALATE_EVERY
 ok("it does NOT spam an ERROR on every single attempt",
-   len(errors) < adapter._sidecar_fails,
-   f"{len(errors)} errors for {adapter._sidecar_fails} attempts")
+   len(errors) <= _esc_budget,
+   f"{len(errors)} errors for {adapter._sidecar_fails} attempts — periodic escalation allows "
+   f"at most {_esc_budget} (one on wedging, then every {mod._RESPAWN_ESCALATE_EVERY})")
 ok("backoff is capped (the loop did not stall for minutes)", elapsed < 10,
    f"{elapsed:.1f}s")
 
@@ -195,6 +203,30 @@ ok("a healthy restart logs the ordinary form, not 'failed start #n'",
 ok("being cancelled (shutdown) is not counted as a failed start",
    not any("failed start" in m for m in warns2), "; ".join(warns2[:3]))
 logger.removeHandler(cap2)
+
+# ---- 2b. a WEDGED adapter that finally gets a healthy run must CLEAR -------------------------
+# Scenario 2 starts from a clean adapter, so its counter was never non-zero and
+# "its failure counter stays reset" above could not have failed: deleting the reset in
+# adapter.py left it green, because the branch that resets is the same branch that never
+# incremented. Recovery has to be reached from a wedge to mean anything.
+cap2b = Capture()
+logger.addHandler(cap2b)
+_fails_before = adapter._sidecar_fails
+adapter._node_bin = wrapper                 # the same wedged adapter from scenario 1
+adapter._proc = None
+asyncio.run(run_loop(adapter, 3.0))
+infos2b = cap2b.at(logging.INFO)
+ok("recovery: the adapter really was wedged before this run",
+   _fails_before >= mod._RESPAWN_ESCALATE_AFTER and adapter._sidecar_wedged is not None,
+   f"fails were {_fails_before}")
+ok("recovery: a healthy run CLEARS the consecutive-failure count",
+   adapter._sidecar_fails == 0, f"fails={adapter._sidecar_fails} (was {_fails_before})")
+ok("recovery: the wedged flag is cleared too",
+   adapter._sidecar_wedged is False, f"wedged={adapter._sidecar_wedged}")
+ok("recovery: it SAYS it recovered, naming how many starts had failed",
+   any("recovered after" in m for m in infos2b), "; ".join(infos2b[:2]))
+logger.removeHandler(cap2b)
+
 os.unlink(wrapper)
 
 

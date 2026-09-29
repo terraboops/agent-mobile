@@ -1073,6 +1073,47 @@ export const MUTANTS = [
     from: '    return collections.deque(maxlen=_OUTBOUND_QUEUE_MAX)',
     to:   '    return collections.deque()' },
 
+  /* respawn-escalation #3 — the ESCALATION firing once and then only periodically. `first or
+     fails % EVERY == 0` is two decisions in one line: say it at all, and do not say it every
+     attempt. An ERROR every few seconds is how a log stops being read, which is the same
+     outcome as silence and harder to argue with. */
+  { suite: 'respawn-escalation', file: AD,
+    why: 'escalating once, then periodically — not on every failed start',
+    breaks: 'it does NOT spam an ERROR on every single attempt',
+    from: '                            if first or self._sidecar_fails % _RESPAWN_ESCALATE_EVERY == 0:',
+    to:   '                            if True:' },
+
+  /* respawn-escalation #4 — the escalation carrying the sidecar's OWN last output. Without it
+     the alarm says the phone cannot connect but not why, and the stderr that would have named
+     the cause — a bad port, a missing module, a syntax error from a half-finished edit — has
+     already scrolled past in a stream nobody was watching. WHY, not just THAT. */
+  { suite: 'respawn-escalation', file: AD,
+    why: 'the wedge alarm quoting the sidecar’s last output',
+    breaks: "the sidecar's own last output",
+    /* TWO EDITS: there are two alarms — WEDGED and FLAPPING — and both quote the same stderr.
+       A fast-failing sidecar trips both, so blanking one alarm's tail left the other still
+       carrying the canary text and the entry came back MISSED. Two alarms sharing a diagnostic
+       is right; a mutation that removes only one of them is not a test of it. */
+    edits: [
+      { file: AD,
+        from: '                                tail = " | ".join(self._sidecar_stderr) or "(no stderr captured)"',
+        to:   '                                tail = "(no stderr captured)"' },
+      { file: AD,
+        from: '                            tail = " | ".join(self._sidecar_stderr) or "(no stderr captured)"',
+        to:   '                            tail = "(no stderr captured)"' },
+    ] },
+
+  /* respawn-escalation #5 — healthy uptime CLEARING the counter. A sidecar that ran for hours
+     and then died is an ordinary restart, not a wedge; without the reset the failure count
+     accumulates across unrelated incidents until a perfectly healthy machine raises an alarm
+     that says the phone cannot connect. A false wedge is worse than none: it is the alarm that
+     teaches people the alarm is wrong. */
+  { suite: 'respawn-escalation', file: AD,
+    why: 'a long healthy run clearing the consecutive-failure count',
+    breaks: 'a healthy run CLEARS the consecutive-failure count',
+    from: '                        self._sidecar_fails = 0\n                        self._sidecar_wedged = False',
+    to:   '                        self._sidecar_wedged = False' },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',
