@@ -277,6 +277,10 @@ ok('but an OFFLINE socket is not described as one',
   'adb marks a random service offline after connecting to it; calling that an authorization '
   + 'prompt sends someone to look at a phone that is not involved');
 
+ok('the real loop waits out a live mutation run before driving the phone',
+  /\.mutation-running/.test(src) && src.indexOf('liveLock()') < src.indexOf('for (const p of passes)'),
+  'passes spawn device-verify from disk; mid-batch, the phone would be driven by a mutant');
+
 ok('an unconfirmed candidate runs NO passes',
   /if \(confirmed\) \{/.test(src) && /let confirmed = null;/.test(src),
   'a candidate and a confirmed device must not take the same path');

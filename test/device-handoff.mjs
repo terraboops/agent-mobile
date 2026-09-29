@@ -15,7 +15,7 @@
  *   npm run device-handoff -- --no-ws      full sweep only
  */
 import { spawnSync, execFileSync } from 'node:child_process';
-import { existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir, networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -297,6 +297,19 @@ if (confirmed) {
     if (i >= 0) a.splice(i, 2);
     return { ...p, args: [...a, '--only', String(PASS_ONLY)] };
   });
+  /* Never run a pass against a MUTANT. The passes spawn device-verify from disk, and the
+   * mutation harness edits that file for several entries; if the phone appeared mid-batch, the
+   * real device would be driven by mutated code. Wait the batch out (it holds a lock). */
+  const LOCK = join(HERE, '.mutation-running');
+  const liveLock = () => {
+    try { const h = JSON.parse(readFileSync(LOCK, 'utf8')); process.kill(h.pid, 0); return h; }
+    catch { return null; }
+  };
+  for (let h = liveLock(); h; h = liveLock()) {
+    console.log(`  [${Math.round(elapsed())}s] a mutation run (pid ${h.pid}) is live — waiting before `
+      + 'driving the phone, so the passes run the real device-verify and not a mutant');
+    await sleep(15000);
+  }
   for (const p of passes) {
     /* Say what is RUNNING. With --pass-only the header still read "full sweep — install, launch,
      * handshake, WebRTC, surface, speak, mute, stop" over a pass that did two of those. */

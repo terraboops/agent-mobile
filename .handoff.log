@@ -124,3 +124,4 @@ device-handoff — arming for 6h, then two passes
   [3189s] swept 192.168.10.1 full range in 3s — 0 port(s) open
   [3251s] swept 192.168.10.53 full range in 2s — 0 port(s) open
   [3253s] swept 192.168.10.1 full range in 2s — 0 port(s) open
+  [3297s] swept 253 addresses on 192.168.10.0/24 in 3.6s — 12 alive (subnet sweep due (254 hosts, one port — refusals are instant))
