@@ -68,7 +68,8 @@
     "ice-path": "node test/ice-path.test.mjs",
     "device-probe": "node test/device-probe.test.mjs",
     "font-stack": "node test/font-stack.test.mjs",
-    "java-mic": "node test/java-mic.test.mjs"
+    "java-mic": "node test/java-mic.test.mjs",
+    "stage-select": "node test/stage-select.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

@@ -39,6 +39,7 @@ const DPROBE = join(REPO, 'test/lib/device-probe.mjs');
 const FSTACK = join(REPO, 'test/lib/font-stack.mjs');
 const MFACTS = join(REPO, 'test/lib/manifest-facts.mjs');
 const JFACTS = join(REPO, 'test/lib/java-facts.mjs');
+const SSEL = join(REPO, 'test/lib/stage-select.mjs');
 const PLUGINJ = join(REPO,
   'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
@@ -1417,6 +1418,45 @@ export const MUTANTS = [
     breaks: 'a call named only in a COMMENT is not read as a call',
     from: "    .replace(/\\/\\*[\\s\\S]*?\\*\\//g, ' ')",
     to:   "    .replace(/\\/\\*[\\s\\S]*?\\*\\//g, (m) => m)" },
+
+  /* stage-select #1 — REFUSING a phase name it does not know. Falling back to a full pass on a
+     misspelling is the worst available outcome: the operator asked for a two-minute check,
+     waited ten, and the report looks exactly like the one they wanted. Silence about a typo is
+     how a selector becomes a lie. */
+  { suite: 'stage-select', file: SSEL,
+    why: 'refusing an unknown phase instead of running everything',
+    breaks: 'an unknown phase runs NOTHING rather than everything',
+    from: '      return { names: null,\n'
+        + '               error: `unknown phase "${n}" for ${flagName}`',
+    to:   '      return { names: PHASE_NAMES,\n'
+        + '               error: null && `unknown phase "${n}" for ${flagName}`' },
+
+  /* stage-select #2 — --from meaning "and everything after". Collapse it to a single phase and
+     a resumed run stops one phase in, which reads as the rest having been skipped on purpose. */
+  { suite: 'stage-select', file: SSEL,
+    why: '--from running the phases that follow, not only the named one',
+    breaks: '--from mute runs what comes AFTER it',
+    from: '    const run = new Set(PHASE_NAMES.slice(at));',
+    to:   '    const run = new Set([PHASE_NAMES[at]]);' },
+
+  /* stage-select #3 — a partial pass SAYING so. Tomorrow the report is just a file: one whose
+     mute stages passed and one that never attempted them must not read the same. */
+  { suite: 'stage-select', file: SSEL,
+    why: 'a partial selection describing itself as partial',
+    breaks: 'a partial selection describes itself as partial',
+    from: "  return `${sel.kind}: running ${[...sel.run].join(', ')}`\n"
+        + "       + (skipped.length ? ` — SKIPPED ${skipped.join(', ')} (this is a PARTIAL pass)` : '');",
+    to:   "  return `${sel.kind}: running ${[...sel.run].join(', ')}`;" },
+
+  /* stage-select #4 — DISCOVERY surviving every selection. Every later phase needs a serial, so
+     a selector that can drop it only creates a way to get a confusing failure at the point
+     someone is trying to iterate quickly. */
+  { suite: 'stage-select', file: SSEL,
+    why: 'discovery running whatever else was selected',
+    breaks: '--from still runs discovery',
+    from: '    for (const p of PHASES) if (p.always) run.add(p.name);\n'
+        + "    return { run, kind: 'from', error: null };",
+    to:   "    return { run, kind: 'from', error: null };" },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

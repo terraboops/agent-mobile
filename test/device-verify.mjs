@@ -47,6 +47,8 @@ import { classifyIcePath, classifyTailnetPath } from './lib/ice-path.mjs';
 import { parseDensity, parseSize, micTapPoint, stopTapX, parseMicMute, parseVersionName,
          highestMajor, parseNavInset, parseCrash } from './lib/device-probe.mjs';
 import { parseAmStartRefusal, parseInstallFailure } from './lib/manifest-facts.mjs';
+import { parsePhaseSelector, runsPhase, describeSelection, PHASE_NAMES }
+  from './lib/stage-select.mjs';
 import { logStamp, logSince as logSinceReal } from './lib/gateway-log.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -61,6 +63,24 @@ const flag = (n, d = null) => { const i = argv.indexOf(n); return i >= 0 ? (argv
  * --dry-run as its OWN flag and swallows it — the script then ran for real and sat in
  * the 1800s device wait. --dry-run still works when node is invoked directly. */
 const DRY = argv.includes('--dry') || argv.includes('--dry-run');
+/* Which phases to run. The phone is borrowed time and the pass is about ten minutes end to end,
+ * so a failure in the mute phase should not cost another install to look at again. A bad phase
+ * name EXITS — running everything because a name was misspelled gives the operator the ten
+ * minutes they were trying to avoid and a report that looks like the one they asked for. */
+const SELECT = parsePhaseSelector({ only: flag('--only'), from: flag('--from') });
+if (SELECT.error) {
+  console.error(`device-verify: ${SELECT.error}`);
+  process.exit(2);
+}
+const phase = (name) => runsPhase(SELECT, name);
+/* A skipped phase is REPORTED, not omitted: a report missing its mute stages and a report whose
+ * mute stages passed must not look the same when someone reads it tomorrow. */
+const skipPhase = (name, stageNames) => {
+  for (const n of stageNames) {
+    report.push({ name: n, status: 'skipped', detail: `phase "${name}" not selected` });
+    console.log(`[SKIPPED ] ${n} — phase "${name}" not selected`);
+  }
+};
 const CONNECT = flag('--connect', process.env.AGENTMOB_ADB_TARGET);
 /* The phone's tailnet address. Only the HOST is needed — the port is discovered. */
 const PHONE_HOST = String(flag('--host', process.env.AGENTMOB_PHONE_HOST
@@ -461,7 +481,10 @@ const shot = (name) => {
  * -r REPLACES in place and keeps app data. That matters: the IdentityStore keypair lives in
  * app-private SharedPreferences, so a plain uninstall/reinstall would rotate client_id and
  * invalidate the pinning decision. */
-if (!existsSync(APK)) stage('APK present', 'blocked', APK);
+if (!phase('install')) {
+  skipPhase('install', ['install APK (-r, keeps IdentityStore)',
+                        'WebView version read from the device']);
+} else if (!existsSync(APK)) stage('APK present', 'blocked', APK);
 else if (DRY) stage('install APK', 'blocked', 'dry run');
 else {
   const r = adb(['-s', serial, 'install', '-r', APK], { timeout: 300000 });
@@ -494,7 +517,7 @@ else {
  * Read from the package manager, not from a UA string: the UA can be overridden by the app, the
  * package version is what is actually installed. Both Google's WebView and a Chrome-provided
  * one are checked, since either can be the WebView implementation. */
-if (!DRY && serial) {
+if (!DRY && serial && phase('install')) {
   const providers = ['com.google.android.webview', 'com.android.webview',
                      'com.android.chrome', 'com.google.android.trichromelibrary'];
   const found = [];
@@ -519,7 +542,10 @@ if (!DRY && serial) {
 }
 
 /* ---- 3. launch ---------------------------------------------------------------------------- */
-if (!DRY && serial) {
+if (!DRY && serial && !phase('launch')) {
+  skipPhase('launch', ['app launched', 'screenshot: boot']);
+}
+if (!DRY && serial && phase('launch')) {
   const logOff = logSize();
   adb(['-s', serial, 'shell', 'am', 'force-stop', PKG]);
   await sleep(1000);
@@ -548,6 +574,12 @@ if (!DRY && serial) {
   stage('screenshot: boot', shot('01-boot.png') ? 'verified' : 'blocked',
     lastShotError ? `01-boot.png — ${lastShotError}` : '01-boot.png');
 
+  if (!phase('handshake')) {
+    skipPhase('handshake', ['AEAD handshake', 'WebRTC negotiated',
+                            'ICE path (tailnet vs LAN)',
+                            'tailnet path exercises the REMOTE case']);
+  }
+  if (phase('handshake')) {
   /* ---- 4. handshake ------------------------------------------------------------------------
    * opus PT 111 = Android libwebrtc. werift (the test harness) offers 96, so this is how the
    * run proves it is looking at the real device and not at its own fake phone. */
@@ -603,12 +635,30 @@ if (!DRY && serial) {
     tsPath.exercisesRemote ? 'verified' : 'blocked',
     `${tsPath.kind}${tsPath.via ? ` (${tsPath.via})` : ''}: ${tsPath.note}`);
 
-  stage('screenshot: connected control bar', shot('02-connected.png') ? 'verified' : 'blocked',
-    '02-connected.png — check Stop vs the native mic (issue #2)');
-  stage('screenshot: widget tiles / theme tokens', shot('03-surface.png') ? 'verified' : 'blocked',
-    '03-surface.png — check tiles render on var(--surface)/var(--ink)');
+  }   /* end handshake phase */
 
-  /* ---- 5/6/7. speak, then mute MID-SENTENCE ------------------------------------------------ */
+  if (!phase('surface')) {
+    skipPhase('surface', ['screenshot: connected control bar',
+                          'screenshot: widget tiles / theme tokens']);
+  } else {
+    stage('screenshot: connected control bar', shot('02-connected.png') ? 'verified' : 'blocked',
+      '02-connected.png — check Stop vs the native mic (issue #2)');
+    stage('screenshot: widget tiles / theme tokens', shot('03-surface.png') ? 'verified' : 'blocked',
+      '03-surface.png — check tiles render on var(--surface)/var(--ink)');
+  }
+
+  /* ---- 5/6/7. speak, then mute MID-SENTENCE ------------------------------------------------
+   * These three share one spoken turn: the reply has to be playing before the mic can be tapped
+   * mid-sentence, and still playing before Stop means anything. So they are selected together —
+   * `--only mute` runs the trigger that makes a mute observable, which is the honest reading of
+   * what the operator asked for. */
+  const SPEAKING_PHASES = ['speak', 'mute', 'stop'];
+  const wantsTurn = SPEAKING_PHASES.some((p) => phase(p));
+  if (!wantsTurn) {
+    skipPhase('speak/mute/stop', ['trigger a spoken reply (typed turn over AEAD)',
+      'speaking pill', 'mute mid-sentence (issue #1)', 'Stop actually stopped the audio']);
+  }
+  if (wantsTurn) {
   const dens = parseDensity(sh('wm density'));
   const size = parseSize(sh('wm size'));
   const MIC_SIZE = Number((readFileSync(JAVA, 'utf8').match(/MIC_SIZE_DP\s*=\s*(\d+)/) || [])[1]);
@@ -674,6 +724,12 @@ if (!DRY && serial) {
        *
        * Truncation comes from the INTERRUPT the Stop control sends ({"cmd":"interrupt"}), which
        * is a separate button. So each is now checked against what it actually does. */
+      if (!phase('mute')) {
+        skipPhase('mute', ['tapped the native mic mid-sentence',
+          'mute mid-sentence: the device reports the mic muted (issue #1)',
+          'mute mid-sentence: the reply KEPT playing (muting the mic must not stop it)']);
+      }
+      if (phase('mute')) {
       const off3 = logSize();
       adb(['-s', serial, 'shell', 'input', 'tap', String(tapX), String(tapY)]);
       stage('tapped the native mic mid-sentence', 'built', `(${tapX},${tapY})`);
@@ -695,7 +751,12 @@ if (!DRY && serial) {
           : String(micRaw).replace(/\s+/g, ' ').slice(0, 140));
       stage('mute mid-sentence: the reply KEPT playing (muting the mic must not stop it)',
         'built', 'compare 04-speaking.png and 05-after-mute.png — the pill should still be lit');
+      }   /* end mute phase */
 
+      if (!phase('stop')) {
+        skipPhase('stop', ['tapped Stop mid-sentence', 'Stop actually stopped the audio']);
+      }
+      if (phase('stop')) {
       /* The interrupt is the control that truncates. Tap Stop, which the web layer renders at
        * the right of #ctrlbar: its centre sits one third of the bar's width in from the right
        * edge, on the same centreline as the mic (ctrlbar-geometry pins that to within 1dp). */
@@ -713,8 +774,17 @@ if (!DRY && serial) {
           + 'retry with a longer --say');
       }
       shot('06-after-stop.png');
+      }   /* end stop phase */
     }
   }
+  }   /* end speak/mute/stop phases */
+}
+
+/* A PARTIAL pass must never read as a full one. Stated at the end, where the counts are, so it
+ * is next to the numbers someone would otherwise quote. */
+if (SELECT.kind !== 'all') {
+  console.log(`\n  PARTIAL PASS — ${describeSelection(SELECT)}`);
+  console.log(`  Phases not selected report as SKIPPED above; they were not attempted.`);
 }
 
 finish(report.some((r) => r.status === 'failed') ? 1 : 0);

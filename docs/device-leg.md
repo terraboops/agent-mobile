@@ -84,6 +84,21 @@ with `dumpsys` evidence that the mic muted and the reply kept playing (issue #1)
 that must actually stop the audio. Rehearsed dry (`-- --dry`); everything that does not need the
 handset passes.
 
+### If something fails part-way
+
+The pass is about ten minutes and the install is the slowest phase, so a failure in the mute
+phase should not cost another install to look at again:
+
+    npm run device-verify -- --from mute     # discovery, then mute and stop
+    npm run device-verify -- --only surface  # discovery, then just the screenshots
+
+Phases, in order: `discover install launch handshake surface speak mute stop`. Discovery always
+runs — every later phase needs a serial. `speak` is implied by `mute` and `stop`, because neither
+is observable without a reply in flight. A phase name it does not recognise is REFUSED with a
+suggestion and a non-zero exit, never quietly turned into a full pass. Skipped phases are printed
+as SKIPPED and the run ends with a PARTIAL PASS line, so a report that never attempted the mute
+stages cannot be mistaken tomorrow for one where they passed.
+
 ### One thing to know before running it
 
 `ICE over the Tailscale TUN` will report **blocked, not verified**, if the Pixel is on the same
