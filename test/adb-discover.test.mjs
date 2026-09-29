@@ -16,7 +16,7 @@
  */
 import { createServer } from 'node:net';
 import { parseMdnsServices, pickAdbEndpoints, scanPorts, discover, DEFAULT_SCAN_RANGES,
-         parseTailscalePeer, classifyConnect } from './lib/adb-discover.mjs';
+         parseTailscalePeer, classifyConnect , describeDiscovery } from './lib/adb-discover.mjs';
 
 let pass = 0; const fails = [];
 const ok = (name, cond, detail = '') => {
@@ -331,6 +331,54 @@ ok('refused and timeout are not conflated',
   ok('a skipped host does not prevent a later host from being found',
     res.endpoint === 'b:5555', String(res.endpoint));
   ok('mixed results are recorded per host', res.scanned.a === null && Array.isArray(res.scanned.b));
+}
+
+/* ---- the line anyone reads FIRST when the toggle lands --------------------------------------
+ * The two failure verdicts next door have had assertions since they were written. This one was
+ * built inline in device-verify — which cannot run without a handset — so the success line had
+ * nothing standing over it at all. */
+{
+  const viaMdns = describeDiscovery({ endpoint: '192.168.10.53:37129', via: 'mdns' });
+  const viaScan = describeDiscovery({ endpoint: '100.112.255.69:44123', via: 'scan',
+                                      host: '100.112.255.69' });
+  ok('discovery verdict: names the endpoint it found',
+    /192\.168\.10\.53:37129/.test(viaMdns), viaMdns);
+  ok('discovery verdict: says it was mDNS, and what that implies',
+    /mDNS/.test(viaMdns) && /LAN/.test(viaMdns), viaMdns);
+  ok('discovery verdict: a swept endpoint says it was SWEPT, naming the host',
+    /sweep/.test(viaScan) && /100\.112\.255\.69/.test(viaScan), viaScan);
+  /* SAME endpoint, two methods. Comparing viaMdns to viaScan whole compares two strings that
+   * already differ in the address they carry — collapsing the method clause entirely still left
+   * them unequal, and a mutation that did exactly that came back WRONG-CLAIM against this line.
+   * The method is the variable under test, so it has to be the only one. */
+  const sameEp = (via) => describeDiscovery({ endpoint: '1.2.3.4:5', via, host: '1.2.3.4' });
+  ok('discovery verdict: the two methods do not share wording',
+    sameEp('mdns') !== sameEp('scan'),
+    'how it was found has different implications for the tailnet claim the ICE stage makes '
+    + 'later — mDNS is link-local, a sweep is not: ' + sameEp('mdns'));
+  ok('discovery verdict: mDNS wording does not claim a sweep happened',
+    !/sweep/.test(viaMdns), viaMdns);
+  ok('discovery verdict: sweep wording does not claim the phone is on this LAN',
+    !/\bLAN\b/.test(viaScan), viaScan);
+  ok('discovery verdict: says no port was supplied by hand',
+    /No port was supplied by hand/.test(viaMdns) && /randomis/.test(viaMdns), viaMdns);
+  ok('discovery verdict: no endpoint yields NO verdict, not an empty one',
+    describeDiscovery({ endpoint: null, via: 'scan' }) === null
+    && describeDiscovery({}) === null && describeDiscovery() === null,
+    'an empty string would print as a blank stage detail, which reads as a success with no '
+    + 'evidence behind it');
+  ok('discovery verdict: an unexpected method is reported, not silently dropped',
+    /somethingelse/.test(describeDiscovery({ endpoint: 'x:1', via: 'somethingelse' }) || ''),
+    describeDiscovery({ endpoint: 'x:1', via: 'somethingelse' }));
+}
+
+/* And device-verify must actually use it rather than re-wording the same idea inline. */
+{
+  const { readFileSync: rf } = await import('node:fs');
+  const dv = rf(new URL('./device-verify.mjs', import.meta.url), 'utf8');
+  ok('device-verify reports discovery through the shared verdict',
+    /describeDiscovery\(\{/.test(dv) && !/no port was supplied by hand`\)/.test(dv),
+    'the stage builds its own wording again, so these assertions stand over nothing');
 }
 
 console.log(`\n${pass} passed, ${fails.length} failed`);

@@ -1296,6 +1296,66 @@ export const MUTANTS = [
     from: "  return { code: 'UNKNOWN', doNotUninstall: false,",
     to:   "  return { code: 'INSTALL_FAILED_UPDATE_INCOMPATIBLE', doNotUninstall: true," },
 
+  /* adb-state #3 — the two network verdicts staying NON-INTERCHANGEABLE. "They differ" was all
+     that was asserted, and a helper emitting both phrases in both branches satisfies that: the
+     result tells someone to flip a toggle on a phone that is asleep, or to go and wake a phone
+     that is sitting there with the toggle off. The advice is the payload, so each line must
+     carry only its own. This gives the unreachable case the toggle advice as well. */
+  { suite: 'adb-state', file: AS,
+    why: 'the off-tailnet verdict not offering the toggle-off advice',
+    breaks: 'does NOT tell you to flip the toggle',
+    from: "        + `tailnet — adb cannot reach it until Tailscale on the phone is up again.`;",
+    to:   "        + `tailnet — turn on Settings > System > Developer options > Wireless debugging. `\n"
+        + "        + `That is the ONLY step needed.`;" },
+
+  /* adb-state #4 — the CONNECT ERROR surviving into the verdict. Refused and timed out are the
+     whole diagnostic: refused means the phone answered and adbd is not running, a timeout means
+     nothing answered and proves nothing at all. Drop it and both read as "nothing is listening",
+     which is the sentence that cost three and a half hours of polling. */
+  { suite: 'adb-state', file: AS,
+    why: 'the verdict carrying what the connect attempt actually said',
+    breaks: 'carries the CONNECT ERROR verbatim',
+    from: "        + (connectError ? ` (${connectError})` : '')",
+    to:   "        + ''" },
+
+  /* adb-discover #8 — the SUCCESS verdict distinguishing HOW the endpoint was found. mDNS means
+     the phone answered a link-local query, so it is on this LAN; a sweep means the port came out
+     of an ephemeral range and the phone may be anywhere on the tailnet. The two have different
+     implications for the tailnet claim the ICE stage makes later, and collapsing them loses
+     that at exactly the moment someone is reading the first line of a device run. */
+  { suite: 'adb-discover', file: ADIS,
+    why: 'the discovery verdict naming mDNS when that is how it was found',
+    /* Note what this actually does: the ternary is a chain, so replacing the first test with
+       `false` does not collapse the whole thing — mDNS falls through to the unknown-method
+       branch and comes out as the bare word "mdns", while a sweep is unaffected. The two still
+       differ, so it is the mDNS clause specifically that breaks. Named for what it does rather
+       than for what I first assumed, which is how it came back WRONG-CLAIM. */
+    breaks: 'says it was mDNS, and what that implies',
+    from: "  const how = via === 'mdns'",
+    to:   "  const how = false" },
+
+  /* adb-discover #10 — and the collapse proper: make both methods take the sweep branch, so the
+     verdict is the same sentence whichever way the endpoint was found. This is the one the
+     same-endpoint comparison is for. */
+  { suite: 'adb-discover', file: ADIS,
+    why: 'the two discovery methods producing different wording at all',
+    /* Collapsing this chain from the TOP does not work — the mDNS branch is first, so flipping
+       the later test leaves it untouched (watched: that version came back WRONG-CLAIM). The way
+       to make the two answers identical in one edit is to give mDNS the sweep's own sentence. */
+    breaks: 'the two methods do not share wording',
+    from: "    ? 'mDNS — the phone answered a link-local query, so it is on this LAN'",
+    to:   "    ? `a bounded TCP sweep of ${host || 'the known addresses'} — mDNS did not answer, `\n"
+        + "      + 'which is expected when the phone is remote'" },
+
+  /* adb-discover #9 — no endpoint yielding NO verdict. An empty string prints as a blank stage
+     detail, which reads as a success with no evidence behind it — the shape this whole project
+     keeps finding in its own tooling. */
+  { suite: 'adb-discover', file: ADIS,
+    why: 'refusing to describe a discovery that did not happen',
+    breaks: 'no endpoint yields NO verdict',
+    from: '  if (!endpoint) return null;',
+    to:   "  if (!endpoint) return '';" },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',

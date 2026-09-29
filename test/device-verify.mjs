@@ -39,7 +39,8 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyDevices, stateLabel, describeBlocked, connectErrorOf } from './lib/adb-state.mjs';
-import { discover, scanPorts, DEFAULT_SCAN_RANGES, parseTailscalePeer } from './lib/adb-discover.mjs';
+import { discover, scanPorts, DEFAULT_SCAN_RANGES, parseTailscalePeer, describeDiscovery }
+  from './lib/adb-discover.mjs';
 import { typedTurn } from './lib/aead-trigger.mjs';
 import { localApkPreflight, APK } from './lib/apk-facts.mjs';
 import { classifyIcePath } from './lib/ice-path.mjs';
@@ -346,7 +347,7 @@ if (DRY) {
       if (found.endpoint) {
         target = found.endpoint;
         stage('wireless-debugging endpoint discovered', 'verified',
-          `${target} (via ${found.via}) — no port was supplied by hand`);
+          describeDiscovery({ endpoint: target, via: found.via, host: PHONE_HOST }));
       }
     }
     if (target) {

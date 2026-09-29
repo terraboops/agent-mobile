@@ -95,6 +95,35 @@ ok('on-tailnet-but-closed names the toggle as the ONLY human step',
   /ONLY step/.test(mOnTailnet) && /discovered/.test(mOnTailnet), mOnTailnet);
 ok('the two network cases do not share a message', mOffTailnet !== mOnTailnet);
 
+/* NON-INTERCHANGEABLE, which "they differ" does not establish.
+ *
+ * The three assertions above check that each verdict CONTAINS its own phrase and that the two
+ * strings are not identical. A helper that emitted both phrases in both branches would satisfy
+ * every one of them — and the result would tell someone to flip a toggle on a phone that is
+ * asleep, or to go and wake a phone that is sitting there with the toggle off. The advice is the
+ * payload; each line has to carry only its own. */
+ok('the off-tailnet verdict does NOT tell you to flip the toggle',
+  !/Wireless debugging/.test(mOffTailnet) && !/ONLY step/.test(mOffTailnet),
+  'a phone that is off the tailnet cannot be fixed from its Developer options — this would send '
+  + 'someone to the wrong screen: ' + mOffTailnet);
+ok('the toggle-off verdict does NOT claim the phone is unreachable',
+  !/NOT REACHABLE/.test(mOnTailnet),
+  'the phone answered; saying it is unreachable sends someone to check Tailscale instead of the '
+  + 'one toggle that is actually off: ' + mOnTailnet);
+ok('the toggle-off verdict carries the CONNECT ERROR verbatim',
+  /Connection refused/.test(mOnTailnet),
+  'refused and timed out are the whole diagnostic — refused means the phone answered and adbd '
+  + 'is not running, a timeout means nothing answered and proves nothing: ' + mOnTailnet);
+ok('neither verdict is offered when the tailnet was never probed',
+  (() => {
+    const m = describeBlocked({ classified: { ready: [], unauthorized: [], offline: [],
+      authorizing: [], other: [] }, connectTarget: '100.112.255.69',
+      tailnet: { checked: false }, waitedS: 60 });
+    return !/NOT REACHABLE/.test(m) && !/Wireless debugging is OFF/.test(m);
+  })(),
+  'an unprobed tailnet state must not pick a side — both lines are claims about a measurement '
+  + 'nobody took');
+
 /* No two states may produce the same words — that is what "distinguishable" means. */
 const all = { mUnauth, mOffline, mAuthing, mOther, mNone, mNoneConn, mOffTailnet, mOnTailnet };
 const seen = new Map();

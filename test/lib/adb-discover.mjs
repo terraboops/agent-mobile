@@ -211,3 +211,28 @@ export async function discover({ host, hosts, runMdns, scan, ranges = DEFAULT_SC
   if (!didScan) tried[tried.indexOf('scan')] = 'scan-skipped';
   return { endpoint: null, via: 'none', tried, services, open: [], scanned, didScan };
 }
+
+/**
+ * The verdict for a SUCCESSFUL discovery — the first line anyone reads when the toggle lands.
+ *
+ * WHY IT IS A FUNCTION. It was built inline in device-verify, which cannot run without a
+ * handset, so the one line that will be read before any other had nothing standing over it. The
+ * two failure verdicts next door (describeBlocked) have had assertions since they were written;
+ * this one did not, and I claimed the opposite about both before checking.
+ *
+ * HOW it was found matters as much as WHERE. `mdns` means the phone answered a link-local
+ * multicast, so it is on this LAN; `scan` means the port was swept out of an ephemeral range and
+ * the phone may be anywhere on the tailnet. Reporting only the endpoint loses that, and the two
+ * have different implications for the tailnet-path claim the ICE stage makes later.
+ */
+export function describeDiscovery({ endpoint, via, host } = {}) {
+  if (!endpoint) return null;
+  const how = via === 'mdns'
+    ? 'mDNS — the phone answered a link-local query, so it is on this LAN'
+    : via === 'scan'
+      ? `a bounded TCP sweep of ${host || 'the known addresses'} — mDNS did not answer, which is `
+        + 'expected when the phone is remote'
+      : `${via || 'an unknown method'}`;
+  return `${endpoint} via ${how}. No port was supplied by hand: Android randomises it on every `
+       + 'toggle, so a number read off the phone screen is stale as soon as it is cycled.';
+}
