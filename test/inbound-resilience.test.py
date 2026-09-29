@@ -175,8 +175,13 @@ async def main():
        f"{len(errors)} error(s)")
     ok("the escalation says the bridge is healthy and this is a handler bug",
        any("handler bug, not a connection problem" in m for m in errors))
-    ok("it does not escalate once per event", len(errors) < len(poisons),
-       f"{len(errors)} errors for {len(poisons)} bad events")
+    # ONE escalation, not "fewer escalations than events". The old form was
+    # `len(errors) < len(poisons)`, which a per-event escalation after the threshold still
+    # satisfies: 8 bad events past a threshold of 5 give 4 errors, and 4 < 8 passes. Changing
+    # the adapter's `==` to `>=` — the exact regression this names — left it green, and the
+    # mutation run is what said so. The claim is "once", so the assertion says once.
+    ok("it does not escalate once per event", len(errors) == 1,
+       f"{len(errors)} errors for {len(poisons)} bad events — expected exactly one escalation")
 
     # ---- recovery: a good event after the bad ones resets the counter --------------------
     cap.records.clear()

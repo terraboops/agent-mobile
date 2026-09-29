@@ -64,6 +64,25 @@ ok('the sidecar identity keypair is NOT vendored',
   !existsSync(join(VENDOR_DIR, 'sidecar/.identity.json')),
   'vendor/hermes-plugin/sidecar/.identity.json exists — that file holds the private key');
 
+/* POSITIVE CONTROL for the classifier above.
+ *
+ * The two checks either side of this pass without exercising isForbidden against anything it
+ * should actually refuse: the loop iterates the manifest, and nothing forbidden has ever been
+ * in the manifest, so every iteration passes trivially; the existsSync is about a file that has
+ * never been written. Delete `.identity.json` from FORBIDDEN entirely and this whole section
+ * stayed green — a guard nothing tests, standing in front of a private key. Found by a mutation
+ * aimed at FORBIDDEN coming back MISSED.
+ *
+ * So: ask the classifier directly, in both directions. A guard that only ever says "no" to
+ * things nobody asked about is not a guard. */
+ok('isForbidden REFUSES the identity keypair', isForbidden('sidecar/.identity.json'),
+  'the private-key pattern is gone from FORBIDDEN — vendor-refresh would copy it');
+ok('isForbidden refuses it at any depth', isForbidden('plugins/agentmob/sidecar/.identity.json'));
+ok('isForbidden refuses node_modules and .env',
+  isForbidden('sidecar/node_modules/ws/index.js') && isForbidden('.env'));
+ok('isForbidden ALLOWS an ordinary tracked file', !isForbidden('sidecar/index.mjs'),
+  'the classifier refuses everything, which would make the manifest check vacuous the other way');
+
 ok('the manifest covers every file we claim to track',
   FILES.filter((f) => !isForbidden(f)).every((f) => manifest.files[f] || !existsSync(join(PLUGIN_DIR, f))),
   'run npm run vendor-refresh');

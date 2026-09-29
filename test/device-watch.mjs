@@ -53,7 +53,12 @@ const RX = [
   [/\[sidecar\] phone connected/, (m, ts) => { if (cur && !cur.end) cur.end = ts; sessions.push(newSession(ts)); }],
   [/\[sidecar\] PAIRING: client (\S+) identity=(\S+)/, (m) => {
     if (!cur) newSession(null) && sessions.push(cur);
-    cur.clientId = m[1]; cur.identity = m[2].replace(/\s*—.*$/, '');
+    /* No strip needed, and there never was: the capture above is `(\S+)`, which stops at
+     * the space before the em dash. This used to carry a `.replace(/\s*—.*$/, '')` that
+     * read as the thing keeping `— add to AGENTMOB_ALLOWED_CLIENTS to pin` out of the
+     * pinned identity; it could never run. A mutation aimed at it came back MISSED, which
+     * is the only reason anyone looked. */
+    cur.clientId = m[1]; cur.identity = m[2];
   }],
   [/\[sidecar\] handshake confirmed (\S+)/, (m) => { if (cur) { cur.confirmed = true; cur.clientId ||= m[1]; } }],
   [/\[sidecar\] REJECT unknown client (\S+) \((\S*)\)/, (m) => { if (cur) cur.rejects.push({ id: m[1], identity: m[2] }); }],

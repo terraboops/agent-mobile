@@ -714,13 +714,19 @@ export const MUTANTS = [
     from: '        for when, payload in held:',
     to:   '        for when, payload in reversed(held):' },
 
-  /* adapter-fields #2 — deliberately a DIFFERENT field from entry #1. The check claims to
-     derive REQUIRED from the real constructor rather than a hand-kept list; one entry only
-     proves it notices `_undelivered`. Two different fields is the cheapest evidence that it
-     scans, and it is the shape that would catch the check being quietly pinned to one name. */
+  /* adapter-fields #2 — deliberately a DIFFERENT field from entry #1, to prove the check scans
+     rather than being pinned to one name.
+
+     WHAT IT FOUND. It came back MISSED, and the reason was worse than a weak assertion: the two
+     checks it should have failed were `REQUIRED <= REAL` and `REQUIRED == (REAL - OMIT)`, both
+     true BY CONSTRUCTION, since REQUIRED is assigned `REAL - OMIT` one line above. Removing a
+     field from the real constructor removes it from REAL and therefore from REQUIRED, and set
+     algebra stays satisfied — `ok(true, ...)` wearing a disguise. They are replaced by a check
+     that the constructor SCAN still finds the adapter's core state fields, which is the thing
+     that would actually rot (REAL is parsed out of __init__ by pattern). */
   { suite: 'adapter-fields', file: AD,
     why: 'deriving the required fields from the constructor, for every field',
-    breaks: 'every REQUIRED field is genuinely set by the real constructor',
+    breaks: "the constructor scan found the adapter's core state fields",
     from: '        self._outbound_q = collections.deque(maxlen=_OUTBOUND_QUEUE_MAX)',
     to:   '        pass' },
 
@@ -762,35 +768,47 @@ export const MUTANTS = [
     from: '  <header id="badge" title="tap to change theme">agent terminal<i class="cursor"></i>',
     to:   '  <header id="badge" title="tap to change theme">agent terminal ✓ PINNED<i class="cursor"></i>' },
 
-  /* device-watch-test #2 — reading the identity CLEANLY, where entry #1 covers classifying the
-     session. The sidecar's PAIRING line carries trailing prose after an em dash; keep it and the
-     pin command the watcher prints contains that prose, so the operator pins a string the
-     allowlist will never match. A wrong pin locks the phone out. */
+  /* device-watch-test #2 — capturing the identity and NOTHING ELSE, where entry #1 covers
+     classifying the session. The pairing line is `identity=<key> — add to AGENTMOB_ALLOWED_
+     CLIENTS to pin`, and the operator pins whatever this captures; capture the prose too and
+     the pinned string never matches, which locks the phone out of its own gateway.
+
+     WHAT THIS ENTRY FOUND ON THE WAY. It was first pointed at the `.replace(/\s*—.*$/, '')`
+     that looks like the thing doing the stripping, and came back MISSED — because that replace
+     is DEAD CODE. The capture is `(\S+)`, which stops at the space before the em dash, so
+     there has never been anything for it to strip. The guarantee lives in the character class,
+     and a line that reads as the guarantee while doing nothing is worse than no line at all.
+     The replace is gone; the entry now points at what actually carries the property. */
   { suite: 'device-watch-test', file: DWATCH,
-    why: 'stripping the trailing prose off the pairing identity',
+    why: 'capturing the identity alone, not the prose after it',
     breaks: 'the trailing prose is stripped off the identity',
-    from: "    cur.clientId = m[1]; cur.identity = m[2].replace(/\\s*—.*$/, '');",
-    to:   '    cur.clientId = m[1]; cur.identity = m[2];' },
+    from: '  [/\\[sidecar\\] PAIRING: client (\\S+) identity=(\\S+)/, (m) => {',
+    to:   '  [/\\[sidecar\\] PAIRING: client (\\S+) identity=(.+)/, (m) => {' },
 
   /* ice-tailnet #2 — the SUBTLE version of entry #1. That one removes tailnet ICE entirely;
      this narrows the CGNAT range by one octet, which is the shape a real edit produces and the
      shape a green suite would happily carry. 100.64.0.0/10 runs to 100.127, and this host sits
      at 100.125 — an off-by-one here and a remote phone has no routable pair at all. */
-  { suite: 'ice-tailnet', file: SC,
+  { suite: 'ice-tailnet', file: SC, restart: true,
     why: 'the full CGNAT range Tailscale allocates from, not part of it',
     breaks: 'ICE reached connected over the tailnet address alone',
     from: '        if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) out.push(a.address);',
     to:   '        if (o[0] === 100 && o[1] >= 64 && o[1] <= 100) out.push(a.address);' },
 
   /* identity-pin #2 — the REASON, where entry #1 covers the gate. A rejection that reads as a
-     generic failure is indistinguishable from a crypto fault or a version skew, and the first
-     thing anyone does with one of those is start disabling things. Naming unknown_client is
-     what tells the operator to pin the client instead. */
-  { suite: 'identity-pin', file: SCOPED_SC, scope: 'gateway',
-    why: 'naming the reason a client was refused',
+     generic failure is indistinguishable from a crypto fault or the gateway being down, and the
+     first thing anyone does with one of those is start disabling things.
+
+     POINTED AT proto.js, NOT THE SIDECAR LOG. The first version of this entry changed the
+     sidecar's `REJECT unknown client ...` log line and came back MISSED, correctly: the suite
+     asserts on `rejected.error`, the reason that crosses the WIRE to the phone, which is the
+     only one a handset can act on. The log line is for whoever is reading the host. Two
+     different audiences, and only one of them is what the claim is about. */
+  { suite: 'identity-pin', file: PROTO, scope: 'gateway',
+    why: 'the refusal reason that reaches the phone naming the allowlist',
     breaks: 'names unknown_client',
-    from: "            if (e.message === 'unknown_client') log(`REJECT unknown client ${msg && msg.client_id} (${msg && msg.client_identity})`);",
-    to:   "            if (e.message === 'unknown_client') log('handshake failed');" },
+    from: "  if (allow && !allow(clientIdentity, clientId)) throw new Error('unknown_client');",
+    to:   "  if (allow && !allow(clientIdentity, clientId)) throw new Error('handshake_failed');" },
 
   /* mute-webrtc #2 — barge-in opened from the SILENCE path, where entry #1 lowers the RMS
      threshold. Same defect (issue #1: a muted mic cutting the agent off mid-reply) reached by a
@@ -806,10 +824,17 @@ export const MUTANTS = [
   /* plugin-drift #2 — what must NEVER be vendored, where entry #1 covers what must match. The
      sidecar's .identity.json holds the PRIVATE key the phone pins; vendoring it commits the
      server's identity to a repo. The forbidden list is the only thing standing between a
-     refresh and that commit. */
+     refresh and that commit.
+
+     WHAT IT FOUND. It came back MISSED: deleting the private-key pattern from FORBIDDEN changed
+     nothing, because nothing asked the classifier about a file it should refuse. The manifest
+     loop iterates files that have never included a secret, and the `existsSync` check is about
+     a file that has never been written — both pass trivially either way. A guard nothing tests,
+     standing in front of a private key. The suite now puts the question to isForbidden
+     directly, in both directions, and this entry names that positive control. */
   { suite: 'plugin-drift', file: VF,
     why: 'refusing to vendor the sidecar identity keypair',
-    breaks: 'identity keypair is NOT vendored',
+    breaks: 'isForbidden REFUSES the identity keypair',
     from: 'export const FORBIDDEN = [/(^|\\/)\\.identity\\.json$/, /(^|\\/)node_modules(\\/|$)/, /\\.env$/];',
     to:   'export const FORBIDDEN = [/(^|\\/)node_modules(\\/|$)/, /\\.env$/];' },
 
@@ -883,7 +908,7 @@ export const MUTANTS = [
     why: 'answering at the payload type the client offered, unmodified',
     breaks: 'the answer echoes the offered payload type',
     from: "      await this.pc.setRemoteDescription({ type: 'offer', sdp });",
-    to:   "      await this.pc.setRemoteDescription({ type: 'offer', sdp: String(sdp).replace(/ 111/g, ' 96') });" },
+    to:   "      await this.pc.setRemoteDescription({ type: 'offer', sdp: String(sdp).replace(/\\b111\\b/g, '96') });" },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

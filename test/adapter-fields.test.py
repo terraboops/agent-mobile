@@ -97,12 +97,24 @@ OMIT_EVERYWHERE = {
 # only true if I remembered to edit this set, which is exactly the remembering the check exists
 # to replace.
 REQUIRED = REAL - OMIT_EVERYWHERE
-ok("every REQUIRED field is genuinely set by the real constructor", REQUIRED <= REAL)
+# `REQUIRED <= REAL` used to stand here, and `REQUIRED == (REAL - OMIT_EVERYWHERE)` below it.
+# Both are true BY CONSTRUCTION — REQUIRED was just assigned `REAL - OMIT_EVERYWHERE` one line
+# up, so neither could fail for any adapter.py that has ever existed. They are the same defect
+# as `ok(true, ...)`, wearing set algebra. Deleting a field from the real constructor left this
+# file green, which is how they were found.
+#
+# What is actually worth asserting is that the SCAN still works: REAL is parsed out of the
+# constructor body by pattern, and a parser that quietly stops matching would empty REQUIRED and
+# make every check downstream vacuous rather than failing. So name fields that must be there.
+CORE = {"_outbound_q", "_undelivered", "_sidecar_fails", "_restart_times"}   # _tts_dead is on the omit list
+ok("the constructor scan found the adapter's core state fields", CORE <= REQUIRED,
+   f"missing from the scan: {sorted(CORE - REQUIRED)} (REAL has {len(REAL)} fields)")
 ok("the omit list does not claim fields the constructor never sets",
    not (OMIT_EVERYWHERE - REAL - {"_TURN_LOCK_MAX_S"}),
    f"stale entries: {sorted(OMIT_EVERYWHERE - REAL - {'_TURN_LOCK_MAX_S'})}")
 ok("REQUIRED is derived from the constructor, not hand-maintained",
-   len(REQUIRED) > 0 and REQUIRED == (REAL - OMIT_EVERYWHERE))
+   len(REQUIRED) > 0 and not (REQUIRED & OMIT_EVERYWHERE),
+   f"{len(REQUIRED)} required; overlap with the omit list: {sorted(REQUIRED & OMIT_EVERYWHERE)}")
 
 
 # Tests that hand-build an adapter. Each may exempt fields it deliberately does not need.
