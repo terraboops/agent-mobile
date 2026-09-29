@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { isTailnetAddr, classifyIcePath, sidecarCgnatRange, classifyTailnetPath,
          isPrivateAddr } from './lib/ice-path.mjs';
 import { REPO } from './lib/apk-facts.mjs';
+import { parseTailscalePeer } from './lib/adb-discover.mjs';
 
 let pass = 0; const fails = [];
 const ok = (name, cond, detail = '') => {
@@ -171,6 +172,47 @@ ok('a tailnet address is not a LAN address', !isPrivateAddr('100.112.255.69'),
   'treating 100.64/10 as private classifies every tailnet path as local');
 ok('private: junk is not private', !isPrivateAddr('') && !isPrivateAddr(null)
   && !isPrivateAddr('192.168.10') && !isPrivateAddr('999.1.1.1'));
+
+/* ---- THROUGH THE REAL PARSER, not hand-built peer objects ----------------------------------
+ * Everything above hands classifyTailnetPath a literal. That tests the classification and not
+ * the join: parseTailscalePeer produces these objects, and if its shape and the classifier's
+ * expectations ever drift, both suites stay green while the stage reports nonsense. These are
+ * real `tailscale status` rows off this tailnet, one per shape the classifier claims to know. */
+const ROWS = {
+  lan:     '100.112.255.69   pixel-7           terra@          android  active; direct 192.168.10.53:38864, tx 2276 rx 1180',
+  remote:  '100.111.36.9     grafana           tagged-devices  linux    active; direct 108.175.227.79:53081, tx 1012416 rx 4917668',
+  relayed: '100.79.45.7      bc-prod           tagged-devices  linux    active; relay "tor", tx 587016 rx 3384056',
+  idle:    '100.127.47.100   alertmanager      tagged-devices  linux    -',
+};
+const viaParser = (row, ip) => classifyTailnetPath(parseTailscalePeer(row, ip));
+ok('real row: a same-LAN phone classifies direct-lan end to end',
+  viaParser(ROWS.lan, '100.112.255.69').kind === 'direct-lan',
+  JSON.stringify(viaParser(ROWS.lan, '100.112.255.69')));
+ok('real row: and is NOT counted as exercising the remote case',
+  viaParser(ROWS.lan, '100.112.255.69').exercisesRemote === false);
+ok('real row: a public direct endpoint classifies direct-remote',
+  viaParser(ROWS.remote, '100.111.36.9').kind === 'direct-remote'
+  && viaParser(ROWS.remote, '100.111.36.9').exercisesRemote === true,
+  JSON.stringify(viaParser(ROWS.remote, '100.111.36.9')));
+ok('real row: a DERP-relayed peer classifies relay and counts as remote',
+  viaParser(ROWS.relayed, '100.79.45.7').kind === 'relay'
+  && viaParser(ROWS.relayed, '100.79.45.7').exercisesRemote === true,
+  JSON.stringify(viaParser(ROWS.relayed, '100.79.45.7')));
+ok('real row: the relay NAME survives the parse',
+  viaParser(ROWS.relayed, '100.79.45.7').via === 'tor',
+  'the DERP region is the one fact that says WHERE it relayed');
+ok('real row: an idle peer with no path is not reported as remote',
+  viaParser(ROWS.idle, '100.127.47.100').exercisesRemote === false,
+  JSON.stringify(viaParser(ROWS.idle, '100.127.47.100')));
+ok('real row: a peer absent from the output is unknown, not remote',
+  viaParser(ROWS.lan, '100.99.99.99').kind === 'unknown'
+  && viaParser(ROWS.lan, '100.99.99.99').exercisesRemote === false,
+  'asking about an ip that is not in the status text must not inherit another row\'s verdict');
+ok('real row: no two shapes share a verdict',
+  new Set(['lan', 'remote', 'relayed', 'idle'].map((k) =>
+    viaParser(ROWS[k], ROWS[k].split(/\s+/)[0]).kind)).size === 4,
+  JSON.stringify(['lan', 'remote', 'relayed', 'idle'].map((k) =>
+    viaParser(ROWS[k], ROWS[k].split(/\s+/)[0]).kind)));
 
 /* and the wiring */
 {

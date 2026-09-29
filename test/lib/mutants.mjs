@@ -38,6 +38,9 @@ const LINTRPT = join(REPO, 'test/lib/lint-report.mjs');
 const DPROBE = join(REPO, 'test/lib/device-probe.mjs');
 const FSTACK = join(REPO, 'test/lib/font-stack.mjs');
 const MFACTS = join(REPO, 'test/lib/manifest-facts.mjs');
+const JFACTS = join(REPO, 'test/lib/java-facts.mjs');
+const PLUGINJ = join(REPO,
+  'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
  * instance's own copy, so the production adapter is never modified and never needs restoring. */
 const SCOPED_AD = join(homedir(), '.hermes/profiles/agentmobtest/plugins/agentmob/adapter.py');
@@ -1386,6 +1389,34 @@ export const MUTANTS = [
         + "             note: 'the peer is not in tailscale status at all' };",
     to:   "    return { kind: 'direct-remote', via: null, exercisesRemote: true,\n"
         + "             note: 'assumed remote' };" },
+
+  /* java-mic #1 — THE defect this suite exists for, planted in the real source: negate the
+     argument to setMicrophoneMute. Every host assertion still passes — micMuted is set
+     correctly so the ring reads MUTED, the interrupt is still suppressed, the reply still
+     plays — and only the microphone stays live, which is issue #1 itself. One character, no
+     host-side detector until now. */
+  { suite: 'java-mic', file: PLUGINJ,
+    why: 'the mute argument reaching AudioManager unnegated',
+    breaks: 'it passes the parameter straight through, NOT negated',
+    from: '            am.setMicrophoneMute(muted);',
+    to:   '            am.setMicrophoneMute(!muted);' },
+
+  /* java-mic #2 — the TOGGLE toggling. A constant here mutes and never unmutes: the button
+     wedges, which is the other half of issue #1 and the half a screenshot cannot show. */
+  { suite: 'java-mic', file: PLUGINJ,
+    why: 'the native toggle flipping state rather than setting a constant',
+    breaks: 'nativeToggleMic flips the current state',
+    from: '    public void nativeToggleMic() { setMicMuted(!micMuted); }',
+    to:   '    public void nativeToggleMic() { setMicMuted(true); }' },
+
+  /* java-mic #3 — the reader not being fooled by prose. This suite's own header, and the
+     comments around the call site, both spell out the negated form; a scanner that reads
+     comments would find the bug in the explanation of the bug and report a permanent red. */
+  { suite: 'java-mic', file: JFACTS,
+    why: 'ignoring calls that appear only in comments or strings',
+    breaks: 'a call named only in a COMMENT is not read as a call',
+    from: "    .replace(/\\/\\*[\\s\\S]*?\\*\\//g, ' ')",
+    to:   "    .replace(/\\/\\*[\\s\\S]*?\\*\\//g, (m) => m)" },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

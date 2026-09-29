@@ -23,11 +23,20 @@ export const DEVICE_ACCEPTANCE = [
     claim: 'Tapping the NATIVE mic button actually silences the microphone on the device, and the '
          + 'badge reflects real audio state rather than an assumption.',
     whyDeviceOnly:
-      'Narrowed to ONE mechanism. AudioManager.setMicrophoneMute() has no host equivalent, and '
-      + 'the call site sets the micMuted field BEFORE the call and wraps it in catch { Log.w }, '
-      + 'so a permission or OEM restriction makes the mute a no-op while the badge still renders '
-      + 'muted. Only `adb shell dumpsys audio` can say whether the hardware actually went quiet. '
-      + 'The STATE MACHINE around it no longer needs the phone — see hostProof.',
+      'Narrowed to ONE syscall. AudioManager.setMicrophoneMute() has no host equivalent — whether '
+      + 'it silences the hardware is a fact about the phone.\n\n'
+      + 'BUT NOT TO ONE FILE. That sentence used to cover the whole native side, and it was '
+      + 'too generous: mic-mute drives a STUBBED bridge in a browser, so nothing looked at '
+      + 'what the Java does with the boolean it is handed. Write setMicrophoneMute(!muted) '
+      + 'and every host assertion still passes — micMuted is set correctly, so the ring '
+      + 'reads MUTED, the interrupt is still suppressed, the reply still plays — and only '
+      + 'the microphone stays live, which is issue #1 itself. A one-character bug with no '
+      + 'host-side detector. java-mic reads the call site from source: the argument is '
+      + 'passed through unnegated, the tracked field takes the same value, the web layer is '
+      + 'notified, the toggle flips rather than setting a constant, and a failure is '
+      + 'logged. Each with a fixture carrying the exact bug it names, and the reader proven '
+      + 'not to mistake a comment or a string for a call.\n\n'
+      + 'What is left really is the syscall. ',
     hostProof: 'mute-webrtc (the FALSIFIABLE one: on the paced WebRTC downlink the sidecar '
              + 'checks the cancel token before every frame, so dropping the VAD threshold makes '
              + 'a muted mic read as speech onset, barge-in truncates the reply, and the sidecar '
