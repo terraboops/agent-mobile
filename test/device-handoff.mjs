@@ -23,7 +23,7 @@ import { scanPorts, DEFAULT_SCAN_RANGES, parseMdnsServices, pickAdbEndpoints,
          parseTailscalePeer } from './lib/adb-discover.mjs';
 import { discoveryPlan, passPlan, usableEndpoint, handoffVerdict, subnetHosts,
          aliveFromProbe, foundVia, excludedHosts, endpointState, identityMatches,
-         TICK_S } from './lib/handoff.mjs';
+         hostSweepOrder, HOSTS_PER_TICK, TICK_S } from './lib/handoff.mjs';
 import { createConnection } from 'node:net';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -84,6 +84,7 @@ let lastKnownLan = String(flag('--lan', process.env.AGENTMOB_PHONE_LAN || '')) |
 let found = null;                       // {tier, endpoint, note}
 let confirmed = null;                   // the endpoint that proved to be the right phone
 const rejected = new Set();             // candidates already shown not to be it
+const swept = new Set();                // hosts whose full range has been checked once
 const last = {};                        // tier -> elapsed seconds when it last ran
 let liveHosts = [];
 const deadline = t0 + HOURS * 3600 * 1000;
@@ -160,14 +161,20 @@ while (Date.now() < deadline && !confirmed) {
   /* --- hosts: the full wireless-debug range, aimed only at hosts that answered --------------- */
   if (!found && plan.tiers.includes('hosts')) {
     last.hosts = elapsed();
-    for (const h of liveHosts) {
-      const open = await scanPorts(h.host, DEFAULT_SCAN_RANGES,
+    /* A FEW PER TICK, likeliest first. One host is ~50s, so all eleven in one pass is nine
+     * minutes during which USB and mDNS — either of which could answer instantly — do not run.
+     * And each one is logged: a silent nine minutes in a six-hour waiter looks like a hang. */
+    const order = hostSweepOrder(liveHosts, { preferred: peer.lan || lastKnownLan, swept });
+    for (const host of order.slice(0, HOSTS_PER_TICK)) {
+      const t = Date.now();
+      const open = await scanPorts(host, DEFAULT_SCAN_RANGES,
                                    { concurrency: 800, timeoutMs: 1200 });
-      const fresh = open.map((p) => `${h.host}:${p}`).find((e) => !rejected.has(e));
+      swept.add(host);
+      console.log(`  [${Math.round(elapsed())}s] swept ${host} full range in `
+        + `${((Date.now() - t) / 1000).toFixed(0)}s — ${open.length} port(s) open`);
+      const fresh = open.map((p) => `${host}:${p}`).find((e) => !rejected.has(e));
       if (fresh) { found = foundVia('hosts', fresh, `${open.length} port(s) open`); break; }
     }
-    if (!found) console.log(`  [${Math.round(elapsed())}s] no wireless-debug port on any of `
-      + `${liveHosts.length} live host(s) (${plan.why})`);
   }
 
   /* --- tailnet: the phone is not on this network. Slow, and the only path that says so ------- */

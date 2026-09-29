@@ -1754,6 +1754,23 @@ export const MUTANTS = [
     from: "    return { present: true, ready: state === 'device', state };",
     to:   '    return { present: true, ready: true, state };' },
 
+  /* handoff #10 — sweeping the LIKELY phone first. One host's full range is ~50s, measured, so
+     eleven live hosts in address order is nine minutes before reaching the one tailscale already
+     named. The ordering turns that into fifty seconds, and it is one comparison. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'the known phone address being swept before the rest',
+    breaks: 'the likely phone is swept FIRST',
+    from: '  const rank = (h) => (h === preferred ? 0 : swept.has(h) ? 2 : 1);',
+    to:   '  const rank = (h) => (swept.has(h) ? 2 : 1);' },
+
+  /* handoff #11 — an already-swept host going to the BACK rather than away. DHCP moves; a host
+     checked once and then dropped is a host the phone can hide behind for the rest of the run. */
+  { suite: 'handoff', file: HANDOFF,
+    why: 'a swept host being deprioritised, not discarded',
+    breaks: 'go to the BACK, not away',
+    from: '  return [...hosts].sort((a, b) => rank(a) - rank(b) || hosts.indexOf(a) - hosts.indexOf(b));',
+    to:   '  return [...hosts].filter((h) => !swept.has(h));' },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',

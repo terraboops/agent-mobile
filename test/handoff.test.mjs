@@ -11,7 +11,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tickPlan, discoveryPlan, passPlan, usableEndpoint, handoffVerdict, subnetHosts,
          aliveFromProbe, foundVia, excludedHosts, endpointState, identityMatches,
-         TICK_S, LAN_SWEEP_EVERY_S, TAILNET_SWEEP_EVERY_S }
+         hostSweepOrder, HOSTS_PER_TICK, TICK_S, LAN_SWEEP_EVERY_S,
+         TAILNET_SWEEP_EVERY_S }
   from './lib/handoff.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -54,6 +55,31 @@ ok('subnetHosts covers the address it was given',
   subnetHosts('192.168.10.55').includes('192.168.10.53'));
 ok('subnetHosts rejects junk',
   subnetHosts('') === null && subnetHosts('192.168.10') === null && subnetHosts('999.1.1.1') === null);
+
+/* A FULL-RANGE SWEEP IS ~50s PER HOST, measured. Eleven live hosts is nine minutes, not the
+ * "a minute" the comment claimed — and doing them all in one tick means USB and mDNS, either of
+ * which could answer instantly, do not run for nine minutes. Watched: an armed run sat silent
+ * long enough to look hung. */
+ok('the host tier takes a few hosts per tick, not all of them',
+  HOSTS_PER_TICK >= 1 && HOSTS_PER_TICK <= 3, `${HOSTS_PER_TICK}`);
+ok('the likely phone is swept FIRST',
+  hostSweepOrder(['192.168.10.1', '192.168.10.53'], { preferred: '192.168.10.53' })[0]
+    === '192.168.10.53',
+  'sweeping in address order turns fifty seconds into nine minutes for no reason');
+ok('hosts already swept go to the BACK, not away',
+  (() => { const o = hostSweepOrder(['a', 'b'], { swept: new Set(['a']) });
+           return o[0] === 'b' && o.includes('a'); })(),
+  'DHCP moves; a host checked once may be the phone later');
+ok('the preferred host outranks even an unswept one',
+  hostSweepOrder(['a', 'b'], { preferred: 'b', swept: new Set() })[0] === 'b');
+ok('hostSweepOrder takes either strings or {host} records',
+  hostSweepOrder([{ host: 'x' }, 'y']).length === 2);
+ok('and tolerates nothing at all', hostSweepOrder(null).length === 0);
+ok('the runner sweeps in that order', /hostSweepOrder\(liveHosts/.test(src));
+ok('and only HOSTS_PER_TICK of them', /order\.slice\(0, HOSTS_PER_TICK\)/.test(src));
+ok('each swept host is logged with how long it took',
+  /swept \$\{host\} full range in/.test(src),
+  'a silent nine minutes in a six-hour waiter is indistinguishable from a hang');
 
 /* WHICH PATH FOUND IT is as important as whether. */
 ok('usb says the network was irrelevant', /cable is in/.test(foundVia('usb', 'X').note));

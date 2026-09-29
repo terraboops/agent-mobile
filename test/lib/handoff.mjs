@@ -38,7 +38,10 @@
  *             instantly and a dead address times out. It also yields WHICH HOSTS ARE ALIVE,
  *             which is what makes the next tier affordable.
  *   hosts     the full wireless-debug range, but only against hosts the subnet tier found
- *             alive. 254 x 35000 would be nine million probes; a handful x 35000 is a minute.
+ *             alive. 254 x 35000 would be nine million probes. MEASURED on this network, one
+ *             host takes ~50s — so 11 live hosts is nine minutes, not the "a minute" this
+ *             comment used to claim. That is why the tier takes a few hosts per tick, in an
+ *             order that puts the likely phone first, and logs each one.
  *   tailnet   the 100.x address, full range. Minutes, because a closed port on the userspace
  *             TUN times out rather than refusing — the same answer, far slower.
  */
@@ -71,7 +74,24 @@ export function tickPlan({ elapsedS = 0, lastLanSweepS = -Infinity,
 }
 
 export const SUBNET_SWEEP_EVERY_S = 120;
-export const HOST_SWEEP_EVERY_S = 300;
+export const HOST_SWEEP_EVERY_S = 60;
+/* Per TICK, because a full-range sweep is ~50s per host and doing eleven in one pass is nine
+ * minutes during which the cheap tiers — including USB and mDNS, either of which could answer
+ * instantly — do not run at all. */
+export const HOSTS_PER_TICK = 2;
+
+/**
+ * Which hosts to sweep next, likeliest first.
+ *
+ * The phone's address is known from `tailscale status` when it is active, and sweeping it first
+ * turns discovery from "up to nine minutes" into "fifty seconds". Hosts already swept go to the
+ * back rather than being dropped: DHCP moves, and the phone may not be where it was.
+ */
+export function hostSweepOrder(liveHosts, { preferred = null, swept = new Set() } = {}) {
+  const hosts = (liveHosts || []).map((h) => (typeof h === 'string' ? h : h.host)).filter(Boolean);
+  const rank = (h) => (h === preferred ? 0 : swept.has(h) ? 2 : 1);
+  return [...hosts].sort((a, b) => rank(a) - rank(b) || hosts.indexOf(a) - hosts.indexOf(b));
+}
 
 /**
  * Which discovery tiers to run this tick.
