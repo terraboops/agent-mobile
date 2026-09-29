@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = readFileSync(join(HERE, 'device-verify.mjs'), 'utf8');
+const { parseNavInset, micTapPoint } = await import('./lib/device-probe.mjs');
 
 let pass = 0; const fails = [];
 const ok = (name, cond, detail = '') => {
@@ -149,9 +150,23 @@ const ok = (name, cond, detail = '') => {
    * It degrades to 0 rather than throwing, and 0 is SAFE: on a 2.625-density Pixel a missed
    * 24dp nav bar shifts the tap 63px = 24dp, while the mic is 72dp tall so the tap has 36dp of
    * slack from its centre. 24 < 36, so a wrong inset still lands inside the button. */
-  ok('navPx failure degrades to 0 rather than throwing', /\|\| 0\)\) \|\| 0;/.test(SRC));
+  /* Both of these used to grep device-verify's inline arithmetic. The arithmetic moved to
+   * test/lib/device-probe.mjs, where it has 31 assertions of its own and three mutation
+   * entries — so these greps went stale the moment it became properly testable, and this suite
+   * caught that, which is what it is for. They now point at the module that holds the logic,
+   * and assert the PROPERTY by calling it rather than by pattern-matching a line. */
+  ok('navPx failure degrades to 0 rather than throwing',
+    parseNavInset('no navigation bar here') === 0 && parseNavInset(null) === 0);
   ok('the tap aims at the mic CENTRE, which is what gives it the slack',
-    /MIC_GAP \+ MIC_SIZE \/ 2/.test(SRC));
+    (() => {
+      /* A missed 24dp nav inset shifts the tap by 24dp; the mic is 72dp tall, so the tap has
+       * 36dp of slack from its centre. 24 < 36, so a wrong inset still lands on the button. */
+      const base = { w: 1080, h: 2400, dens: 2.625, micSizeDp: 72, micGapDp: 16 };
+      const withInset = micTapPoint({ ...base, navPx: Math.round(24 * 2.625) });
+      const without = micTapPoint({ ...base, navPx: 0 });
+      return Math.abs(withInset.y - without.y) < (72 * 2.625) / 2;
+    })(),
+    'a missed nav inset now moves the tap further than half the button, so it would miss');
 
   /* finish(): 'blocked' does not fail the run, only 'failed' does. Deliberate — a blocked stage
    * means the environment stopped us, not that the code is wrong. */

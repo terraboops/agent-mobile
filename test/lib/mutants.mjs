@@ -36,6 +36,7 @@ const AEADTRIG = join(REPO, 'test/lib/aead-trigger.mjs');
 const ICEPATH = join(REPO, 'test/lib/ice-path.mjs');
 const LINTRPT = join(REPO, 'test/lib/lint-report.mjs');
 const DPROBE = join(REPO, 'test/lib/device-probe.mjs');
+const FSTACK = join(REPO, 'test/lib/font-stack.mjs');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
  * instance's own copy, so the production adapter is never modified and never needs restoring. */
 const SCOPED_AD = join(homedir(), '.hermes/profiles/agentmobtest/plugins/agentmob/adapter.py');
@@ -1178,6 +1179,35 @@ export const MUTANTS = [
     breaks: 'a bigger nav bar moves the tap UP',
     from: '    y: Math.round(h - (navPx + (micGapDp + micSizeDp / 2) * dens)),',
     to:   '    y: Math.round(h - ((micGapDp + micSizeDp / 2) * dens)),' },
+
+  /* font-stack #1 — the GENERIC TAIL. A list whose named families are all absent on a platform
+     resolves to nothing, and the engine then falls back to its own default: a different answer
+     on every device, and the one outcome nothing here could predict. The check has to notice a
+     list that simply stops. */
+  { suite: 'font-stack', file: FSTACK,
+    why: 'noticing a font list with no generic to fall back to',
+    breaks: 'control: a stack with no generic tail is REJECTED',
+    from: '  return f.length > 0 && GENERICS.has(f[f.length - 1]);',
+    to:   '  return f.length > 0;' },
+
+  /* font-stack #2 — the PLATFORM TABLE being a table of facts, not a table of yeses. If every
+     family reads as available everywhere, the divergence check can never fire and the whole
+     suite becomes a green tick over an unexamined stack — which is what it was standing in for
+     in the first place. */
+  { suite: 'font-stack', file: FSTACK,
+    why: 'knowing which platforms actually ship a named family',
+    breaks: 'control: an Apple-only stack resolves to NOTHING on Android',
+    from: "    if (where && where.includes(platform)) return f;",
+    to:   '    if (where) return f;' },
+
+  /* font-stack #3 — reading the stacks out of the stylesheet at all. A parser that returns
+     nothing makes every per-stack assertion vacuous by having no stacks to loop over, which is
+     why the suite also asserts that both --sans and --mono were found. */
+  { suite: 'font-stack', file: FSTACK,
+    why: 'finding the font custom properties in the stylesheet',
+    breaks: 'both a sans and a mono stack are declared',
+    from: "    if (!familiesOf(value).some((f) => GENERICS.has(f))) continue;",
+    to:   '    continue;' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

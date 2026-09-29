@@ -74,15 +74,32 @@ export const DEVICE_ACCEPTANCE = [
              + 'is verified against lsof and the offer advertises the address it is really bound '
              + 'to, not werift\'s default-interface guess — and ICE completes with no LAN or '
              + 'srflx path available)',
-    stages: [],
+    stages: ['ICE path (tailnet vs LAN)'],
   },
   {
     id: 'webview-render',
     issue: null,
     claim: 'The surface renders correctly in the Pixel\'s Android System WebView.',
     whyDeviceOnly:
-      'ux-audit drives desktop Chromium at a Pixel 7 viewport. That is not the WebView: '
-      + 'different version, different font stack, different inset behaviour under edge-to-edge.',
+      'ux-audit drives desktop Chromium at a Pixel 7 viewport. That is not the WebView, and this '
+      + 'line used to name three reasons: version, font stack, inset behaviour. Two are settled '
+      + 'and the third is narrowed to something a host genuinely cannot reach.\n\n'
+      + 'VERSION: settled by webview-baseline — the surface uses nothing newer than the floor '
+      + 'the declared minSdk guarantees, so the WebView version cannot change the answer.\n'
+      + 'INSETS: settled by ctrlbar-geometry — clearance across 320/360/412dp and font scales '
+      + '1.0-1.6, constants read from MainActivity rather than assumed.\n'
+      + 'FONT STACK: the stack was `-apple-system, system-ui, "Segoe UI", sans-serif`, which '
+      + 'resolves to -apple-system on the audit host and system-ui on the Pixel. The audit was '
+      + 'taking a DIFFERENT BRANCH of the list, not merely rendering the same branch differently '
+      + '— and nothing said so. It is now `system-ui, sans-serif`, so every platform picks the '
+      + 'same entry; font-stack pins that, with a control asserting the old stack reads as '
+      + 'divergent.\n\n'
+      + 'RESIDUE: the same keyword still yields SF Pro here and Roboto there, and closing that '
+      + 'would mean shipping a font binary into an egress-free webview. The metric difference is '
+      + 'single-digit percent of advance width, inside the 1.0-1.6x range the geometry claims '
+      + 'already hold across — font-stack asserts that range has not narrowed, so the argument '
+      + 'cannot rot silently. What is left needs eyes: whether Roboto at these sizes and '
+      + 'letter-spacings LOOKS right on the handset. That is appearance, not layout.',
     hostProof: 'ux-audit (21 rendered states, objective a11y/geometry checks) + its '
              + 'webview-baseline gate (the surface uses no CSS or JS newer than the minSdk '
              + 'floor, so WebView VERSION no longer changes the answer)',

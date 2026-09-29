@@ -41,8 +41,17 @@
     --lcars-amber:#FF9C00; --lcars-mauve:#CC99CC;
     --grid:rgba(255,255,255,.014); --scan:rgba(34,211,238,.05);
     --r-sm:8px; --r:12px; --r-lg:16px; --r-pill:999px;
-    --mono:ui-monospace,"SF Mono",Menlo,monospace;
-    --sans:-apple-system,system-ui,"Segoe UI",sans-serif;
+    /* SAME KEYWORD ON EVERY PLATFORM, deliberately.
+       This was `-apple-system, system-ui, "Segoe UI", sans-serif`, which resolves to
+       -apple-system on the machine ux-audit measures on and to system-ui on the Pixel. The
+       rendered face differs either way — SF Pro here, Roboto there, and no stack can change
+       that without shipping a font file into an egress-free webview — but the RESOLUTION
+       should not also differ: `-apple-system` and `"Segoe UI"` are each redundant with
+       system-ui on their own platform, so all they added was a second thing that could
+       diverge. Both stacks now pick the same family name everywhere, which is the strongest
+       form of this claim available without a binary in the repo. Pinned by font-stack. */
+    --mono:ui-monospace,monospace;
+    --sans:system-ui,sans-serif;
     --display:var(--sans);
   }
   /* LCARS — Okudagram: warm amber/mauve rails, chunky radii, all-caps mono */

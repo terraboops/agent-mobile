@@ -553,13 +553,16 @@ if (!DRY && serial) {
   const pair = await waitForLog(logOff,
     /\[sidecar\] webrtc ICE pair (?:remote=(\S+)|unknown)/, 20000);
   const path = classifyIcePath(pair && pair[1]);
-  if (path.via === 'unknown') {
-    stage('ICE path (tailnet vs LAN)', 'blocked',
-      'the sidecar logged no nominated pair — werift did not expose one');
-  } else {
-    stage(path.via === 'tailnet' ? 'ICE over the Tailscale TUN' : 'ICE connected, but over the LAN',
-      path.via === 'tailnet' ? 'verified' : 'blocked', path.note);
-  }
+  /* ONE stage name, whatever the answer. It briefly had two — "ICE over the Tailscale TUN" or
+   * "ICE connected, but over the LAN", chosen by outcome — which reads well in a terminal and
+   * is wrong: a stage whose NAME depends on its result cannot be diffed across runs, and
+   * device-stages (which scans for literal stage() names so nothing goes unclassified) could
+   * not see either of them. The verdict belongs in the status and the detail. */
+  stage('ICE path (tailnet vs LAN)',
+    path.via === 'tailnet' ? 'verified' : 'blocked',
+    path.via === 'unknown'
+      ? 'the sidecar logged no nominated pair — werift did not expose one'
+      : `${path.via.toUpperCase()}: ${path.note}`);
 
   stage('screenshot: connected control bar', shot('02-connected.png') ? 'verified' : 'blocked',
     '02-connected.png — check Stop vs the native mic (issue #2)');
