@@ -178,14 +178,31 @@ ok(connected, `ICE reached connected over the tailnet address alone (state: ${pc
   'the candidate is advertised but NOT connectable — a remote phone would fail here');
 
 if (connected) {
-  const pair = pc.iceTransports?.[0]?.connection?.nominated?.[0];
-  const local = pair?.local || pair?.protocol?.localCandidate;
-  /* Print what werift ACTUALLY exposes. This used to fall back to `addr` when the nominated
-   * candidate carried no host, so it printed the tailnet address as though it had been measured
-   * — a log line asserting the very thing under test, from a default. */
-  console.log(local?.host
-    ? `\n  nominated pair uses ${local.host}`
-    : '\n  nominated pair: werift does not expose the local candidate host here');
+  /* `nominated` is a CandidatePair, not an array. This read used to be `nominated?.[0]`, which
+   * is `undefined` for every connection that has ever run, so `local?.host` was always falsy
+   * and the log said "werift does not expose the local candidate host here" — a statement about
+   * werift that was really a statement about a stray subscript. I then wrote that conclusion
+   * into a comment justifying why this section could not assert anything, and removed an
+   * assertion on the strength of it.
+   *
+   * It does expose it, at both ends. So the claim this section could not make is made now. */
+  const pair = pc.iceTransports?.[0]?.connection?.nominated;
+  const local = pair?.protocol?.localCandidate || pair?.local;
+  const remote = pair?.remoteCandidate;
+  console.log(`\n  nominated pair: local ${local?.host ?? '?'} -> remote ${remote?.host ?? '?'}`);
+  /* The LOCAL side is NOT assertable here and the first version of this asserted it anyway.
+   * It came back 192.168.10.55 — this Mac's LAN address — while the remote side was the tailnet
+   * address, which looks like a failure and is not one: this peer is the TEST harness running
+   * on the same host, and what werift reports as the local candidate is the socket's bound
+   * address, not the advertised host candidate. The sidecar's own view of the same pair is
+   * tailnet on both ends (`webrtc ICE pair remote=... local=...` in the gateway log).
+   *
+   * So it is logged, not asserted. An assertion that fails for a reason unrelated to the claim
+   * teaches people to ignore it. */
+  ok(!!remote?.host && remote.host === addr,
+    `the nominated pair's REMOTE candidate is the tailnet address (${remote?.host ?? 'not exposed'})`,
+    'the peer nominated a non-tailnet path');
+
   /* Media must actually move, not merely handshake. */
   let rtp = 0;
   pc.onTrack.subscribe((t) => { t.onReceiveRtp.subscribe(() => { rtp++; }); });

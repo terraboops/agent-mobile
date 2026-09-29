@@ -19,10 +19,9 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bundleMatchesWww, declaredMinSdk } from './lib/apk-facts.mjs';
+import { bundleMatchesWww, declaredMinSdk, APK } from './lib/apk-facts.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
-const APK = join(REPO, 'android/app/build/outputs/apk/debug/app-debug.apk');
 const SDK = process.env.ANDROID_HOME || '/opt/homebrew/share/android-commandlinetools';
 const KEYSTORE = join(homedir(), '.android/debug.keystore');
 

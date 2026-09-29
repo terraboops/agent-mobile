@@ -78,6 +78,36 @@ export function createWebRtcSignal() {
       return { type: 'answer', sdp: ans };
     }
 
+    /**
+     * The NOMINATED candidate pair, once ICE has settled — i.e. which path media is actually
+     * taking, not which paths were offered.
+     *
+     * WHY IT IS WORTH LOGGING. "ICE connected" is not the claim this project makes. The claim is
+     * that a phone reaches this Mac over Tailscale from anywhere, and when both are on the same
+     * Wi-Fi the LAN pair wins on priority and a connected state proves nothing about the remote
+     * case at all. The two are indistinguishable from the outside, so a device run on the sofa
+     * can "verify" a property that has never once been exercised.
+     *
+     * Every accessor here is optional-chained: werift's internals are not a public contract, and
+     * a diagnostic that throws is worse than one that returns null.
+     */
+    nominatedPair() {
+      try {
+        for (const t of (this.pc.iceTransports || [])) {
+          const pair = t?.connection?.nominated;
+          if (!pair) continue;
+          const r = pair.remoteCandidate;
+          const l = pair.protocol?.localCandidate;
+          return {
+            remote: r ? `${r.host}:${r.port} (${r.type})` : null,
+            local: l && l.host ? `${l.host}:${l.port} (${l.type})` : null,
+            remoteHost: r ? r.host : null,
+          };
+        }
+      } catch { /* diagnostics must never take themedia path down */ }
+      return null;
+    }
+
     addRemoteCandidate(candidate) {
       if (!candidate) return;
       try {

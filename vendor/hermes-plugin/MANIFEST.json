@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-28T04:15:00.146Z",
+  "generated": "2026-09-29T04:40:16.724Z",
   "source": "/Users/terra/.hermes/plugins/agentmob",
   "files": {
     "adapter.py": {
@@ -11,12 +11,12 @@
       "bytes": 102
     },
     "sidecar/index.mjs": {
-      "sha256": "ebf2333c08e4ba8aa6a5e7fceece30aab93e9c4c33317833368a85f0c97f23ab",
-      "bytes": 50219
+      "sha256": "086e48be3f4d1af85ec1e59e70fa1702ec8adf1090e9416335f0087720ba3200",
+      "bytes": 50750
     },
     "sidecar/webrtc-media.mjs": {
-      "sha256": "ccdf571a97ab398722e2cacea2ed850eb48413cf2d4beda41d1c62a4533a3edd",
-      "bytes": 5712
+      "sha256": "bac29f1778acef8f481acb86571f87a3152f361a83184597227eeefb4dd8a33d",
+      "bytes": 7092
     },
     "sidecar/wire.mjs": {
       "sha256": "4cfdbada959031dbbc0974d5b952cfe7232a34bd4975f1f949539ed351b03cd9",

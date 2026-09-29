@@ -37,10 +37,36 @@ android {
         xmlOutput = file("$projectDir/build/reports/agentmob-lint.xml")
     }
 
+    /* SIGNED WITH THE DEBUG KEYSTORE, DELIBERATELY.
+     *
+     * This app is sideloaded onto one handset over adb; it does not go to Play. An unsigned
+     * release build produces app-release-unsigned.apk, which cannot be installed at all, and a
+     * release build under a NEW key cannot replace what is already on the phone — `adb install
+     * -r` fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE and the only way forward is an
+     * uninstall, which destroys the IdentityStore keypair the sidecar has pinned. Re-pairing a
+     * handset to recover from a build flag is a bad trade.
+     *
+     * So the release variant is signed with the same debug keystore as the debug variant, which
+     * keeps `install -r` an in-place upgrade and keeps apk-installable's signer assertions
+     * meaningful for both. Nothing secret is introduced: ~/.android/debug.keystore and its
+     * well-known password are created by the Android tooling on every developer machine, and
+     * neither the file nor the password is in this repo.
+     *
+     * If this app ever ships anywhere, this block is the first thing that must change. */
+    signingConfigs {
+        release {
+            storeFile file(System.getProperty("user.home") + "/.android/debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
 }

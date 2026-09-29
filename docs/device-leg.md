@@ -55,6 +55,44 @@ is already showing an "IP address & Port" it can be passed directly instead:
 Everything it drives runs against its **own adb server on port 5039** (`adb -P 5039`), so it
 never touches the default server on 5037 or whatever is attached to it.
 
+## Staged and ready to fire
+
+Built and verified 2026-09-28 21:36 PDT, waiting on the toggle:
+
+    android/app/build/outputs/apk/release/app-release.apk     57 MB
+
+It is a RELEASE build signed with the debug keystore (see the comment in
+`android/app/build.gradle` for why — in short, a new key cannot replace what is on the phone
+without an uninstall, and an uninstall destroys the IdentityStore keypair the sidecar has
+pinned). It passes all 24 `apk-installable` assertions, including the signer check and the
+byte-for-byte comparison of its bundled `www/` against the working tree.
+
+`AGENTMOB_APK` selects which APK the tooling means — one constant, read by the installability
+gate and by the installer, so the artifact that was verified is the artifact that gets
+installed. The debug build remains the default.
+
+The moment wireless debugging is ON, one command does the whole run:
+
+    AGENTMOB_APK=android/app/build/outputs/apk/release/app-release.apk npm run device-verify
+
+It discovers the endpoint itself, installs with `-r` (keeping app data, so the pinned identity
+survives), launches, and then drives — in order — the boot screenshot, the AEAD handshake and
+live client identity, WebRTC negotiation (opus **PT 111** proves it is the real device and not
+the werift harness), **which ICE path the media actually took**, the connected control bar and
+widget-tile screenshots, a spoken reply, the **speaking pill**, a native mic tap **mid-sentence**
+with `dumpsys` evidence that the mic muted and the reply kept playing (issue #1), and a Stop tap
+that must actually stop the audio. Rehearsed dry (`-- --dry`); everything that does not need the
+handset passes.
+
+### One thing to know before running it
+
+`ICE over the Tailscale TUN` will report **blocked, not verified**, if the Pixel is on the same
+Wi-Fi as this Mac — the LAN candidate pair wins on priority and the media never touches the
+tailnet. That is not a failure, and it is also not the claim: reaching this Mac from anywhere is
+what the tailnet path is for, and a run done on the sofa cannot exercise it. To prove that one,
+put the Pixel on mobile data (Tailscale stays up) and run it again. The stage names which of the
+two happened rather than reporting "ICE connected" for both.
+
 ## What is waiting on this
 
 * the APK install, launch and screenshots (including issue #2's `screenshot: connected control

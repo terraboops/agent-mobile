@@ -41,12 +41,11 @@ import { fileURLToPath } from 'node:url';
 import { classifyDevices, stateLabel, describeBlocked, connectErrorOf } from './lib/adb-state.mjs';
 import { discover, scanPorts, DEFAULT_SCAN_RANGES, parseTailscalePeer } from './lib/adb-discover.mjs';
 import { typedTurn } from './lib/aead-trigger.mjs';
-import { localApkPreflight } from './lib/apk-facts.mjs';
+import { localApkPreflight, APK } from './lib/apk-facts.mjs';
 import { logStamp, logSince as logSinceReal } from './lib/gateway-log.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'test/audit/out/device');
-const APK = join(ROOT, 'android/app/build/outputs/apk/debug/app-debug.apk');
 const JAVA = join(ROOT, 'android/app/src/main/java/com/agentmobile/agent/MainActivity.java');
 
 const PKG = 'com.agentmobile.agent';
@@ -536,6 +535,27 @@ if (!DRY && serial) {
       `opus PT ${pt[1]}${android ? '' : ' (96 = werift harness, not the device)'}`);
   } else {
     stage('WebRTC negotiated', 'blocked', 'no offer/answer in 45s — ICE may not be reachable');
+  }
+
+  /* WHICH PATH the media took, which is the claim — not merely that ICE connected.
+   *
+   * If the Pixel and this Mac are on the same Wi-Fi, the LAN pair wins on priority and a
+   * connected state says nothing about reaching this Mac from anywhere else. The two outcomes
+   * are indistinguishable from the outside, so a run done on the sofa could "verify" a property
+   * that has never once been exercised. The sidecar now logs the nominated pair on the
+   * connected transition; this reads it back and names which one happened. */
+  const pair = await waitForLog(logOff, /\[sidecar\] webrtc ICE pair remote=(\S+)/, 20000);
+  if (!pair) {
+    stage('ICE path (tailnet vs LAN)', 'blocked',
+      'the sidecar logged no nominated pair — werift did not expose one');
+  } else {
+    const viaTailnet = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(pair[1]);
+    stage(viaTailnet ? 'ICE over the Tailscale TUN' : 'ICE connected, but over the LAN',
+      viaTailnet ? 'verified' : 'blocked',
+      viaTailnet
+        ? `nominated remote ${pair[1]} — the CGNAT range, so this is the tailnet path`
+        : `nominated remote ${pair[1]} — same-network run: the remote-phone claim is NOT `
+          + 'exercised here. Re-run with the Pixel off this Wi-Fi (mobile data) to prove it.');
   }
 
   stage('screenshot: connected control bar', shot('02-connected.png') ? 'verified' : 'blocked',

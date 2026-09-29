@@ -16,7 +16,22 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-export const APK = join(REPO, 'android/app/build/outputs/apk/debug/app-debug.apk');
+/* WHICH APK THE TOOLING MEANS.
+ *
+ * The debug build is the default because it is what has always been sideloaded and what the
+ * signature check below expects. AGENTMOB_APK overrides it so a release build can be put
+ * through the SAME gates — installability, signer, bundled-asset freshness — instead of being
+ * installed on the strength of having compiled. This path was written out in three files; a
+ * release APK verified in one of them and installed from another would be two different files.
+ *
+ * A release build must still be signed with the debug keystore to install over what is on the
+ * phone (see android/app/build.gradle), so the signer assertions apply unchanged. */
+export const DEBUG_APK = join(REPO, 'android/app/build/outputs/apk/debug/app-debug.apk');
+export const RELEASE_APK = join(REPO, 'android/app/build/outputs/apk/release/app-release.apk');
+export const APK = process.env.AGENTMOB_APK
+  ? (process.env.AGENTMOB_APK.startsWith('/') ? process.env.AGENTMOB_APK
+                                              : join(REPO, process.env.AGENTMOB_APK))
+  : DEBUG_APK;
 const SDK = process.env.ANDROID_HOME || '/opt/homebrew/share/android-commandlinetools';
 
 export function buildTool(name) {

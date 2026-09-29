@@ -539,6 +539,12 @@ async function handleWebrtc(conn, i, w) {
           if (s === 'connected') {
             conn.webrtcEverConnected = true;
             if (conn.iceDeadline) { clearTimeout(conn.iceDeadline); conn.iceDeadline = null; }
+            // WHICH PATH, not just that there is one. "connected" over a LAN pair and
+            // "connected" over the tailnet look identical from here, and only one of them is
+            // the thing this project claims. Logged once, on the transition.
+            const np = conn.webrtc && conn.webrtc.nominatedPair && conn.webrtc.nominatedPair();
+            log(np ? `webrtc ICE pair remote=${np.remote} local=${np.local || 'n/a'}`
+                   : 'webrtc ICE pair unknown (werift did not expose a nominated pair)');
           }
           // Deliberately does NOT report a failure here. A transition to closed/failed is
           // indistinguishable from an ordinary disconnect — the phone backgrounding, or a
