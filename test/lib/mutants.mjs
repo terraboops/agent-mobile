@@ -41,6 +41,7 @@ const MFACTS = join(REPO, 'test/lib/manifest-facts.mjs');
 const JFACTS = join(REPO, 'test/lib/java-facts.mjs');
 const SSEL = join(REPO, 'test/lib/stage-select.mjs');
 const RFACTS = join(REPO, 'test/lib/run-facts.mjs');
+const DACC = join(REPO, 'test/lib/device-acceptance.mjs');
 const PLUGINJ = join(REPO,
   'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
@@ -1519,6 +1520,27 @@ export const MUTANTS = [
     breaks: 'does NOT read as full',
     from: "  if (!gateRow || gateRow.status === 'blocked' || gateRow.status === 'failed') {",
     to:   '  if (false) {' },
+
+  /* device-stages #3 — a DRY report not counting as device evidence. This is the trap the first
+     version of the coverage computation fell into and the reason it is computed at all: a dry
+     run marks host-side preflight rows `verified` — "APK present", "the trigger phrase speaks
+     for long enough" — and counting those said two acceptance items had device evidence when
+     nothing had been touched. The gate, and only the gate, says the phone was reached. */
+  { suite: 'device-stages', file: DACC,
+    why: 'a report that never reached the phone contributing no device evidence',
+    breaks: 'a DRY report contributes no device evidence',
+    from: "  const reached = !!report && report.dryRun !== true && !!gate && gate.status === 'verified';",
+    to:   '  const reached = true;' },
+
+  /* device-stages #4 — and the counter not being stuck at zero. A computation that can never
+     move is as useless as one that always moves: when a real pass finally lands it has to
+     register, or the number stops being a measurement and becomes a slogan. */
+  { suite: 'device-stages', file: DACC,
+    why: 'a real device pass actually moving the items its stages name',
+    breaks: 'moves the items its stages name',
+    from: "  const moved = DEVICE_ACCEPTANCE.filter((a) => (a.stages || [])\n"
+        + "    .some((s) => ['verified', 'built'].includes(byName.get(s)))).map((a) => a.id);",
+    to:   '  const moved = [];' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

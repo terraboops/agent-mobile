@@ -301,6 +301,50 @@ const ok = (name, cond, detail = '') => {
     + `covering ${covered.size} device-verify stages`);
 }
 
+/* ---- HOW MANY ITEMS HAVE ACTUALLY MOVED --------------------------------------------------
+ * Each item carries a hostProof paragraph describing what a Mac established. None of those is
+ * evidence that the phone did anything, and reading them as if they were is the failure this
+ * whole file exists to prevent. The count is computed from the report on disk. */
+{
+  const { acceptanceCoverage, DEVICE_ACCEPTANCE } = await import('./lib/device-acceptance.mjs');
+  const { readFileSync: rf2 } = await import('node:fs');
+  let disk = null;
+  try { disk = JSON.parse(rf2(new URL('./audit/out/device/device-verify.json', import.meta.url), 'utf8')); }
+  catch { /* none yet */ }
+  const cov = acceptanceCoverage(disk);
+
+  ok('a DRY report contributes no device evidence',
+    !acceptanceCoverage({ dryRun: true, report: [
+      { name: 'APK present', status: 'verified' },
+      { name: 'device authorised', status: 'verified' }] }).usable,
+    'a dry run marks host-side preflight rows verified; counting those as device evidence is '
+    + 'how an item looks moved when nothing was touched');
+  ok('a report whose gate is BLOCKED contributes none either',
+    !acceptanceCoverage({ dryRun: false, report: [
+      { name: 'APK present', status: 'verified' },
+      { name: 'device authorised', status: 'blocked' }] }).usable);
+  ok('a report with no gate row contributes none',
+    !acceptanceCoverage({ dryRun: false, report: [{ name: 'APK present', status: 'verified' }] }).usable);
+  ok('no report at all leaves every item on host evidence',
+    acceptanceCoverage(null).onHostOnly.length === DEVICE_ACCEPTANCE.length
+    && acceptanceCoverage(null).moved.length === 0);
+  ok('a report that DID reach the device moves the items its stages name',
+    (() => { const c = acceptanceCoverage({ dryRun: false, report: [
+      { name: 'device authorised', status: 'verified' },
+      { name: 'app launched', status: 'verified' }] });
+      return c.usable && c.moved.includes('install-and-launch'); })(),
+    'a real pass must actually be able to move something, or this is a counter stuck at zero');
+  ok('and leaves the others where they were',
+    (() => { const c = acceptanceCoverage({ dryRun: false, report: [
+      { name: 'device authorised', status: 'verified' },
+      { name: 'app launched', status: 'verified' }] });
+      return c.onHostOnly.includes('android-webrtc'); })());
+
+  console.log(`\n  acceptance: ${cov.onHostOnly.length} of ${DEVICE_ACCEPTANCE.length} items rest `
+    + `on HOST-SIDE EVIDENCE ALONE (${cov.why})`);
+  if (cov.moved.length) console.log(`  moved by a device pass: ${cov.moved.join(', ')}`);
+}
+
 console.log(`\n${pass} passed, ${fails.length} failed`);
 if (fails.length) process.exit(1);
 console.log('ALL PASS');

@@ -147,10 +147,28 @@ export const DEVICE_ACCEPTANCE = [
     issue: null,
     claim: 'Tapping Stop mid-sentence actually stops playback on the device.',
     whyDeviceOnly:
-      'Narrowed to the buffer. The host now proves the downlink stops, stays stopped, and '
-      + 'RESUMES for a later turn. What remains is that the AudioTrack already holding buffered '
-      + 'PCM is flushed: audio can keep playing for hundreds of ms after the send path goes '
-      + 'quiet, and only the handset shows that. The touch-to-bridge leg is covered by mic-mute.',
+      'Narrowed to the buffer, and then READ — which changed what this item is.\n\n'
+      + 'The host proves the downlink stops, stays stopped and resumes for a later turn. What '
+      + 'remains is the audio already on the phone, and inspecting the Java says there is no '
+      + 'path that would flush it. Stop sends {"cmd":"interrupt"} through '
+      + 'AgentChannelPlugin.send(), which treats the payload as opaque and forwards it to the '
+      + 'sidecar; nothing clears playQueue or replyQueue and nothing calls AudioTrack.flush(). '
+      + 'The queues are deliberately UNBOUNDED (a fixed one silently dropped every reply longer '
+      + 'than its capacity), so what survives a Stop depends on the transport:\n\n'
+      + '  WebRTC downlink: the sidecar paces at 20ms/frame, so the local queue stays about one '
+      + 'frame deep. Residue is the 160ms pre-roll plus the AudioTrack buffer — the "hundreds of '
+      + 'ms" this note always claimed, and probably acceptable.\n'
+      + '  WS fallback: the sidecar BURSTS the reply (a setImmediate yield every 128 frames), so '
+      + 'the whole remaining reply can be sitting in replyQueue when Stop is pressed. Stop would '
+      + 'appear not to work, for seconds.\n\n'
+      + 'So this is no longer "unverified until the handset" — it is a known gap with a named '
+      + 'cause and a measured asymmetry. The device run negotiates WebRTC (opus PT 111), so it '
+      + 'would likely PASS and leave the WS case unexercised, which is worth knowing before '
+      + 'anyone spends the phone\'s time on it.\n\n'
+      + 'NOT FIXED HERE, deliberately: adding a flush changes the audio path, and no host test '
+      + 'can tell a correct flush from one that clips the start of the next reply. Shipping that '
+      + 'untested would trade a documented gap for an undiagnosed one. The touch-to-bridge leg '
+      + 'is covered by mic-mute.',
     hostProof: 'e2e-interrupt (13 assertions: the downlink stops, the sidecar records the '
              + 'playback as CUT SHORT with a reason naming the interrupt, no packet arrives '
              + 'after it, AND — the half that was missing — a NEW reply plays afterwards on the '
@@ -240,3 +258,47 @@ export const BLOCKER =
   + 'which is the phone\'s own TCP stack saying nothing is listening. Settings > System > '
   + 'Developer options > Wireless debugging. The port is discovered automatically and the '
   + 'pairing key is already in ~/.android/adb_known_hosts.pb, so that toggle is the only step.';
+
+/**
+ * How many acceptance items rest on HOST-SIDE EVIDENCE ALONE — nothing on the Pixel touched.
+ *
+ * WHY IT IS COMPUTED AND NOT WRITTEN DOWN. Every item carries a `hostProof` paragraph, and the
+ * temptation all night has been to read those and conclude the item has moved. They describe
+ * what a Mac established; none of them is evidence that the phone did anything. The only thing
+ * that moves an item is a device stage coming back verified in a report that actually reached
+ * the device.
+ *
+ * REPORTS THAT NEVER REACHED THE PHONE DO NOT COUNT, and this is the trap the first version of
+ * this fell into: a dry-run report has stages marked `verified` — "APK present", "the trigger
+ * phrase speaks for long enough" — and counting those said two items had device evidence. They
+ * are host-side preflight. A report only carries device evidence if its gate stage passed.
+ *
+ * @param {object|null} report the parsed device-verify.json, or null when none exists
+ * @returns {{onHostOnly: string[], moved: string[], usable: boolean, why: string}}
+ */
+export function acceptanceCoverage(report) {
+  const rows = (report && Array.isArray(report.report)) ? report.report : [];
+  const gate = rows.find((r) => r && r.name === 'device authorised');
+  const reached = !!report && report.dryRun !== true && !!gate && gate.status === 'verified';
+  if (!reached) {
+    return {
+      onHostOnly: DEVICE_ACCEPTANCE.map((a) => a.id),
+      moved: [],
+      usable: false,
+      why: !report ? 'no device report exists at all'
+        : report.dryRun ? 'the only report is a DRY RUN — no device was touched, and its '
+                        + '"verified" rows are host-side preflight'
+        : !gate ? 'the report has no device gate row, so it never attempted the phone'
+        : `the device gate is ${gate.status} — the run never reached the phone`,
+    };
+  }
+  const byName = new Map(rows.map((r) => [r.name, r.status]));
+  const moved = DEVICE_ACCEPTANCE.filter((a) => (a.stages || [])
+    .some((s) => ['verified', 'built'].includes(byName.get(s)))).map((a) => a.id);
+  return {
+    onHostOnly: DEVICE_ACCEPTANCE.filter((a) => !moved.includes(a.id)).map((a) => a.id),
+    moved,
+    usable: true,
+    why: `${rows.length} stage(s) in a report that reached the device`,
+  };
+}

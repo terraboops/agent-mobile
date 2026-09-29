@@ -194,7 +194,13 @@ process.on('exit', stopAdb);   // last resort for any path not covered above
 const finish = (code) => {
   stopAdb();
   console.log('\nadb server stopped.');
-  const path = join(OUT, 'device-verify.json');
+  /* A DRY run must never overwrite a real one. The stage-select suite spawns this script with
+   * --dry three times, so `npm run stage-select` was silently replacing the report from a real
+   * pass with a dry-run one — measured: a cold run at 06:16 was gone by 06:22, and the
+   * acceptance count computed from the file then counted host-side preflight stages as device
+   * evidence. The artifact the whole device pass exists to produce, clobbered by an unrelated
+   * test. Separate files, so a real report can only ever be replaced by another real one. */
+  const path = join(OUT, DRY ? 'device-verify.dry.json' : 'device-verify.json');
   const doc = { generated: new Date().toISOString(), dryRun: DRY, report };
   writeFileSync(path, JSON.stringify(doc, null, 2));
   console.log(`report -> ${path}`);
