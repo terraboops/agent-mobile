@@ -1263,6 +1263,39 @@ export const MUTANTS = [
         + "      || /Permission Denial[^\\n]*not exported/i.test(t)) {",
     to:   '  if (false) {' },
 
+  /* apk-installable #6 — the SIGNER MISMATCH keeping its own verdict. Every other install
+     failure here is annoying; this one has an obvious next step that destroys something
+     irreplaceable. `-r` cannot replace across certificates, the documented fix is `adb
+     uninstall`, and app-private storage holds the IdentityStore keypair the sidecar's allowlist
+     pins — so the fix rotates the phone's identity and the gateway then refuses it as an unknown
+     client. Fold this case in with the rest and the run prints a generic line over the one error
+     where the obvious move is the wrong one. */
+  { suite: 'apk-installable', file: MFACTS,
+    why: 'the signer mismatch getting a verdict of its own',
+    breaks: 'a signer mismatch is recognised',
+    from: '  if (/INSTALL_FAILED_UPDATE_INCOMPATIBLE|INSTALL_FAILED_SHARED_USER_INCOMPATIBLE|signatures do not match/i.test(t)) {',
+    to:   '  if (false) {' },
+
+  /* apk-installable #7 — and the verdict being ACTIONABLE rather than merely alarming. The flag
+     is what device-verify raises its second stage from; a warning only a human can parse cannot
+     drive anything, and the stage that says DO NOT UNINSTALL in the report would silently stop
+     appearing. */
+  { suite: 'apk-installable', file: MFACTS,
+    why: 'flagging the destructive-fix case for the caller, not just in prose',
+    breaks: 'it is flagged for the caller, not only for a human reader',
+    from: "      doNotUninstall: true,",
+    to:   '      doNotUninstall: false,' },
+
+  /* apk-installable #8 — an UNRECOGNISED failure saying so. Guessing at an unknown error is how
+     a run tells someone not to uninstall over a full disk, or stays quiet about one it has
+     never seen; and dropping the raw text while calling it unknown is worse than dumping
+     stderr, which at least carried the evidence. */
+  { suite: 'apk-installable', file: MFACTS,
+    why: 'reporting an unrecognised install error as unrecognised, with its text',
+    breaks: 'an unrecognised error is reported as unrecognised',
+    from: "  return { code: 'UNKNOWN', doNotUninstall: false,",
+    to:   "  return { code: 'INSTALL_FAILED_UPDATE_INCOMPATIBLE', doNotUninstall: true," },
+
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
   { suite: 'handshake', file: PROTO, why: 'the client confirm MAC is verified',

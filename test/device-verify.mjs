@@ -45,7 +45,7 @@ import { localApkPreflight, APK } from './lib/apk-facts.mjs';
 import { classifyIcePath } from './lib/ice-path.mjs';
 import { parseDensity, parseSize, micTapPoint, stopTapX, parseMicMute, parseVersionName,
          highestMajor, parseNavInset, parseCrash } from './lib/device-probe.mjs';
-import { parseAmStartRefusal } from './lib/manifest-facts.mjs';
+import { parseAmStartRefusal, parseInstallFailure } from './lib/manifest-facts.mjs';
 import { logStamp, logSince as logSinceReal } from './lib/gateway-log.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -464,9 +464,18 @@ if (!existsSync(APK)) stage('APK present', 'blocked', APK);
 else if (DRY) stage('install APK', 'blocked', 'dry run');
 else {
   const r = adb(['-s', serial, 'install', '-r', APK], { timeout: 300000 });
-  const okInstall = /Success/i.test(r.stdout + r.stderr);
-  stage('install APK (-r, keeps IdentityStore)', okInstall ? 'verified' : 'failed',
-    okInstall ? APK : (r.stderr || r.stdout).trim().slice(0, 200));
+  /* NAME the failure, do not dump it. One install error has an obvious next step that destroys
+   * something irreplaceable: a signer mismatch reads as "just uninstall it", and app-private
+   * storage holds the IdentityStore keypair the sidecar's allowlist pins. Printing raw stderr
+   * and leaving the operator to reach for the documented fix is how that gets typed. */
+  const fail = parseInstallFailure(`${r.stdout || ''}\n${r.stderr || ''}`);
+  stage('install APK (-r, keeps IdentityStore)', fail ? 'failed' : 'verified',
+    fail ? fail.verdict : APK);
+  if (fail && fail.doNotUninstall) {
+    stage('DO NOT UNINSTALL to recover from this', 'failed',
+      'uninstalling rotates the phone identity the gateway has pinned — rebuild with the '
+      + 'matching keystore instead. See android/app/build.gradle.');
+  }
 }
 
 /* ---- 2b. the WebView version, from the DEVICE's own report --------------------------------

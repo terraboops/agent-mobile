@@ -175,8 +175,23 @@ export const DEVICE_ACCEPTANCE = [
              + 'And the launch VERDICT itself: device-verify keeps what am start printed and '
              + 'names a refusal rather than letting it fall through to "no process", and reads '
              + 'logcat for a crash ATTRIBUTED to this package — Android restarts an app that '
-             + 'throws in onCreate, so a pid alone was reporting a crash loop as a launch.)',
+             + 'throws in onCreate, so a pid alone was reporting a crash loop as a launch.\n\n'
+             + 'The install FAILURE shape is named rather than dumped. `-r` was asserted as a '
+             + 'flag in the argv, which says the right command runs and nothing about what '
+             + 'happens when it does not. One failure matters more than the rest: a signer '
+             + 'mismatch cannot be replaced in place, the documented fix is `adb uninstall`, and '
+             + 'app-private storage holds the IdentityStore keypair the allowlist pins — so the '
+             + 'fix rotates the identity and the gateway refuses the phone as an unknown client. '
+             + 'That case now gets its own verdict saying DO NOT UNINSTALL and why, a flag the '
+             + 'run raises a second stage from, and both directions asserted against real adb '
+             + 'output. Both staged APKs are also checked to share one signer, since alternating '
+             + 'between the debug and release builds is how someone following device-leg.md '
+             + 'would trigger that failure in the first place.\n\n'
+             + 'STILL DEVICE-ONLY: whether `-r` actually PRESERVES the keypair. Everything above '
+             + 'establishes that it can replace in place; that the data survives is a fact about '
+             + 'the phone.)',
     stages: ['APK present', 'install APK', 'install APK (-r, keeps IdentityStore)',
+             'DO NOT UNINSTALL to recover from this',
              'app launched', 'adb present', 'device authorised',
              'wireless-debugging endpoint discovered',
              /* Local preflight — these need NO handset and now run BEFORE the device gate, so a

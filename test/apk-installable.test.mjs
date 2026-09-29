@@ -19,8 +19,9 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bundleMatchesWww, declaredMinSdk, APK } from './lib/apk-facts.mjs';
-import { launcherActivity, canAmStart, parseAmStartRefusal }
+import { bundleMatchesWww, declaredMinSdk, APK, DEBUG_APK, RELEASE_APK }
+  from './lib/apk-facts.mjs';
+import { launcherActivity, canAmStart, parseAmStartRefusal, parseInstallFailure }
   from './lib/manifest-facts.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -138,6 +139,102 @@ ok('am start refusal: an ordinary successful start is NOT a refusal',
   'every launch would be reported as refused');
 ok('am start refusal: empty output is not a refusal',
   parseAmStartRefusal('') === null && parseAmStartRefusal(null) === null);
+
+/* ---- THE INSTALL FAILURE WHOSE OBVIOUS FIX IS DESTRUCTIVE ----------------------------------
+ * `-r` was asserted as a flag in device-verify's argv. That says the right command is run; it
+ * says nothing about what happens when it fails. One failure matters more than the rest: a
+ * signer mismatch cannot be replaced in place, the documented fix is `adb uninstall`, and
+ * app-private storage holds the IdentityStore keypair the sidecar's allowlist pins. Uninstalling
+ * rotates the phone's identity, the gateway then refuses it as an unknown client, and a handset
+ * has to be re-paired to recover from a build flag.
+ *
+ * Real adb output, not a paraphrase — this is what a Pixel prints. */
+const SIGNER_STDERR = 'Performing Streamed Install\n'
+  + 'adb: failed to install /path/app-release.apk: Failure '
+  + '[INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.agentmobile.agent signatures do '
+  + 'not match newer version; ignoring!]';
+const signer = parseInstallFailure(SIGNER_STDERR);
+ok('install failure: a signer mismatch is recognised',
+  signer && signer.code === 'INSTALL_FAILED_UPDATE_INCOMPATIBLE', JSON.stringify(signer));
+ok('install failure: the verdict says NOT to uninstall, in words',
+  signer && /DO NOT UNINSTALL/.test(signer.verdict),
+  'the operator is left to find the documented fix, which is the destructive one');
+ok('install failure: the verdict says WHY not — the pinned identity',
+  signer && /IdentityStore|identity/i.test(signer.verdict) && /pin/i.test(signer.verdict),
+  signer && signer.verdict);
+ok('install failure: it is flagged for the caller, not only for a human reader',
+  signer && signer.doNotUninstall === true,
+  'device-verify raises a second stage off this flag; a verdict only a person can parse cannot '
+  + 'drive that');
+ok('install failure: it names the fix that is not destructive',
+  signer && /same keystore|rebuild/i.test(signer.verdict), signer && signer.verdict);
+
+/* The other direction. A classifier that returns the signer verdict for everything would pass
+ * every assertion above, and would tell someone not to uninstall over a full disk. */
+const OTHER = [
+  ['Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]', 'INSTALL_FAILED_INSUFFICIENT_STORAGE'],
+  ['Failure [INSTALL_FAILED_OLDER_SDK]', 'INSTALL_FAILED_OLDER_SDK'],
+  ['Failure [INSTALL_FAILED_NO_MATCHING_ABIS: Failed to extract native libraries]',
+   'INSTALL_FAILED_NO_MATCHING_ABIS'],
+  ['Failure [INSTALL_FAILED_VERSION_DOWNGRADE]', 'INSTALL_FAILED_VERSION_DOWNGRADE'],
+  ['adb: error: device unauthorized.', 'UNAUTHORIZED'],
+];
+for (const [text, code] of OTHER) {
+  const f = parseInstallFailure(text);
+  ok(`install failure: ${code} is told apart from a signer mismatch`,
+    f && f.code === code && f.doNotUninstall === false, JSON.stringify(f));
+}
+ok('install failure: an unrecognised error is reported as unrecognised, not guessed',
+  (() => { const f = parseInstallFailure('Failure [INSTALL_FAILED_SOMETHING_NEW]');
+           return f && f.code === 'UNKNOWN' && f.doNotUninstall === false
+                    && /not one this run recognises/.test(f.verdict); })(),
+  JSON.stringify(parseInstallFailure('Failure [INSTALL_FAILED_SOMETHING_NEW]')));
+ok('install failure: an unrecognised error still carries the raw text to act on',
+  /INSTALL_FAILED_SOMETHING_NEW/.test(parseInstallFailure('Failure [INSTALL_FAILED_SOMETHING_NEW]').verdict),
+  'naming it "unknown" and dropping the evidence is worse than dumping stderr');
+ok('install failure: SUCCESS is not a failure',
+  parseInstallFailure('Performing Streamed Install\nSuccess') === null,
+  'every successful install would be reported as failed');
+ok('install failure: no output at all is its own verdict',
+  (parseInstallFailure('') || {}).code === 'NO_OUTPUT'
+  && (parseInstallFailure(null) || {}).code === 'NO_OUTPUT',
+  'silence read as success would report an install that never happened');
+
+/* And the wiring: device-verify must actually use it, and raise the second stage off the flag. */
+ok('device-verify classifies the install result rather than dumping stderr',
+  /parseInstallFailure\(/.test(dvSrc) && !/\(r\.stderr \|\| r\.stdout\)\.trim\(\)/.test(dvSrc),
+  'the install stage prints raw adb output again');
+/* ---- BOTH staged APKs, because the operator can pick either ---------------------------------
+ *
+ * This file checks ONE apk — whichever AGENTMOB_APK names, debug by default. Two are staged: the
+ * debug build and the release build device-leg.md tells the operator to install. If their
+ * signers ever diverge, alternating between them produces INSTALL_FAILED_UPDATE_INCOMPATIBLE —
+ * the exact failure the verdict above exists for, triggered by following our own instructions.
+ * The release variant is signed with the debug keystore precisely so this cannot happen
+ * (android/app/build.gradle), and until now nothing checked that it still does. */
+{
+  const both = [DEBUG_APK, RELEASE_APK].filter((p) => existsSync(p));
+  ok('at least one APK is staged to check', both.length >= 1, 'neither build output exists');
+  if (both.length === 2) {
+    const digests = both.map((p) => {
+      const v = run(apksigner, ['verify', '--print-certs', p]);
+      return (v.match(/Signer #1 certificate SHA-256 digest: ([0-9a-f]+)/) || [])[1] || null;
+    });
+    ok('both staged APKs report a signer', digests.every(Boolean), JSON.stringify(digests));
+    ok('the debug and release APKs share ONE signer, so either can replace the other',
+      digests[0] && digests[0] === digests[1],
+      `debug ${String(digests[0]).slice(0, 16)}… vs release ${String(digests[1]).slice(0, 16)}… `
+      + '— installing one over the other would fail with INSTALL_FAILED_UPDATE_INCOMPATIBLE, and '
+      + 'the only documented way out of that destroys the pinned identity');
+  } else {
+    ok('only one APK is staged, so there is nothing to diverge', true,
+      `staged: ${both.map((p) => p.replace(REPO + '/', '')).join(', ')}`);
+  }
+}
+
+ok('device-verify raises a DO NOT UNINSTALL stage off the flag',
+  /fail\.doNotUninstall/.test(dvSrc) && /DO NOT UNINSTALL to recover/.test(dvSrc),
+  'the flag is computed and never acted on');
 ok('targetSdk is 36 (the edge-to-edge assumption the bottom bar is built on)',
   targetSdk === 36, String(targetSdk));
 /* The SHIPPED minSdk must match what the project declares.

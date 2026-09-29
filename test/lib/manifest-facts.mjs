@@ -106,3 +106,65 @@ export function parseAmStartRefusal(out) {
   }
   return null;
 }
+
+/**
+ * Classify what `adb install -r` said, and say what to do about it.
+ *
+ * WHY THIS IS NOT JUST A STRING. Every other install failure here is annoying; ONE of them has
+ * an obvious next step that destroys something irreplaceable.
+ *
+ *   INSTALL_FAILED_UPDATE_INCOMPATIBLE — the APK is signed by a different certificate than the
+ *   copy already on the phone. `-r` cannot replace across signers. The documented fix, the first
+ *   search result, and the thing adb itself nudges you toward is `adb uninstall` — which wipes
+ *   app-private storage, and the IdentityStore keypair lives there. That keypair is what the
+ *   sidecar's allowlist pins. Uninstalling rotates the phone's identity, the gateway then
+ *   refuses it as an unknown client, and recovering means re-pairing a handset to fix a build
+ *   flag.
+ *
+ * So the run must not print the raw stderr and leave the operator to reach for the obvious. It
+ * has to name the cause AND name the wrong move, before anyone types it.
+ *
+ * @returns {{code: string, verdict: string, doNotUninstall: boolean}|null} null when it succeeded
+ */
+export function parseInstallFailure(out) {
+  const t = String(out || '');
+  if (!t.trim()) return { code: 'NO_OUTPUT', doNotUninstall: false,
+                          verdict: 'adb install printed nothing at all — it did not run' };
+  if (/\bSuccess\b/.test(t)) return null;
+
+  if (/INSTALL_FAILED_UPDATE_INCOMPATIBLE|INSTALL_FAILED_SHARED_USER_INCOMPATIBLE|signatures do not match/i.test(t)) {
+    return {
+      code: 'INSTALL_FAILED_UPDATE_INCOMPATIBLE',
+      doNotUninstall: true,
+      verdict: 'SIGNER MISMATCH: this APK is signed by a different certificate than the copy on '
+             + 'the phone, so `-r` cannot replace it. DO NOT UNINSTALL — app-private storage '
+             + 'holds the IdentityStore keypair the sidecar allowlist pins, and removing it '
+             + 'rotates the phone\'s identity, after which the gateway refuses it as an unknown '
+             + 'client and the handset has to be re-paired. Rebuild with the same keystore '
+             + '(android/app/build.gradle signs release with ~/.android/debug.keystore for '
+             + 'exactly this reason) and install again.',
+    };
+  }
+  const known = [
+    [/INSTALL_FAILED_INSUFFICIENT_STORAGE/i, 'INSTALL_FAILED_INSUFFICIENT_STORAGE',
+     'the phone is out of space for the APK'],
+    [/INSTALL_FAILED_OLDER_SDK/i, 'INSTALL_FAILED_OLDER_SDK',
+     'the APK\'s minSdk is above this phone\'s Android version'],
+    [/INSTALL_FAILED_NO_MATCHING_ABIS/i, 'INSTALL_FAILED_NO_MATCHING_ABIS',
+     'the APK carries no native code for this phone\'s CPU'],
+    [/INSTALL_FAILED_VERSION_DOWNGRADE/i, 'INSTALL_FAILED_VERSION_DOWNGRADE',
+     'the phone has a NEWER versionCode installed; bump it or install with -d'],
+    [/INSTALL_FAILED_USER_RESTRICTED|user restriction/i, 'INSTALL_FAILED_USER_RESTRICTED',
+     'the phone refused the install — "Install via USB" may be off in Developer options'],
+    [/device unauthorized|device still authorizing/i, 'UNAUTHORIZED',
+     'the phone has not accepted this computer\'s adb key yet'],
+    [/no devices\/emulators found|device .* not found/i, 'NO_DEVICE',
+     'adb lost the device between discovery and install'],
+  ];
+  for (const [re, code, why] of known) {
+    if (re.test(t)) return { code, doNotUninstall: false, verdict: `${code}: ${why}` };
+  }
+  return { code: 'UNKNOWN', doNotUninstall: false,
+           verdict: `install failed and the reason is not one this run recognises: `
+                  + `${t.replace(/\s+/g, ' ').trim().slice(0, 160)}` };
+}
