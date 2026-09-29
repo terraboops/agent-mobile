@@ -35,8 +35,10 @@ devices** list no longer shows this Mac — after a "Revoke USB debugging author
 reset, or a rebuild of the phone — in which case use **Pair device with pairing code** on that
 same screen and run, from this repo:
 
-    npm run device-pair -- <ip>:<pair-port> <6-digit-code>    # if present, else:
     adb -P 5039 pair 192.168.10.53:<pair-port> <6-digit-code>
+
+(there is deliberately no npm wrapper for this — it is a one-off that needs a code read off the
+phone screen, and `-P 5039` keeps it on the isolated adb server like everything else here)
 
 USB works just as well and skips all of the above: plug the phone in and accept the
 "Allow USB debugging?" prompt.
