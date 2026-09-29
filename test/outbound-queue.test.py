@@ -86,7 +86,12 @@ class FakeWriter:
 def make_adapter():
     a = object.__new__(mod.AgentMobAdapter)
     a._writer = None
-    a._outbound_q = __import__("collections").deque(maxlen=mod._OUTBOUND_QUEUE_MAX)
+    # The REAL factory, not a hand-built lookalike. This used to construct its own
+    # `deque(maxlen=...)`, so "the queue never exceeds its cap" was checking the cap this
+    # function had just applied — the adapter could have dropped its bound entirely and the
+    # assertion would not have moved. A mutation removing the cap came back MISSED twice,
+    # once per copy of it, before the fixture turned out to be the third copy.
+    a._outbound_q = mod._new_outbound_queue()
     a._undelivered = []
     # _send_to_sidecar gates on _connected as well as the socket, because a socket whose peer
     # has died still reports is_closing() == False. Tests that hand it a live writer must say

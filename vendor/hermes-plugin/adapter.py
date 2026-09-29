@@ -213,6 +213,17 @@ def _outbound_kind(payload: dict) -> str:
 _OUTBOUND_QUEUE_MAX = int(os.getenv("AGENTMOB_OUTBOUND_QUEUE_MAX", "32"))
 _OUTBOUND_MAX_AGE_S = float(os.getenv("AGENTMOB_OUTBOUND_MAX_AGE_S", "30"))
 
+
+def _new_outbound_queue():
+    """The held-message queue, built in ONE place.
+
+    The cap was written out twice — once in the constructor and once in _flush_outbound, which
+    replaces the deque wholesale when it drains. Two copies of a bound is two things to keep in
+    step, and it also meant a test could hand-build its own capped deque and then assert the cap,
+    checking its own fixture rather than this module. Both call here now, and so does the suite.
+    """
+    return collections.deque(maxlen=_OUTBOUND_QUEUE_MAX)
+
 _LIVE_SIDECARS: set = set()
 _REAPER_INSTALLED = False
 
@@ -341,7 +352,7 @@ class AgentMobAdapter(BasePlatformAdapter):
         self._sidecar_fails = 0
         self._sidecar_wedged = False
         self._sidecar_stderr = collections.deque(maxlen=6)
-        self._outbound_q = collections.deque(maxlen=_OUTBOUND_QUEUE_MAX)
+        self._outbound_q = _new_outbound_queue()
         self._undelivered: list = []         # losses to confess to the agent next turn
         self._tts_dead: set = set()          # engines proven missing; never retried
         self._tts_unavail_notified = False   # so the "text only" notice is said once
@@ -1544,8 +1555,7 @@ class AgentMobAdapter(BasePlatformAdapter):
             return 0
         now = time.monotonic()
         sent = stale = 0
-        held, self._outbound_q = list(self._outbound_q), collections.deque(
-            maxlen=_OUTBOUND_QUEUE_MAX)
+        held, self._outbound_q = list(self._outbound_q), _new_outbound_queue()
         for when, payload in held:
             if now - when > _OUTBOUND_MAX_AGE_S:
                 stale += 1

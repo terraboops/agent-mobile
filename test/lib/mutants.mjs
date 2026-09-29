@@ -728,7 +728,7 @@ export const MUTANTS = [
   { suite: 'adapter-fields', file: AD,
     why: 'deriving the required fields from the constructor, for every field',
     breaks: "the constructor scan found the adapter's core state fields",
-    from: '        self._outbound_q = collections.deque(maxlen=_OUTBOUND_QUEUE_MAX)',
+    from: '        self._outbound_q = _new_outbound_queue()',
     to:   '        pass' },
 
   /* flush-live #2 — the flush being CALLED on reconnect, where entry #1 covers the queueing
@@ -1035,6 +1035,43 @@ export const MUTANTS = [
     from: "  scored.sort((a, b) => a.score - b.score\n"
         + "    || (/_adb-tls-connect/.test(b.type) ? 1 : 0) - (/_adb-tls-connect/.test(a.type) ? 1 : 0));",
     to:   '  scored.sort((a, b) => a.score - b.score);' },
+
+  /* outbound-queue #3 — classifying on the INNER envelope. _push_status sends
+     {"type":"push","d":{"type":"status"}}, so reading the outer type alone queues stale status
+     indicators for replay after a reconnect — a blinking light from thirty seconds ago,
+     reported as current. The outer type is a transport frame; the inner one says what the
+     message IS, and the whole selectivity of this queue rests on the difference. */
+  { suite: 'outbound-queue', file: AD,
+    why: 'reading the message kind from the inner envelope, not the transport frame',
+    breaks: "a status push is NOT queued despite its outer type being 'push'",
+    from: '    if inner in _OUTBOUND_EPHEMERAL_INNER:\n        return inner\n    return outer',
+    to:   '    return outer' },
+
+  /* outbound-queue #4 — the AGE limit. A reply held past it is not delivered late, it is
+     confessed: send() already told the agent the message was on its way, so a queue that
+     eventually flushes a minute-old answer makes the phone contradict the conversation. */
+  { suite: 'outbound-queue', file: AD,
+    why: 'refusing to deliver a message that waited past the age limit',
+    breaks: 'a message older than the limit is NOT delivered',
+    from: '            if now - when > _OUTBOUND_MAX_AGE_S:',
+    to:   '            if False:' },
+
+  /* outbound-queue #5 — the queue being BOUNDED. maxlen is what stops an outage turning into
+     unbounded growth on a phone with no swap, and a deque's maxlen also decides WHICH end is
+     discarded: the newest are worth keeping, because the oldest have already aged past the
+     limit above.
+
+     IT TOOK THREE COPIES TO FIND. The cap was written out in the constructor AND in
+     _flush_outbound, which replaces the deque wholesale — so removing one left the other. The
+     two-edit version then STILL came back MISSED, because the suite's own make_adapter() built
+     a third capped deque by hand, and the assertion was measuring the fixture. There is one
+     copy now, `_new_outbound_queue()`, called by both sites and by the test, so a single edit
+     falsifies it. Deduplicating was the fix; the entry is what made the duplication visible. */
+  { suite: 'outbound-queue', file: AD,
+    why: 'the held queue having a cap at all',
+    breaks: 'the queue never exceeds its cap',
+    from: '    return collections.deque(maxlen=_OUTBOUND_QUEUE_MAX)',
+    to:   '    return collections.deque()' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
