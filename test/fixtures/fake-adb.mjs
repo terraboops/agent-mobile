@@ -34,6 +34,18 @@ const st = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8'))
   : { devicesCalls: 0, connected: [] };
 const save = () => writeFileSync(statePath, JSON.stringify(st));
 
+/* The phone's and the sidecar's reactions to what the run does. Lines go to the SCRATCH gateway
+ * log device-verify is pointed at — never the real one — in its `YYYY-MM-DD HH:MM:SS` format. */
+const stamp = () => {
+  const d = new Date(); const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+const gateway = (line) => {
+  const f = process.env.AGENTMOB_GATEWAY_LOG;
+  if (f) appendFileSync(f, `${stamp()} ${line}\n`);
+};
+const phoneLog = (line) => { st.logcat = (st.logcat || '') + `09-29 00:00:00.000 1 1 I AgentChannel: ${line}\n`; };
+
 /* Drop `-P <port>` and `-s <serial>`, remembering the serial. */
 let args = [...argv];
 if (args[0] === '-P') args = args.slice(2);
@@ -43,6 +55,12 @@ appendFileSync(logPath, JSON.stringify({ serial, args }) + '\n');
 
 const out = (s) => { process.stdout.write(s); };
 const cmd = args[0];
+
+if (cmd === 'fake-trigger') {
+  /* The typed turn, answered the way the sidecar answers: reply audio starts going out. */
+  if (sc.speaks !== false) gateway('[sidecar] → phone pcm 142848b -> 148 opus packets via WebRTC');
+  process.exit(0);
+}
 
 if (cmd === 'version') { out('Android Debug Bridge version 1.0.41 (fake)\n'); process.exit(0); }
 if (cmd === 'start-server' || cmd === 'kill-server') process.exit(0);
@@ -101,10 +119,38 @@ if (cmd === 'shell') {
     process.exit(0);
   }
   if (/pidof/.test(line)) { if (sc.pid) out(`${sc.pid}\n`); process.exit(0); }
+  if (/^wm density/.test(line)) { out('Physical density: 420\n'); process.exit(0); }
+  if (/^wm size/.test(line)) { out('Physical size: 1080x2400\n'); process.exit(0); }
+  if (/dumpsys window/.test(line)) { out('navigationBars frame=[0,2337][1080,2400]\n'); process.exit(0); }
+  if (/dumpsys audio/.test(line)) {
+    if (sc.dumpsysMute !== false) out(`  mMicMute=${!!st.micMuted}\n`);
+    process.exit(0);
+  }
+  if (/^input tap/.test(line)) {
+    const [x, y] = line.split(/\s+/).slice(2).map(Number);
+    st.taps = [...(st.taps || []), [x, y]];
+    /* Off the 1080x2400 screen, a tap presses nothing. The stand-in used to react to any x
+     * regardless of y, which let a Stop tap at y = -163 "verify" — a fidelity gap that hid a
+     * real aiming bug for as long as it existed. */
+    if (!(x >= 0 && x < 1080 && y >= 0 && y < 2400)) { save(); process.exit(0); }
+    if (x < 700) {
+      /* the native mic button: the app mutes, logs it, and the reply keeps playing */
+      if (sc.micTapLands !== false) { st.micMuted = !st.micMuted; phoneLog(`mic ${st.micMuted ? 'MUTED' : 'unmuted'} (native)`); }
+      /* muteTruncates: the issue #1 regression itself — the mute cuts the reply off */
+      if (sc.muteTruncates) gateway('[sidecar] → phone pcm 142848b -> 148 opus packets via WebRTC [cut short after 20/148 frames: superseded or interrupted]');
+    } else {
+      /* Stop: the sidecar truncates, the app flushes what was already queued */
+      if (sc.stopTruncates !== false) {
+        gateway('[sidecar] → phone pcm 142848b -> 148 opus packets via WebRTC [cut short after 61/148 frames: superseded or interrupted]');
+      }
+      if (sc.flushDropped !== undefined) phoneLog(`playback flushed (${sc.flushDropped} queued frame(s) dropped)`);
+    }
+    save(); process.exit(0);
+  }
   process.exit(0);
 }
 
-if (cmd === 'logcat') { out(sc.logcat || ''); process.exit(0); }
+if (cmd === 'logcat') { out((sc.logcat || '') + (st.logcat || '')); process.exit(0); }
 if (cmd === 'exec-out') { process.exit(1); }            // no screenshots from a replay
 
 if (cmd === 'install') {

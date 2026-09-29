@@ -36,3 +36,25 @@ export const UTILITIES = {
 
 /** Names only, for callers that just need to skip them. */
 export const UTILITY_NAMES = new Set(Object.keys(UTILITIES));
+
+/**
+ * Refuse to run a suite while a mutation run is live.
+ *
+ * A suite run beside the harness reads whatever file the harness has mutated at that moment and
+ * reports it as the code's behaviour. That happened: a "connected to ONCE" failure took twenty
+ * minutes to trace, and it was the harness's entry #5 applied to the file, not a regression.
+ */
+export async function refuseDuringMutation(repo) {
+  const { existsSync, readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const lock = join(repo, 'test', '.mutation-running');
+  if (!existsSync(lock)) return;
+  let held = null;
+  try { held = JSON.parse(readFileSync(lock, 'utf8')); } catch { return; }
+  try { process.kill(held.pid, 0); } catch { return; }       // stale lock: its process is gone
+  if (String(process.env.AGENTMOB_UNDER_MUTATION || '') === '1') return;   // the harness itself
+  console.error(`\nA MUTATION RUN IS LIVE (pid ${held.pid}) — files may be mutated right now, so `
+    + `this suite's verdicts would describe the mutant, not the code.\n`
+    + `Wait for it, or stop it: kill -TERM -${held.pgid}\n`);
+  process.exit(4);
+}

@@ -35,10 +35,14 @@ export function parseSize(out) {
  */
 export function micTapPoint({ w, h, dens, navPx = 0, micSizeDp, micGapDp }) {
   if (!w || !h || !dens || !micSizeDp) return null;
-  return {
+  const pt = {
     x: Math.round(w / 2),
     y: Math.round(h - (navPx + (micGapDp + micSizeDp / 2) * dens)),
   };
+  /* A point off the screen is not a tap, it is a no-op that reports success. Refuse it, so the
+   * caller says "could not aim the tap" instead of tapping nothing and blaming the app. */
+  if (pt.x < 0 || pt.x >= w || pt.y < 0 || pt.y >= h) return null;
+  return pt;
 }
 
 /** Stop sits at the right of the web control bar, one third of the bar's width in. */
@@ -90,10 +94,21 @@ export function highestMajor(found) {
   return majors.length ? Math.max(...majors) : null;
 }
 
-/** The navigation-bar inset in px out of `dumpsys window`, best effort. */
+/**
+ * The navigation-bar inset in px out of `dumpsys window` — its HEIGHT, bottom minus top.
+ *
+ * This returned the frame's BOTTOM EDGE: `frame=[0,2337][1080,2400]` gave 2400, the whole
+ * screen height, where the inset is 63. micTapPoint then subtracted 2400 from 2400 and put both
+ * taps at y = -163, off the screen, pressing nothing — and the mute stage would have read that
+ * as issue #1 reproducing. The inline shell pipeline this replaced had the same bug, the
+ * extraction preserved it, and this module's own test ASSERTED 2400. Found by running the stop
+ * phase against the scripted adb and reading the tap point it printed.
+ */
 export function parseNavInset(out) {
-  const m = /navigationBars[^\n]*?frame=\[\d+,\d+\]\[\d+,(\d+)\]/.exec(String(out || ''));
-  return m ? Number(m[1]) : 0;
+  const m = /navigationBars[^\n]*?frame=\[\d+,(\d+)\]\[\d+,(\d+)\]/.exec(String(out || ''));
+  if (!m) return 0;
+  const h = Number(m[2]) - Number(m[1]);
+  return h > 0 ? h : 0;
 }
 
 /**

@@ -27,6 +27,7 @@ import { reportKind } from './lib/run-facts.mjs';
 import { acceptanceCoverage } from './lib/device-acceptance.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
+await (await import('./lib/suite-list.mjs')).refuseDuringMutation(REPO);
 const FAKE = join(REPO, 'test/fixtures/fake-adb.mjs');
 const OUT = join(REPO, 'test/audit/out/device');
 let pass = 0; const fails = [];
@@ -50,6 +51,8 @@ const scenario = (sc) => {
              : []) };
 };
 const env = (sc) => ({ ...process.env, AGENTMOB_ADB: FAKE, FAKE_ADB_SCENARIO: sc.path,
+                       /* a scratch gateway log — a simulated run refuses to read the real one */
+                       AGENTMOB_GATEWAY_LOG: join(sc.dir, 'gateway.log'),
                        AGENTMOB_HANDOFF_TICK_S: '1',
                        AGENTMOB_APK: 'android/app/build/outputs/apk/release/app-release.apk' });
 const verify = (sc, args) => spawnSync(process.execPath, [join(REPO, 'test/device-verify.mjs'), ...args],
@@ -111,6 +114,90 @@ const launch = (extra) => {
   const refused = launch({ amStart: 'not-exported', logcat: '' });
   ok('launch: a not-exported refusal is named, not "no process"',
     /am start refused: the launch component is not exported/.test(refused), refused);
+}
+
+/* ---- 1c. ISSUE #1 — the mute-mid-sentence sequence, and Stop after it ------------------------
+ * device-verify's orchestration of these phases had never executed. Running it found a crash
+ * (parseSize's shape changed and the caller still indexed the old one, so the issue #1 test
+ * died with an uncaught TypeError), then a tap aimed off the screen (the nav inset parser
+ * returned the frame's bottom edge, so both taps went to y = -163), and the stand-in itself
+ * reacting to taps that could not have landed. */
+const turn = (extra, only = 'mute,stop') => {
+  const sc = scenario({ usb: '33250DLH2000CB', pid: '4242', flushDropped: 143, ...extra });
+  const r = verify(sc, ['--only', only, '--wait', '15']);
+  const st = JSON.parse(readFileSync(sc.path + '.state', 'utf8'));
+  const line = (re) => r.stdout.split('\n').find((l) => re.test(l)) || '';
+  rmSync(sc.dir, { recursive: true, force: true });
+  return { r, st, line };
+};
+{
+  const t = turn({});
+  ok('issue #1: the run does not crash on the way into the mute test',
+    !/UNCAUGHT/.test(t.r.stdout + t.r.stderr), (t.r.stderr || '').slice(0, 160));
+  ok('issue #1: the mic tap lands ON the screen',
+    t.st.taps && t.st.taps[0] && t.st.taps[0][1] > 0 && t.st.taps[0][1] < 2400,
+    `taps: ${JSON.stringify(t.st.taps)} — y was -163 while the nav inset read as the screen height`);
+  ok('issue #1: the device reports the mic muted', /VERIFIED\] mute mid-sentence: the device reports the mic muted/.test(t.r.stdout));
+  ok('issue #1: the app logged the native mute', /VERIFIED\] mute mid-sentence: the APP logged the native mute/.test(t.r.stdout));
+  ok('issue #1: the reply KEPT playing is now a MACHINE verdict',
+    /VERIFIED\] mute mid-sentence: the reply KEPT playing/.test(t.r.stdout),
+    t.line(/KEPT playing/) + ' — this was a person comparing two screenshots');
+  ok('stop: Stop truncates after the mute', /VERIFIED\] Stop actually stopped the audio/.test(t.r.stdout));
+  ok('stop: the flush count is read from the phone', /Stop flushed 143 queued frame/.test(t.r.stdout));
+  ok('stop: the Stop tap also lands on the screen',
+    t.st.taps && t.st.taps[1] && t.st.taps[1][1] > 0 && t.st.taps[1][0] > t.st.taps[0][0],
+    JSON.stringify(t.st.taps));
+}
+{
+  const t = turn({ muteTruncates: true }, 'mute');
+  ok('issue #1 REGRESSION: a mute that cuts the reply FAILS by name',
+    /FAILED  \] mute mid-sentence: the reply KEPT playing .*ISSUE #1 REPRODUCED/.test(t.r.stdout),
+    t.line(/KEPT playing/));
+}
+{
+  const t = turn({ micTapLands: false }, 'mute');
+  ok('a mic tap that does not reach the app FAILS on the app log',
+    /FAILED  \] mute mid-sentence: the APP logged the native mute/.test(t.r.stdout),
+    t.line(/APP logged/));
+}
+{
+  const t = turn({ dumpsysMute: false }, 'mute');
+  ok('a device that reports no mic-mute field is blocked with a probe note, not called unmuted',
+    /BLOCKED \] mute mid-sentence: the device reports the mic muted .*no mic-mute field/.test(t.r.stdout),
+    t.line(/device reports the mic muted/));
+}
+{
+  const t = turn({ flushDropped: 2 }, 'stop');
+  ok('stop: a paced-profile flush is FINE on a normal run',
+    /VERIFIED\] Stop flushed the audio/.test(t.r.stdout), t.line(/Stop flushed/));
+}
+{
+  const t = turn({ stopTruncates: false, flushDropped: undefined }, 'stop');
+  ok('stop: a Stop that truncates nothing and flushes nothing does not pass',
+    /BLOCKED \] Stop actually stopped the audio/.test(t.r.stdout)
+    && /FAILED  \] Stop flushed the audio/.test(t.r.stdout),
+    [t.line(/Stop actually/), t.line(/Stop flushed/)].join(' | '));
+}
+{
+  const t = turn({}, 'stop');
+  ok('--only stop RUNS the stop stages, rather than skipping them and saying it did',
+    /\] tapped Stop mid-sentence/.test(t.r.stdout) && t.st.taps && t.st.taps.length === 1,
+    `taps: ${JSON.stringify(t.st.taps)} — the stop phase was nested inside launch, so --only stop `
+    + 'ran nothing while printing that it ran stop');
+  ok('and launch runs because stop needs it', /VERIFIED\] app launched/.test(t.r.stdout));
+  ok('but the install is still skipped — the point of resuming', /SKIPPED \] install APK/.test(t.r.stdout));
+}
+{
+  const sc = scenario({ usb: '33250DLH2000CB' });
+  const r = spawnSync(process.execPath, [join(REPO, 'test/device-verify.mjs'), '--only', 'speak'],
+    { cwd: REPO, env: { ...process.env, AGENTMOB_ADB: FAKE, FAKE_ADB_SCENARIO: sc.path },
+      encoding: 'utf8', timeout: 60000 });
+  ok('a simulated run with no scratch gateway log REFUSES to start',
+    r.status === 2 && /would otherwise read the real gateway log/.test(r.stderr),
+    'real traffic writes "→ phone pcm" to that file all day; a sim would take it as its own');
+  ok('and never sent a turn', !existsSync(sc.path + '.calls')
+    || !readFileSync(sc.path + '.calls', 'utf8').includes('fake-trigger'));
+  rmSync(sc.dir, { recursive: true, force: true });
 }
 
 /* ---- 2. a simulated run must never read as device evidence ---------------------------------- */
@@ -194,6 +281,12 @@ const launch = (extra) => {
     !calls.some((c) => c.args[0] === 'install'),
     'this is somebody else\'s handset');
   ok('wrong phone: it is disconnected again', calls.some((c) => c.args[0] === 'disconnect'));
+  /* ONCE. The rejected set was only consulted by the sweep tier, so mDNS re-offered the same
+   * Samsung every tick — eight connects in eleven seconds here, about a thousand over a six-hour
+   * arm, and each `adb connect` to someone else's phone can put an Allow prompt on THEIR screen. */
+  ok('wrong phone: it is connected to ONCE, not on every tick',
+    calls.filter((c) => c.args[0] === 'connect').length === 1,
+    `${calls.filter((c) => c.args[0] === 'connect').length} connects to a device already refused`);
   rmSync(sc.dir, { recursive: true, force: true });
 }
 

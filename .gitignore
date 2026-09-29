@@ -22,3 +22,4 @@ test/audit/out/
 test/audit/out/suite-failures/
 .mut-breaks.log
 .mut-verify.log
+test/.mutation-running

@@ -141,8 +141,10 @@ export const MUTANTS = [
 
   { suite: 'aead-trigger', file: DV, why: 'the working trigger',
     breaks: 'device-verify calls it',
-    from: 'const trig = await typedTurn({ text: TRIGGER });',
-    to: 'const trig = { ok: true, error: null }; void typedTurn;' },
+    /* The trigger line gained a SIMULATED branch (a scripted run must never send a real turn to
+       the live agent), so the real call now sits in the else-arm. */
+    from: '      : await typedTurn({ text: TRIGGER });',
+    to:   '      : ({ ok: true, error: null });' },
 
   { suite: 'ice-tailnet', file: SC, restart: true, why: 'gathering the tailnet address as a host candidate',
     breaks: 'the answer contains a tailnet candidate',
@@ -1828,6 +1830,70 @@ export const MUTANTS = [
     breaks: 'handoff usb: the cable is found without any network step',
     from: "  if (!found && plan.tiers.includes('usb')) {",
     to:   "  if (false && plan.tiers.includes('usb')) {" },
+
+  /* adb-sim #5 — a refused device not being offered again by mDNS. Without the filter the same
+     stranger's phone is reconnected and re-queried on every tick for six hours, and each connect
+     can raise an "Allow wireless debugging?" prompt on a screen that is not ours. */
+  { suite: 'adb-sim', file: HANDOFFRUN,
+    why: 'a refused device being left alone after the first refusal',
+    breaks: 'it is connected to ONCE, not on every tick',
+    from: '      .filter((p) => !rejected.has(`${p.host}:${p.port}`));',
+    to:   '      ;' },
+
+  /* device-probe #9 — the nav inset being the bar's HEIGHT. It returned the frame's bottom edge
+     (2400, the whole screen), so both taps went to y = -163 and pressed nothing — and this
+     module's own test ASSERTED 2400. Found by running the stop phase against the scripted adb
+     and reading the tap point it printed. */
+  { suite: 'device-probe', file: DPROBE,
+    why: 'the navigation-bar inset being its height, not its bottom edge',
+    breaks: 'the HEIGHT of the frame, not its bottom edge',
+    from: '  const h = Number(m[2]) - Number(m[1]);',
+    to:   '  const h = Number(m[2]);' },
+
+  /* device-probe #10 — an off-screen tap point being refused. A tap at a negative y is a no-op
+     that reports success, and the mute stage then reads the silence as issue #1 reproducing. */
+  { suite: 'device-probe', file: DPROBE,
+    why: 'refusing to aim a tap outside the screen',
+    breaks: 'a point that would land off the screen is refused, not tapped',
+    from: '  if (pt.x < 0 || pt.x >= w || pt.y < 0 || pt.y >= h) return null;',
+    to:   '' },
+
+  /* stage-select #5 — LAUNCH implied by every later phase. The later phases are nested inside
+     launch's block, so deselecting it silently skipped them: `--ws-fallback --only stop`, the
+     command written down for the case stop-control's flush exists for, ran no stop stage while
+     its summary said it had. */
+  { suite: 'stage-select', file: SSEL,
+    why: 'the phases after launch pulling launch in with them',
+    breaks: '--from mute KEEPS launch',
+    from: "  { name: 'launch', precondition: true, impliedBy: ['handshake', 'surface', 'speak', 'mute', 'stop'],",
+    to:   "  { name: 'launch'," },
+
+  /* adb-sim #6 — the tap point computed from the shape parseSize actually returns. The caller
+     indexed `size[1]`, the regex-match shape it replaced; W was NaN and the issue #1 test died
+     with an uncaught TypeError before a single mute stage was recorded. */
+  { suite: 'adb-sim', file: DV,
+    why: 'the mute test reading the screen size it was given',
+    breaks: 'the run does not crash on the way into the mute test',
+    from: '    const W = size.w, H = size.h;',
+    to:   '    const W = Number(size[1]), H = Number(size[2]);' },
+
+  /* adb-sim #7 — "the reply KEPT playing" as a MACHINE verdict. It was a person comparing two
+     screenshots; now a cut-short line between the mic tap and the Stop tap fails the run as
+     issue #1 reproduced. Turned back into 'built', the regression passes silently. */
+  { suite: 'adb-sim', file: DV,
+    why: 'issue #1 being failed by the log, not left to screenshots',
+    breaks: 'a mute that cuts the reply FAILS by name',
+    from: "        cutByMute ? 'failed' : 'verified',",
+    to:   "        'built'," },
+
+  /* adb-sim #8 — a simulated run refusing the REAL gateway log. Real traffic writes "→ phone
+     pcm" lines there all day; a scripted run waiting on that file would take a stranger's reply
+     as its own evidence. */
+  { suite: 'adb-sim', file: DV,
+    why: 'a scripted run never reading the live gateway log',
+    breaks: 'a simulated run with no scratch gateway log REFUSES to start',
+    from: 'if (SIMULATED && !process.env.AGENTMOB_GATEWAY_LOG) {',
+    to:   'if (false) {' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 

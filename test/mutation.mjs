@@ -91,6 +91,36 @@ const touched = [...new Set(chosen.flatMap((m) => editsOf(m).map((e) => e.file))
     process.exit(3);
   }
 }
+/* ONE RUN AT A TIME, and a way to find it.
+ *
+ * Each suite runs under spawnSync, and Node cannot run a signal handler while blocked in one:
+ * a SIGTERM to this process is queued until the current suite finishes — ten minutes for the
+ * slow ones — with a file mutated the whole time. A run was "killed", kept going, and every
+ * suite run beside it read mutated code; one of them produced a failure that took twenty
+ * minutes to trace back here. So the run announces itself in a lock file, with the process
+ * GROUP to signal (which takes the child suite down too, so the handler gets to run), and a
+ * second run refuses to start while the first is alive. */
+const LOCK = join(REPO, 'test', '.mutation-running');
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+if (existsSync(LOCK)) {
+  let held = null;
+  try { held = JSON.parse(readFileSync(LOCK, 'utf8')); } catch { /* unreadable: treat as stale */ }
+  if (held && alive(held.pid)) {
+    console.error(`\nANOTHER MUTATION RUN IS LIVE: pid ${held.pid}, started ${held.started}, `
+      + `filter "${held.filter || '(all)'}". Its files may be mutated right now.`);
+    console.error(`Stop it with:  kill -TERM -${held.pgid}   (the process GROUP — a plain kill `
+      + 'waits for the current suite to finish)\n');
+    process.exit(4);
+  }
+  rmSync(LOCK, { force: true });   // stale: its process is gone
+}
+let pgid = process.pid;
+try { pgid = Number(spawnSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout.trim()) || process.pid; } catch {}
+writeFileSync(LOCK, JSON.stringify({ pid: process.pid, pgid, started: new Date().toISOString(),
+                                     filter: only || null }));
+process.on('exit', () => { try { rmSync(LOCK, { force: true }); } catch {} });
+console.log(`mutation run pid ${process.pid} — to stop it: kill -TERM -${pgid}`);
+
 const backups = new Map();
 for (const f of touched) {
   if (!existsSync(f)) continue;
@@ -195,7 +225,7 @@ try {
     }
     const r = spawnSync('npm', ['run', '-s', m.suite],
       { cwd: REPO, encoding: 'utf8', timeout: 900000,
-        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1',
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', AGENTMOB_UNDER_MUTATION: '1',
                ...(m.scope === 'gateway' ? { AGENTMOB_WS_URL: SCOPED_WS_URL } : {}) } });
     restoreEdits();
     if (m.scope === 'gateway') { stopScoped({}); startScoped({}); }

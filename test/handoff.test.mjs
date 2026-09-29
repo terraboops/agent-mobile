@@ -16,6 +16,7 @@ import { tickPlan, discoveryPlan, passPlan, usableEndpoint, handoffVerdict, subn
   from './lib/handoff.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
+await (await import('./lib/suite-list.mjs')).refuseDuringMutation(REPO);
 let pass = 0; const fails = [];
 const ok = (name, cond, detail = '') => {
   if (cond) { pass++; console.log(`  ok   ${name}`); }

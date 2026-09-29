@@ -105,8 +105,21 @@ ok('webview: no providers yields null, not 0',
   '0 would compare as below every floor and report a failure the device never stated');
 
 /* ---- nav inset ------------------------------------------------------------------------------ */
-ok('nav inset: read out of a dumpsys window frame',
-  parseNavInset('navigationBars frame=[0,2337][1080,2400]') === 2400);
+/* This assertion used to say 2400 — the frame's bottom edge, which is the whole screen — and
+ * passed, because the parser returned exactly that. The inset is the bar's HEIGHT. */
+ok('nav inset: the HEIGHT of the frame, not its bottom edge',
+  parseNavInset('navigationBars frame=[0,2337][1080,2400]') === 63,
+  `got ${parseNavInset('navigationBars frame=[0,2337][1080,2400]')} — 2400 is the screen, and `
+  + 'subtracting it put every tap at y = -163');
+ok('nav inset: composed with the tap, it lands ON the screen',
+  (() => { const t = micTapPoint({ w: 1080, h: 2400, dens: 2.625,
+             navPx: parseNavInset('navigationBars frame=[0,2337][1080,2400]'),
+             micSizeDp: 72, micGapDp: 26 });
+           return t && t.y > 0 && t.y < 2400; })(),
+  'the two were only ever tested apart; together they aimed off the screen');
+ok('tap: a point that would land off the screen is refused, not tapped',
+  micTapPoint({ w: 1080, h: 2400, dens: 2.625, navPx: 2400, micSizeDp: 72, micGapDp: 26 }) === null,
+  'tapping at a negative y presses nothing and the mute stage reads it as issue #1');
 ok('nav inset: absent yields 0, which the tap treats as no inset',
   parseNavInset('no such thing') === 0);
 

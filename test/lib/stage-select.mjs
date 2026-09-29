@@ -23,8 +23,15 @@ export const PHASES = [
     what: 'reach the phone and authorise adb' },
   { name: 'install',
     what: 'adb install -r, and the WebView version report' },
-  { name: 'launch',
-    what: 'force-stop, am start, crash check, boot screenshot' },
+  /* LAUNCH is implied by every phase after it, for the same reason speak is implied by mute:
+   * nothing past it can be observed in an app that is not running. Worse than that — the later
+   * phases are NESTED inside launch's block in device-verify, so deselecting launch did not
+   * fail them, it silently skipped them. `--ws-fallback --only stop`, the command written down
+   * for the case stop-control's flush exists for, ran no stop stage at all while the summary
+   * line said it had. Found by running it against the scripted adb and counting the taps: 0. */
+  { name: 'launch', precondition: true, impliedBy: ['handshake', 'surface', 'speak', 'mute', 'stop'],
+    what: 'force-stop, am start, crash check, boot screenshot — implied by every later phase, '
+        + 'since none of them can be observed in an app that is not running' },
   { name: 'handshake',
     what: 'AEAD handshake, live client identity, WebRTC negotiation, ICE path' },
   { name: 'surface',

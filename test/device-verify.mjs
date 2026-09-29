@@ -155,6 +155,13 @@ const TRIG = triggerAdequacy(TRIGGER);
 /* AGENTMOB_ADB first, so a scripted stand-in can drive the paths no device has exercised —
  * the USB serial and the unauthorized prompt had never run anywhere before it existed. */
 const SIMULATED = !!process.env.AGENTMOB_ADB;
+/* And never reads the REAL gateway log. Real traffic writes "→ phone pcm" lines there all day;
+ * a simulated speak phase waiting on that file would take a stranger's reply as its own. */
+if (SIMULATED && !process.env.AGENTMOB_GATEWAY_LOG) {
+  console.error('device-verify: a simulated run needs AGENTMOB_GATEWAY_LOG pointed at a scratch '
+    + 'file — it would otherwise read the real gateway log as its own evidence');
+  process.exit(2);
+}
 const ADB = [process.env.AGENTMOB_ADB, '/opt/homebrew/bin/adb', '/opt/homebrew/share/android-commandlinetools/platform-tools/adb', 'adb']
   .filter(Boolean).find((p) => { try { execFileSync(p, ['version'], { stdio: 'ignore' }); return true; } catch { return false; } });
 
@@ -764,13 +771,25 @@ if (!DRY && serial && phase('launch')) {
   if (!dens || !size || !MIC_SIZE) {
     stage('mute mid-sentence (issue #1)', 'blocked', 'could not read density/size/mic constants');
   } else {
-    const W = Number(size[1]), H = Number(size[2]);
+    /* parseSize returns {w, h}. This read `size[1]` / `size[2]` — the shape of the regex match
+     * it replaced when the parsing moved into device-probe — so W was NaN, micTapPoint returned
+     * null, and `_tap.x` threw: the mute and stop phases CRASHED at the moment of the issue #1
+     * test. device-probe's own assertions all passed, because they test parseSize, and nothing
+     * had ever run this caller. Found by running the phase against the scripted adb. */
+    const W = size.w, H = size.h;
     /* Nav-bar inset in px, best effort. The mic is MIC_SIZE dp tall, so even a wrong inset
      * stays well inside the button: the tap aims at its centre, +-MIC_SIZE/2 dp of slack. */
     const navPx = parseNavInset(sh('dumpsys window | grep -m1 navigationBars'));
     const _tap = micTapPoint({ w: W, h: H, dens, navPx, micSizeDp: MIC_SIZE, micGapDp: MIC_GAP });
-    const tapX = _tap.x;
-    const tapY = _tap.y;
+    if (!_tap) {
+      /* Refused rather than crashed. `_tap.x` on a null used to throw an uncaught TypeError here,
+       * killing the run at the start of the issue #1 test with no stage recorded at all. */
+      stage('mic tap point from MainActivity constants', 'failed',
+        `could not aim a tap on screen — ${W}x${H}, density ${dens}, nav inset ${navPx}px`);
+    }
+    const tapX = _tap ? _tap.x : null;
+    const tapY = _tap ? _tap.y : null;
+    if (_tap) {
     stage('mic tap point from MainActivity constants', 'built',
       `(${tapX},${tapY}) — ${MIC_SIZE}dp button, gap ${MIC_GAP}dp, density ${dens}, nav ${navPx}px`);
 
@@ -787,7 +806,13 @@ if (!DRY && serial && phase('launch')) {
      * the phone (which attached at stage 3) and disconnects once the turn is in, leaving the
      * handset as the only connection and so the unambiguous target. */
     const off2 = logSize();
-    const trig = await typedTurn({ text: TRIGGER });
+    /* A SIMULATED run never talks to the live agent. The typed turn goes to the real sidecar on
+     * 8123 and makes the real agent answer; against a scripted adb that is a real conversation
+     * started by a test. The stand-in is asked to play the sidecar's part instead, writing the
+     * lines the real one would into a gateway log that is NOT the real one. */
+    const trig = SIMULATED
+      ? (adb(['fake-trigger', TRIGGER]).status === 0 ? { ok: true } : { ok: false, error: 'stand-in refused the trigger' })
+      : await typedTurn({ text: TRIGGER });
     const triggerFailed = !trig.ok;
     stage('trigger a spoken reply (typed turn over AEAD)',
       triggerFailed ? 'blocked' : 'verified',
@@ -846,8 +871,21 @@ if (!DRY && serial && phase('launch')) {
           ? `dumpsys audio reported no mic-mute field (probe may need updating): `
             + `${String(micRaw).replace(/\s+/g, ' ').slice(0, 100)}`
           : String(micRaw).replace(/\s+/g, ' ').slice(0, 140));
+      /* THE CLAIM OF ISSUE #1, from the log instead of two screenshots. Muting the mic must not
+       * stop the reply, and a stopped reply is a `cut short` line in the sidecar's log. So
+       * between the mic tap and the Stop tap there must be none. This was 'built' — a person
+       * comparing 04-speaking.png with 05-after-mute.png — which a run cannot carry and nobody
+       * can re-check once the phone is unplugged. */
+      await sleep(2000);
+      const afterMute = logSince(off3);
+      const cutByMute = /\[sidecar\] → phone pcm .*\[cut short after (\d+)\/(\d+) frames: ([^\]]+)\]/.exec(afterMute);
       stage('mute mid-sentence: the reply KEPT playing (muting the mic must not stop it)',
-        'built', 'compare 04-speaking.png and 05-after-mute.png — the pill should still be lit');
+        cutByMute ? 'failed' : 'verified',
+        cutByMute
+          ? `ISSUE #1 REPRODUCED: the reply was cut at ${cutByMute[1]}/${cutByMute[2]} frames `
+            + `(${cutByMute[3]}) by the mute, before Stop was touched`
+          : 'no truncation between the mic tap and the Stop tap — muting did not stop the reply '
+            + '(04-speaking.png / 05-after-mute.png kept for eyes)');
 
       /* AND WHAT THE PHONE SAID ABOUT IT. The stage above is a human comparing two images, which
        * is not a verdict a run can carry and cannot be re-checked once the phone is gone. The
@@ -898,6 +936,7 @@ if (!DRY && serial && phase('launch')) {
         `${ev.why} (logcat-stop.txt)`);
       }   /* end stop phase */
     }
+    }   /* end aimed-tap block */
   }
   }   /* end speak/mute/stop phases */
 }

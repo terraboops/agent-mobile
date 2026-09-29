@@ -156,14 +156,20 @@ while (Date.now() < deadline && !confirmed) {
     const usb = out.split('\n').slice(1)
       .map((l) => l.trim()).filter((l) => l && !/^\S+:\d+\s/.test(l))
       .find((l) => /\sdevice\b/.test(l));
-    if (usb) found = foundVia('usb', usb.split(/\s+/)[0], usb.slice(0, 80));
+    if (usb && !rejected.has(usb.split(/\s+/)[0])) found = foundVia('usb', usb.split(/\s+/)[0], usb.slice(0, 80));
   }
 
   /* --- mdns: the designed mechanism, and this Mac IS on the phone's segment ------------------ */
   if (!found && plan.tiers.includes('mdns')) {
     last.mdns = elapsed();
+    /* A device already refused is not offered again, by ANY tier. The rejected set was consulted
+     * only by the sweep, so a Samsung advertising on the same segment was reconnected, queried
+     * and refused on every tick — eight connects in eleven seconds against a simulated one,
+     * about a thousand over a six-hour arm — and each `adb connect` to someone else's phone can
+     * put an "Allow wireless debugging?" prompt on THEIR screen. */
     const picks = pickAdbEndpoints(parseMdnsServices(adb(['mdns', 'services']).stdout),
-                                   { host: lastKnownLan || PHONE_HOST });
+                                   { host: lastKnownLan || PHONE_HOST })
+      .filter((p) => !rejected.has(`${p.host}:${p.port}`));
     if (picks.length) found = foundVia('mdns', `${picks[0].host}:${picks[0].port}`, picks[0].type);
   }
 
@@ -292,7 +298,10 @@ if (confirmed) {
     return { ...p, args: [...a, '--only', String(PASS_ONLY)] };
   });
   for (const p of passes) {
-    console.log(`\n=== ${p.name} — ${p.why}\n`);
+    /* Say what is RUNNING. With --pass-only the header still read "full sweep — install, launch,
+     * handshake, WebRTC, surface, speak, mute, stop" over a pass that did two of those. */
+    console.log(`\n=== ${p.name}${PASS_ONLY ? ` (narrowed to --only ${PASS_ONLY})` : ''} — `
+      + `${PASS_ONLY ? `only the ${PASS_ONLY} phase(s) of: ` : ''}${p.why}\n`);
     const r = spawnSync(process.execPath, [join(HERE, 'device-verify.mjs'), ...p.args],
       { stdio: 'inherit', env: { ...process.env, ...p.env }, timeout: 45 * 60 * 1000 });
     ran++;

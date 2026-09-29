@@ -38,9 +38,15 @@ ok('--from mute runs mute', runsPhase(fromMute, 'mute'));
 ok('--from mute runs what comes AFTER it', runsPhase(fromMute, 'stop'));
 ok('--from mute skips the install', !runsPhase(fromMute, 'install'),
   'skipping the install is the whole point — it is the slowest phase');
-ok('--from mute skips everything before it',
-  !runsPhase(fromMute, 'launch') && !runsPhase(fromMute, 'handshake')
+/* EXCEPT launch. This asserted `!runsPhase(fromMute, 'launch')` — which is the defect, written
+ * down as a requirement: the later phases are nested inside launch's block, so a run that
+ * skipped launch silently skipped them too. `--only stop` ran no stop stage at all, found by
+ * running it against the scripted adb and counting taps: zero. */
+ok('--from mute skips everything before it that it does not need',
+  !runsPhase(fromMute, 'install') && !runsPhase(fromMute, 'handshake')
   && !runsPhase(fromMute, 'surface'));
+ok('--from mute KEEPS launch, because nothing after it runs in an app that is not running',
+  runsPhase(fromMute, 'launch'));
 /* EXCEPT the turn, which mute needs to be observable. This assertion used to include
  * `!runsPhase(fromMute, 'speak')` and was wrong about the behaviour: device-verify triggers the
  * spoken turn whenever any of speak/mute/stop is selected, so the run spoke while the summary
@@ -65,7 +71,8 @@ ok('--from the FIRST phase is the same set as no flags',
 ok('--from the LAST phase runs it, discovery, and whatever it implies',
   (() => { const s = parsePhaseSelector({ from: PHASE_NAMES.at(-1) });
            return runsPhase(s, PHASE_NAMES.at(-1)) && runsPhase(s, 'discover')
-               && s.run.size === 3 && runsPhase(s, 'speak'); })(),
+               && runsPhase(s, 'speak') && runsPhase(s, 'launch') && s.run.size === 4
+               && !runsPhase(s, 'install'); })(),
   JSON.stringify([...parsePhaseSelector({ from: PHASE_NAMES.at(-1) }).run]));
 
 /* ---- --only is a set ----------------------------------------------------------------------- */
