@@ -50,7 +50,8 @@ export const DEVICE_ACCEPTANCE = [
              + 'to hold RECORD_AUDIO); apk-installable (MODIFY_AUDIO_SETTINGS is in the built '
              + 'APK, without which the mute silently no-ops); ctrlbar-geometry (the button is '
              + '48dp+ at every width and cannot collide with Stop)',
-    stages: ['mute mid-sentence (issue #1)',
+    stages: ['the trigger phrase speaks for long enough to tap mid-sentence',
+             'mute mid-sentence (issue #1)',
              'mute mid-sentence: the device reports the mic muted (issue #1)',
              'mute mid-sentence: the reply KEPT playing (muting the mic must not stop it)',
              'tapped the native mic mid-sentence',

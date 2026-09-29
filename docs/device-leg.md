@@ -108,6 +108,44 @@ what the tailnet path is for, and a run done on the sofa cannot exercise it. To 
 put the Pixel on mobile data (Tailscale stays up) and run it again. The stage names which of the
 two happened rather than reporting "ICE connected" for both.
 
+## Status of the phone pass — BLOCKED ON THE DEVICE, not on this Mac
+
+As of 2026-09-29 05:40 PDT, no device pass has ever run. Nothing here is a partial verification:
+every report on disk is a dry run and says so in the file.
+
+Measured, not assumed:
+
+    tailscale status   idle; offline, last seen 13m ago
+    tailscale ping     pong via direct 192.168.10.53:38864 in 81ms
+    adb devices        (empty — no serial attached)
+    192.168.10.53:5555 Connection refused      <- the phone's stack ANSWERED
+    100.112.255.69:5555 Operation timed out
+
+The status row and the ping disagree, and the ping is the stronger evidence: a pong over a
+direct path means packets reached the handset just now, while `idle; offline` describes the
+control-plane session, which Android drops when the screen has been off a while. Refused on the
+LAN address means the same thing at the TCP layer — the host answered and nothing is bound.
+
+### To resume, the phone needs exactly one thing
+
+**Settings → System → Developer options → Wireless debugging → ON.**
+
+Not a re-pair: `~/.android/adb_known_hosts.pb` still holds `adb-33250DLH2000CB-3DAvRt` from
+2026-08-24, and that pairing survives the toggle. Not a serial supplied by hand: the port is
+randomised per toggle and discovered here. Not a permission: the "Allow wireless debugging?"
+prompt only appears if the pairing is gone, and `device-verify` names that case separately if it
+happens.
+
+Then one command, which will not need this document again:
+
+    AGENTMOB_APK=android/app/build/outputs/apk/release/app-release.apk npm run device-verify
+
+If a phase fails, resume at it rather than repeating the install — see the section above.
+
+**And for the tailnet claim specifically**: put the Pixel on mobile data for the run. On this
+Wi-Fi the Tailscale path is `direct 192.168.10.53`, so the packets never leave the subnet and
+the `tailnet path exercises the REMOTE case` stage will report blocked — correctly.
+
 ## What is waiting on this
 
 * the APK install, launch and screenshots (including issue #2's `screenshot: connected control

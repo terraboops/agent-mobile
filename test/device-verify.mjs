@@ -49,6 +49,8 @@ import { parseDensity, parseSize, micTapPoint, stopTapX, parseMicMute, parseVers
 import { parseAmStartRefusal, parseInstallFailure } from './lib/manifest-facts.mjs';
 import { parsePhaseSelector, runsPhase, describeSelection, PHASE_NAMES }
   from './lib/stage-select.mjs';
+import { triggerAdequacy, invitesLongReply, validatePng, validateReport, reportKind }
+  from './lib/run-facts.mjs';
 import { logStamp, logSince as logSinceReal } from './lib/gateway-log.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -122,6 +124,12 @@ const TRIGGER = String(flag('--say', 'Device check. Counting: one, two, three, f
 
 mkdirSync(OUT, { recursive: true });
 
+/* The trigger has to still be playing when the taps land, or mute and stop come back blocked
+ * for a reason that has nothing to do with either control — and the phone gets blamed for the
+ * phrase. Checked here, before anything is touched, because it costs nothing and the
+ * alternative is finding out eight minutes in. */
+const TRIG = triggerAdequacy(TRIGGER);
+
 const ADB = ['/opt/homebrew/bin/adb', '/opt/homebrew/share/android-commandlinetools/platform-tools/adb', 'adb']
   .find((p) => { try { execFileSync(p, ['version'], { stdio: 'ignore' }); return true; } catch { return false; } });
 
@@ -187,8 +195,20 @@ const finish = (code) => {
   stopAdb();
   console.log('\nadb server stopped.');
   const path = join(OUT, 'device-verify.json');
-  writeFileSync(path, JSON.stringify({ generated: new Date().toISOString(), dryRun: DRY, report }, null, 2));
+  const doc = { generated: new Date().toISOString(), dryRun: DRY, report };
+  writeFileSync(path, JSON.stringify(doc, null, 2));
   console.log(`report -> ${path}`);
+  /* The file outlives the terminal, so its shape is checked as it is written rather than
+   * trusted. A malformed report is worse than none: it reads as a record. */
+  const shape = validateReport(doc);
+  if (!shape.ok) {
+    console.log('\n  REPORT IS MALFORMED — do not quote it:');
+    for (const p of shape.problems) console.log(`    - ${p}`);
+  }
+  const kind = reportKind(doc);
+  if (kind.kind !== 'full') {
+    console.log(`\n  THIS REPORT IS NOT A DEVICE VERIFICATION (${kind.kind}): ${kind.note}`);
+  }
   const verified = report.filter((r) => r.status === 'verified').length;
   const blocked = report.filter((r) => r.status === 'blocked').length;
   const failed = report.filter((r) => r.status === 'failed').length;
@@ -198,6 +218,12 @@ const finish = (code) => {
 
 if (!ADB) { stage('adb present', 'blocked', 'adb not found on PATH or in the Android SDK'); finish(2); }
 console.log(`adb: ${ADB}${DRY ? '   (DRY RUN — no device will be touched)' : ''}`);
+
+stage('the trigger phrase speaks for long enough to tap mid-sentence',
+  TRIG.adequate && invitesLongReply(TRIGGER) ? 'verified' : 'blocked',
+  `${TRIG.why}${invitesLongReply(TRIGGER) ? ''
+    : ' — and it does not force a long utterance, so the agent may answer in a word. '
+      + 'Pass --say with something that counts aloud.'}`);
 
 /* ---- 0. local preflight: everything knowable WITHOUT the phone ----------------------------
  *
@@ -472,8 +498,14 @@ const shot = (name) => {
       || `screencap returned ${r.status} and ${r.stdout ? r.stdout.length : 0} bytes`;
     return false;
   }
-  lastShotError = null;
+  /* A well-formed PNG of a BLACK SCREEN is the failure this misses otherwise: the device was
+   * asleep, or the activity had not drawn, or the capture raced the launch. The file is written
+   * either way — evidence is worth having even when it is bad — but the caller is told, so four
+   * acceptance items do not rest on a rectangle nobody looked at. */
+  const png = validatePng(r.stdout);
   writeFileSync(join(OUT, name), r.stdout);
+  if (!png.ok) { lastShotError = png.reason; return false; }
+  lastShotError = null;
   return true;
 };
 

@@ -40,6 +40,7 @@ const FSTACK = join(REPO, 'test/lib/font-stack.mjs');
 const MFACTS = join(REPO, 'test/lib/manifest-facts.mjs');
 const JFACTS = join(REPO, 'test/lib/java-facts.mjs');
 const SSEL = join(REPO, 'test/lib/stage-select.mjs');
+const RFACTS = join(REPO, 'test/lib/run-facts.mjs');
 const PLUGINJ = join(REPO,
   'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
@@ -1457,6 +1458,55 @@ export const MUTANTS = [
     from: '    for (const p of PHASES) if (p.always) run.add(p.name);\n'
         + "    return { run, kind: 'from', error: null };",
     to:   "    return { run, kind: 'from', error: null };" },
+
+  /* run-facts #1 — a BLANK screenshot not passing as evidence. `screencap -p` returns a
+     well-formed PNG of a black screen when the device is asleep or the activity has not drawn,
+     and the run wrote it and reported verified: four acceptance items resting on a rectangle
+     nobody looked at. The threshold is measured (blank 0.0029 bytes/pixel, sparsest real
+     capture 0.0428); dropping it back below the blank is the regression. */
+  { suite: 'run-facts', file: RFACTS,
+    why: 'a flat-colour capture being rejected as blank',
+    breaks: 'a BLANK frame is rejected',
+    from: '                                   minBytesPerPixel = 0.01 } = {}) {',
+    to:   '                                   minBytesPerPixel = 0.0008 } = {}) {' },
+
+  /* run-facts #2 — a TRUNCATED capture. exec-out over a flaky link cuts the stream mid-chunk
+     and the header still looks fine, so without the IEND check half an image reads as a whole
+     one — and half a screenshot of a control bar is exactly the shape that would be believed. */
+  { suite: 'run-facts', file: RFACTS,
+    why: 'noticing a capture that stopped arriving',
+    breaks: 'a TRUNCATED capture is rejected',
+    from: "  if (b.indexOf(Buffer.from('IEND')) < 0) {",
+    to:   '  if (false) {' },
+
+  /* run-facts #3 — the TRIGGER being long enough to tap mid-sentence. Too short and the reply
+     is over before the mic is tapped: mute and stop come back blocked, and the phone is blamed
+     for the phrase. This is the check that costs nothing and saves the eighth minute. */
+  { suite: 'run-facts', file: RFACTS,
+    why: 'rejecting a trigger phrase that would be over before the taps land',
+    breaks: 'a short phrase is rejected',
+    from: '    adequate: seconds >= needSec,',
+    to:   '    adequate: true,' },
+
+  /* run-facts #4 — a PARTIAL report not reading as a verification. The file outlives the
+     terminal: a pass that never attempted the mute stages and one where they passed must not
+     look the same tomorrow, and "no failures" is not the same claim as "everything ran". */
+  { suite: 'run-facts', file: RFACTS,
+    why: 'a report with skipped stages reading as partial, not full',
+    breaks: 'reads as partial, not full',
+    from: '  const skipped = rows.filter((r) => r && r.status === \'skipped\');\n'
+        + '  if (skipped.length) {',
+    to:   '  const skipped = rows.filter((r) => r && r.status === \'skipped\');\n'
+        + '  if (false) {' },
+
+  /* run-facts #5 — a REPEATED stage name. Two rows under one name means the later verdict
+     silently replaces the earlier for anyone reading the file by name, which is how a failed
+     stage disappears from a report that still contains it. */
+  { suite: 'run-facts', file: RFACTS,
+    why: 'catching two report rows that share a stage name',
+    breaks: 'a REPEATED stage name is caught',
+    from: '  const dupes = names.filter((n, i) => n && names.indexOf(n) !== i);',
+    to:   '  const dupes = [];' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
