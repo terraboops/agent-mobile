@@ -25,7 +25,9 @@ const INDEX = join(REPO, 'www/index.html');
 const WVB = join(REPO, 'test/lib/webview-baseline.mjs');
 const DWATCH = join(REPO, 'test/device-watch.mjs');
 const WSF = join(REPO, 'transport/wsframes.js');
+const WIRE = join(homedir(), '.hermes/plugins/agentmob/sidecar/wire.mjs');
 const GS = join(REPO, 'test/lib/gateway-scope.mjs');
+const SCOPEDGW = join(REPO, 'test/lib/scoped-gateway.mjs');
 const GRADLE_VARS = join(REPO, 'android/variables.gradle');
 /* The adapter inside the SCOPED profile, not the live plugin. These two entries edit a throwaway
  * instance's own copy, so the production adapter is never modified and never needs restoring. */
@@ -340,6 +342,74 @@ export const MUTANTS = [
     breaks: 'the direct LAN address is extracted',
     from: "    const direct = /\\bdirect\\s+(\\d{1,3}(?:\\.\\d{1,3}){3}):(\\d+)/.exec(line);",
     to: '    const direct = null;' },
+
+  /* ---- SECOND entries for the heaviest suites (gap 3) -------------------------------------
+     Each targets a different claim from the suite's first entry, and each names the assertion it
+     must take down so a precondition-breaker cannot pass as coverage. */
+
+  /* gateway-scope #2 — the .env ALLOWLIST. Its first entry covers the live-label refusal.
+     I first named this as breaking the TELEGRAM_BOT_TOKEN assertion, and the harness returned
+     WRONG-CLAIM: with the allowlist bypassed, TELEGRAM is STILL filtered, because ENV_FORBID
+     catches it independently. That is defence in depth working, demonstrated rather than
+     assumed — and it means the allowlist's unique contribution is the key nobody anticipated,
+     which no denylist can name in advance. SOME_OTHER_SECRET is exactly that key. */
+  { suite: 'gateway-scope', file: SCOPEDGW,
+    why: 'the .env allowlist that keeps UNANTICIPATED credentials out of the scoped instance',
+    breaks: 'does NOT carry SOME_OTHER_SECRET',
+    from: '    if (!ENV_ALLOW.includes(k)) continue;',
+    to: '    if (false) continue;' },
+
+  /* adb-state #2 — the OFFLINE classification. First entry covers the unauthorized message.
+     Fold offline into ready and a device adb can see but cannot talk to is reported as usable,
+     which sends the whole verify down a path the phone cannot follow. */
+  { suite: 'adb-state', file: AS,
+    why: 'keeping OFFLINE distinct from a ready device',
+    breaks: 'offline: bucketed as offline',
+    from: "  offline: 'offline',",
+    to: "  offline: 'ready'," },
+
+  /* device-stages #2 — the local preflight running BEFORE the device gate. First entry covers
+     screenshot failure reporting. Move the preflight behind the gate and it never executes,
+     because a run with no device finishes first — which is how a stale APK stayed discoverable
+     only after a handset was connected. */
+  { suite: 'device-stages', file: DV,
+    why: 'the local preflight running before the device gate',
+    breaks: 'runs BEFORE the device gate',
+    from: 'for (const p of localApkPreflight()) stage(p.name, p.status, p.detail);',
+    to: '/* preflight moved behind the gate */' },
+
+  /* handshake #2 — the SERVER identity pin. First entry covers the client confirm MAC. Drop the
+     pin comparison and a client accepts any server key: the phone would complete a handshake
+     with an impostor gateway and never know. */
+  { suite: 'handshake', file: PROTO,
+    why: 'the client checking the server identity against its pin',
+    breaks: 'identity',
+    from: '    if (pin.length !== serverIdentity.length || !timingSafeEqual(pin, serverIdentity)) throw new Error(\'identity_mismatch\');',
+    to: '    if (false) throw new Error(\'identity_mismatch\');' },
+
+  /* sidecar-wire #2 — reporting WHICH socket state lost the frame. First entry covers routing
+     pushStatus through sendFrame. Blank the state and an undelivered frame is reported without
+     saying whether the socket was closing, closed or never opened — the difference between a
+     reconnect and a bug. */
+  { suite: 'sidecar-wire', file: WIRE,
+    why: 'naming the socket state that lost the frame',
+    breaks: 'the log names the state',
+    from: 'log(`→ phone ${what} NOT SENT: socket is ${wsState(ws)}`',
+    to: 'log(`→ phone ${what} NOT SENT: socket is unknown`' },
+
+  /* sidecar-inbound #2 — the WEDGE ESCALATION. Its first entry covers naming an unknown frame
+     type; this covers the alarm that fires when frames keep failing. Without it the sidecar
+     drops every frame quietly and the phone looks connected while nothing it sends gets
+     through — a handler bug wearing a link problem's clothes.
+     My first attempt here made the handler rethrow and named "the channel is untouched"; the
+     harness returned WRONG-CLAIM, because the channel survives a rethrow anyway (the outer
+     layer catches) and what actually broke was the wedge counting. The code was fine; the claim
+     I wrote was wrong. */
+  { suite: 'sidecar-inbound', file: SC, restart: true,
+    why: 'the wedge alarm that fires when frames keep failing to process',
+    breaks: 'RX HANDLER WEDGED fired at the SHIPPED threshold',
+    from: '        if (conn.rxFails === RX_FAIL_ESCALATE) {',
+    to: '        if (false) {' },
 
   /* ---- suites that predate this sweep ---------------------------------------------------- */
 
