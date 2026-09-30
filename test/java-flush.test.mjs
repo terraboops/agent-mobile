@@ -88,6 +88,9 @@ public class Harness {
   private volatile AudioTrack track;
   private volatile AudioTrack playTrack;
   private volatile long replyActiveUntil;
+  private volatile long stopGateUntil;
+  private volatile long stopGateLastDrop;
+  private static final long STOP_GATE_MAX_MS = 30000;
 
   int flushPlaybackActual() {${bodies.flushPlaybackActual}}
   private void flushTrack(AudioTrack t) {${bodies.flushTrack}}

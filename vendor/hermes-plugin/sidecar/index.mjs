@@ -513,7 +513,9 @@ function handleCmd(conn, ptb) {
     // current reply kept playing after Stop.
     if (conn.pcmCancel) conn.pcmCancel.cancelled = true;
     const ack = pack(T.cmd, conn.channel.send(Buffer.from(
-      JSON.stringify({ i, d: { type: 'text', text: 'Stopped.' } })), T.cmd));
+      JSON.stringify({ i, d: { type: 'text', text: 'Stopped.', interrupted: true } })), T.cmd));
+    /* interrupted:true is the edge the app's Stop gate waits for: the WS channel is ordered, so
+     * every reply frame sent before this point reaches the phone BEFORE this ack. */
     conn.ws.send(ack);
     log('→ phone interrupt ack');
     return;

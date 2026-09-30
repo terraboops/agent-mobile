@@ -78,7 +78,8 @@
     "dead-predicates": "node test/dead-predicates.mjs",
     "adb-sim": "node test/adb-sim.test.mjs",
     "verify-sim": "node test/verify-sim.test.mjs",
-    "java-flush": "node test/java-flush.test.mjs"
+    "java-flush": "node test/java-flush.test.mjs",
+    "sim-audio": "node test/sim-audio.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

@@ -134,7 +134,14 @@ if (cmd === 'shell') {
       const args = [here + 'sim-phone.mjs', '--url', process.env.SIM_SIDECAR_URL,
                     '--pt', String(sc.phonePT || 111), '--hold', '600'];
       if (sc.breakWebrtc) args.push('--break-webrtc');
-      const ph = spawn(process.execPath, args, { detached: true, stdio: 'ignore' });
+      /* javaPhone: the app's SHIPPED audio path runs behind the client, so the mute state, the
+       * flush count and the logcat lines below are what the shipped code produced — not knobs. */
+      if (sc.javaPhone && process.env.SIM_JAVA_CP) {
+        args.push('--java-phone', process.env.SIM_JAVA_CP);
+        if (sc.linkFps) args.push('--link-fps', String(sc.linkFps));
+      }
+      const ph = spawn(process.execPath, args, { detached: true, stdio: 'ignore',
+        env: { ...process.env, SIM_PHONE_OUT: scenarioPath + '.phone' } });
       ph.unref(); st.phonePid = ph.pid; save();
     }
     if (sc.amStart === 'not-exported') {
@@ -147,6 +154,12 @@ if (cmd === 'shell') {
   if (/^wm size/.test(line)) { out('Physical size: 1080x2400\n'); process.exit(0); }
   if (/dumpsys window/.test(line)) { out('navigationBars frame=[0,2337][1080,2400]\n'); process.exit(0); }
   if (/dumpsys audio/.test(line)) {
+    if (sc.javaPhone) {
+      /* AudioManager's state as the shipped setMicMuted left it. */
+      let a = {}; try { a = JSON.parse(readFileSync(scenarioPath + '.phone.audio.json', 'utf8')); } catch {}
+      if ('mMicMute' in a) out(`  mMicMute=${a.mMicMute}\n`);
+      process.exit(0);
+    }
     if (sc.dumpsysMute !== false) out(`  mMicMute=${!!st.micMuted}\n`);
     process.exit(0);
   }
@@ -159,7 +172,8 @@ if (cmd === 'shell') {
     if (!(x >= 0 && x < 1080 && y >= 0 && y < 2400)) { save(); process.exit(0); }
     if (x < 700) {
       /* the native mic button: the app mutes, logs it, and the reply keeps playing */
-      if (sc.micTapLands !== false) { st.micMuted = !st.micMuted; phoneLog(`mic ${st.micMuted ? 'MUTED' : 'unmuted'} (native)`); }
+      if (sc.javaPhone && st.phonePid) { try { process.kill(st.phonePid, 'SIGUSR2'); } catch {} }
+      else if (sc.micTapLands !== false) { st.micMuted = !st.micMuted; phoneLog(`mic ${st.micMuted ? 'MUTED' : 'unmuted'} (native)`); }
       /* muteTruncates: the issue #1 regression itself — the mute cuts the reply off */
       if (sc.muteTruncates) gateway('[sidecar] → phone pcm 142848b -> 148 opus packets via WebRTC [cut short after 20/148 frames: superseded or interrupted]');
     } else {
@@ -170,14 +184,18 @@ if (cmd === 'shell') {
       } else if (sc.stopTruncates !== false) {
         gateway('[sidecar] → phone pcm 142848b -> 148 opus packets via WebRTC [cut short after 61/148 frames: superseded or interrupted]');
       }
-      if (sc.flushDropped !== undefined) phoneLog(`playback flushed (${sc.flushDropped} queued frame(s) dropped)`);
+      if (sc.flushDropped !== undefined && !sc.javaPhone) phoneLog(`playback flushed (${sc.flushDropped} queued frame(s) dropped)`);
     }
     save(); process.exit(0);
   }
   process.exit(0);
 }
 
-if (cmd === 'logcat') { out((sc.logcat || '') + (st.logcat || '')); process.exit(0); }
+if (cmd === 'logcat') {
+  let shipped = '';
+  if (sc.javaPhone) { try { shipped = readFileSync(scenarioPath + '.phone.logcat', 'utf8'); } catch {} }
+  out((sc.logcat || '') + (st.logcat || '') + shipped); process.exit(0);
+}
 if (cmd === 'exec-out') {
   const drain = (buf) => new Promise((res) => process.stdout.write(buf, res));
   /* screencap -p. A real capture (one ux-audit already rendered), or a well-formed BLACK frame,

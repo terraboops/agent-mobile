@@ -182,6 +182,17 @@ public class AgentChannelPlugin extends Plugin {
     private volatile OpusDecoder playDecoder;
     private volatile Thread replyThread;
     private volatile long replyActiveUntil; // echo gate: pause mic while a reply plays
+    /* The Stop gate. Set by the Stop flush, released by the sidecar's interrupt ack (or after
+     * STOP_GATE_MAX_MS if the ack is lost). While it is up, reply audio that ARRIVES is dropped:
+     * on a slow link part of a burst is still in the pipe when Stop is pressed, and the flush can
+     * only empty what has already landed. The WS channel is ordered, so everything the sidecar
+     * sent before it handled the interrupt arrives BEFORE the ack — the ack is exactly the edge.
+     * If the ack is lost, the gate falls only once reply audio has been QUIET for
+     * STOP_GATE_QUIET_MS: a fixed timeout let the rest of a slow tail play the moment it expired. */
+    private volatile long stopGateUntil;
+    private volatile long stopGateLastDrop;
+    private static final long STOP_GATE_MAX_MS = 30000;
+    private static final long STOP_GATE_QUIET_MS = 1500;
 
     // ---- Capacitor API ------------------------------------------------------
     @PluginMethod
@@ -336,6 +347,10 @@ public class AgentChannelPlugin extends Plugin {
 
     /** @return how many queued frames were discarded, so the caller can report it. */
     int flushPlaybackActual() {
+        /* Raise the gate BEFORE counting and clearing, so a frame decoded in between is dropped
+         * rather than queued behind the clear. */
+        stopGateLastDrop = SystemClock.elapsedRealtime();
+        stopGateUntil = stopGateLastDrop + STOP_GATE_MAX_MS;
         int dropped = playQueue.size() + replyQueue.size();
         playQueue.clear();
         replyQueue.clear();
@@ -356,6 +371,25 @@ public class AgentChannelPlugin extends Plugin {
      * and resume after — dropping the buffer without resuming would leave the next reply with
      * nowhere to play.
      */
+    /** True while reply audio arriving after a Stop is to be dropped. */
+    private boolean stopGated() {
+        long g = stopGateUntil;
+        if (g == 0) return false;
+        long now = SystemClock.elapsedRealtime();
+        if (now < g && now - stopGateLastDrop < STOP_GATE_QUIET_MS) { stopGateLastDrop = now; return true; }
+        stopGateUntil = 0;
+        Log.w("AgentChannel", "stop gate fell without the interrupt ack (" + (now < g ? "reply audio went quiet" : "cap reached") + ")");
+        return false;
+    }
+
+    /** A control reply from the sidecar. The interrupt's ack carries interrupted:true. */
+    void noteControlReply(JSONObject d) {
+        if (d != null && d.optBoolean("interrupted", false) && stopGateUntil != 0) {
+            stopGateUntil = 0;
+            Log.i("AgentChannel", "stop gate released by the interrupt ack");
+        }
+    }
+
     private void flushTrack(AudioTrack t) {
         if (t == null) return;
         try {
@@ -879,6 +913,7 @@ public class AgentChannelPlugin extends Plugin {
      * concealed (lost) frame uses PLC: repeat the last decoded frame so there is
      * no silence hole / click. */
     private void playReply(byte[] opus, boolean concealed) {
+        if (stopGated()) return;
         replyActiveUntil = SystemClock.elapsedRealtime() + 900; // echo gate
         try {
             if (concealed) {
@@ -933,6 +968,7 @@ public class AgentChannelPlugin extends Plugin {
                 try {
                     JSONObject jj = new JSONObject(j);
                     JSONObject dd = jj.optJSONObject("d");
+                    noteControlReply(dd);
                     if (dd != null && dd.has("webrtc")) {
                         WebRtcMedia w = webRtc;
                         if (w != null) w.handleSignal(dd);
@@ -1131,6 +1167,11 @@ public class AgentChannelPlugin extends Plugin {
                 if (n <= 0) { if (++frames % 50 == 1) Log.i("AgentChannel", "audio read=" + n + " (waiting)");
                     Thread.sleep(2); continue; }
                 if (n < AUDIO_FRAME) { for (int i = n; i < AUDIO_FRAME; i++) pcm[i] = 0; n = AUDIO_FRAME; }
+                /* MUTED MEANS NOTHING LEAVES THE PHONE. The mute used to be AudioManager's alone:
+                 * a device or policy that does not honour setMicrophoneMute kept this loop sending
+                 * the room while the button said muted. Read and discard, so the recorder does not
+                 * fill with the muted stretch and leak it out on unmute. */
+                if (micMuted) continue;
                 if (++lvlFrames % 4 == 1) emitMicLevel(rmsLevel(pcm));
                 int nb = encoder.encode(pcm, 0, n, out, 0, out.length);
                 if (nb <= 0) { Log.w("AgentChannel", "opus encode returned " + nb); continue; }
@@ -1157,6 +1198,7 @@ public class AgentChannelPlugin extends Plugin {
     }
 
     private void decodePlay(byte[] pl) {
+        if (stopGated()) return;
         try {
             replyActiveUntil = SystemClock.elapsedRealtime() + 900; // also gates mic (echo)
             // Pad the start of each NEW reply burst so playback starts pre-buffered.

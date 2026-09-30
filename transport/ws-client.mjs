@@ -135,6 +135,8 @@ export class AgentStream {
       const { i, d } = JSON.parse(pt.toString('utf8'));
       const p = this._pending.get(i);
       if (p) { clearTimeout(p.t); this._pending.delete(i); p.resolve(d); }
+      /* Unsolicited pushes (the sidecar's status: mic level, heartbeat) carry i = -1. */
+      else if (i === -1 && this.onPush) this.onPush(d);
     } else if (f.type === T.audio) {
       // inbound agent audio (not exercised by this mock, but supported)
       const seq = pt.readUInt32BE(0);
