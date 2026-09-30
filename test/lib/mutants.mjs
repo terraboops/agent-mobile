@@ -14,6 +14,7 @@ const AD = join(homedir(), '.hermes/plugins/agentmob/adapter.py');
 const SC = join(homedir(), '.hermes/plugins/agentmob/sidecar/index.mjs');
 const WRTC = join(homedir(), '.hermes/plugins/agentmob/sidecar/webrtc-media.mjs');
 const DV = join(REPO, 'test/device-verify.mjs');
+const ANNOUNCE = join(REPO, 'test/lib/handoff-announce.mjs');
 const ACPLUG = join(REPO, 'android/app/src/main/java/com/agentmobile/agent/AgentChannelPlugin.java');
 const VF = join(REPO, 'test/lib/vendor-files.mjs');
 const AS = join(REPO, 'test/lib/adb-state.mjs');
@@ -2089,4 +2090,25 @@ export const MUTANTS = [
     breaks: 'Stop → quiet: at most the one frame the reply thread already held is heard after Stop',
     from: '        replyQueue.clear();\n        /* The next reply',
     to:   '        /* replyQueue left full */\n        /* The next reply' },
+  /* handoff announce — an unattended pass HEARD, not only filed. */
+  { suite: 'handoff', file: ANNOUNCE,
+    why: 'the verdict reaching the events file the arming session waits on',
+    breaks: 'announce: a real verdict is appended to the events file the arming session waits on',
+    from: '  try { append(eventsPath(outDir, !!ev.simulated), JSON.stringify(line) + \'\\n\'); done.event = true; }',
+    to:   '  try { done.event = true; }' },
+  { suite: 'handoff', file: ANNOUNCE,
+    why: 'a simulated verdict never landing in the real events file',
+    breaks: 'announce: a SIMULATED verdict goes to the sim events file, never the real one',
+    from: '  try { append(eventsPath(outDir, !!ev.simulated), JSON.stringify(line)',
+    to:   '  try { append(eventsPath(outDir, false), JSON.stringify(line)' },
+  { suite: 'handoff', file: ANNOUNCE,
+    why: 'a simulated run putting no banner on the screen unless asked',
+    breaks: 'announce: and puts no banner on the screen unless asked',
+    from: "const wantDesktop = platform === 'darwin' && (!ev.simulated || process.env.AGENTMOB_HANDOFF_ANNOUNCE === '1');",
+    to:   "const wantDesktop = platform === 'darwin';" },
+  { suite: 'handoff', file: HANDOFFRUN,
+    why: 'device-handoff announcing its verdict',
+    breaks: 'and the VERDICT, after the log is written',
+    from: "  const a = announce({ kind: 'verdict',",
+    to:   "  const a = ({ kind: 'verdict'," },
 ];

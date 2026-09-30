@@ -7,6 +7,7 @@
  * the entire time, and reported a generic line about toggles.
  */
 import { readFileSync } from 'node:fs';
+import { announce, announceText, eventsPath } from './lib/handoff-announce.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tickPlan, discoveryPlan, passPlan, usableEndpoint, handoffVerdict, subnetHosts,
@@ -353,6 +354,45 @@ ok('it exits non-zero when no device ever appeared',
 ok('it writes what it did to a file of its own',
   /device-handoff\.json/.test(src),
   'and not over device-verify.json, which is the passes\' own evidence');
+
+/* ---- ANNOUNCE: an unattended pass must be HEARD, not only filed. The loop used to write its
+ * JSON and exit, and the session that armed it never learned a pass had landed. */
+{
+  const calls = [];
+  const appended = [];
+  const fakeRun = (cmd, args) => { calls.push([cmd, ...args]); return { status: 0 }; };
+  const fakeAppend = (path, text) => appended.push([path, text]);
+  const real = announce({ kind: 'verdict', simulated: false, found: true, results: [{ pass: 'full sweep', exit: 0 }], note: 'n' },
+    { outDir: '/o', platform: 'darwin', run: fakeRun, append: fakeAppend });
+  ok('announce: a real verdict is appended to the events file the arming session waits on',
+    appended.length === 1 && appended[0][0] === eventsPath('/o', false) && JSON.parse(appended[0][1]).kind === 'verdict',
+    JSON.stringify(appended));
+  ok('announce: and shown on the desktop', real.desktop === true && calls.length === 1 && calls[0][0] === 'osascript',
+    JSON.stringify(calls));
+  calls.length = 0; appended.length = 0;
+  const prev = process.env.AGENTMOB_HANDOFF_ANNOUNCE; delete process.env.AGENTMOB_HANDOFF_ANNOUNCE;
+  const sim = announce({ kind: 'verdict', simulated: true, found: true, results: [], note: 'n' },
+    { outDir: '/o', platform: 'darwin', run: fakeRun, append: fakeAppend });
+  ok('announce: a SIMULATED verdict goes to the sim events file, never the real one',
+    appended.length === 1 && appended[0][0] === eventsPath('/o', true) && appended[0][0] !== eventsPath('/o', false));
+  ok('announce: and puts no banner on the screen unless asked', sim.desktop === false && calls.length === 0);
+  if (prev !== undefined) process.env.AGENTMOB_HANDOFF_ANNOUNCE = prev;
+  const broken = announce({ kind: 'verdict', found: false, results: [], note: 'n' },
+    { outDir: '/o', platform: 'darwin', run: () => { throw new Error('no osascript'); }, append: () => { throw new Error('disk full'); } });
+  ok('announce: a failing channel never throws — the verdict is not taken down with it',
+    broken.event === false && broken.desktop === false && broken.errors.length === 2, JSON.stringify(broken));
+  ok('announce text: a failed pass is named FAILED in the banner title',
+    /1 of 2 pass\(es\) FAILED/.test(announceText({ kind: 'verdict', found: true, results: [{ exit: 0 }, { exit: 1 }] }).title));
+  ok('announce text: nothing appearing is said as such, not as a pass',
+    /no phone appeared/.test(announceText({ kind: 'verdict', found: false, results: [] }).title));
+  ok('announce text: a simulated banner says SIMULATED first',
+    /^SIMULATED/.test(announceText({ kind: 'found', simulated: true }).title));
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'device-handoff.mjs'), 'utf8');
+  ok('device-handoff announces the phone being FOUND, where it confirms it',
+    /confirmed = cand;[\s\S]{0,300}announce\(\{ kind: 'found'/.test(src));
+  ok('and the VERDICT, after the log is written',
+    /writeFileSync\(HANDOFF_LOG[\s\S]{0,900}announce\(\{ kind: 'verdict'/.test(src));
+}
 
 console.log(`\n  This checks the loop's decisions. Whether the phone appears is the phone's`);
 console.log('  business, and every acceptance item still waits on it.');

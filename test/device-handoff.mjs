@@ -25,6 +25,7 @@ import { discoveryPlan, passPlan, usableEndpoint, handoffVerdict, subnetHosts,
          aliveFromProbe, foundVia, excludedHosts, endpointState, identityMatches,
          hostSweepOrder, ownLanAddress, HOSTS_PER_TICK, TICK_S } from './lib/handoff.mjs';
 import { createConnection } from 'node:net';
+import { announce } from './lib/handoff-announce.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -269,7 +270,13 @@ while (Date.now() < deadline && !confirmed) {
       const id = identityMatches({ model, serial: serialProp,
                                    expectModel: String(flag('--model', 'Pixel')),
                                    expectSerial: flag('--serial', null) });
-      if (id.ok) { confirmed = cand; console.log(`  CONFIRMED: ${id.why}\n`); }
+      if (id.ok) {
+        confirmed = cand; console.log(`  CONFIRMED: ${id.why}\n`);
+        /* Heard, not just logged: the phone appearing is the moment someone wants to know. */
+        const a = announce({ kind: 'found', simulated: !!process.env.AGENTMOB_ADB, endpoint: cand },
+          { outDir: OUT });
+        console.log(`  announced: phone found (events ${a.event ? 'written' : 'NOT written'}, desktop ${a.desktop ? 'shown' : 'not shown'})`);
+      }
       else why = id.why;
     }
     if (confirmed) {
@@ -334,4 +341,11 @@ writeFileSync(HANDOFF_LOG, JSON.stringify({
   liveHostsSeen: liveHosts.map((h) => h.host), ranPasses: ran, results, verdict: verdict.note,
 }, null, 2));
 console.log(`  handoff log -> ${HANDOFF_LOG}`);
+/* The verdict, HEARD: an events line the arming session is waiting on, and a desktop banner. */
+{
+  const a = announce({ kind: 'verdict', simulated: !!process.env.AGENTMOB_ADB, found: !!confirmed, endpoint,
+                       results, note: verdict.note, log: HANDOFF_LOG }, { outDir: OUT });
+  console.log(`  announced: verdict (events ${a.event ? 'written' : 'NOT written'}, desktop ${a.desktop ? 'shown' : 'not shown'})`
+    + (a.errors.length ? ` — ${a.errors.join('; ')}` : ''));
+}
 process.exit(confirmed ? (results.every((r) => r.exit === 0) ? 0 : 1) : 3);
