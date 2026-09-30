@@ -2111,4 +2111,15 @@ export const MUTANTS = [
     breaks: 'and the VERDICT, after the log is written',
     from: "  const a = announce({ kind: 'verdict',",
     to:   "  const a = ({ kind: 'verdict'," },
+  /* handoff-watch — the death the loop cannot announce itself. */
+  { suite: 'handoff', file: ANNOUNCE,
+    why: 'a dead loop with no announced end being called a death',
+    breaks: 'watch: a dead loop that announced NOTHING is a death — announced',
+    from: "  return { action: 'died', why: `loop pid ${pidfile.pid} is gone and announced NOTHING — it died` };",
+    to:   "  return { action: 'clear', why: 'gone' };" },
+  { suite: 'handoff', file: ANNOUNCE,
+    why: 'only THIS loop\'s events counting as its end',
+    breaks: "watch: an EARLIER loop's verdict does not count as this one's end",
+    from: '    .filter((e) => e && (Date.parse(e.at) || 0) >= t0);',
+    to:   '    .filter((e) => e);' },
 ];

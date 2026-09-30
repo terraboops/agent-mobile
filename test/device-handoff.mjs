@@ -15,7 +15,7 @@
  *   npm run device-handoff -- --no-ws      full sweep only
  */
 import { spawnSync, execFileSync } from 'node:child_process';
-import { existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir, networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,7 @@ import { discoveryPlan, passPlan, usableEndpoint, handoffVerdict, subnetHosts,
          aliveFromProbe, foundVia, excludedHosts, endpointState, identityMatches,
          hostSweepOrder, ownLanAddress, HOSTS_PER_TICK, TICK_S } from './lib/handoff.mjs';
 import { createConnection } from 'node:net';
-import { announce } from './lib/handoff-announce.mjs';
+import { announce, pidfilePath } from './lib/handoff-announce.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -58,8 +58,20 @@ const adb = (args, timeout = 30000) => {
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 };
 const stopAdb = () => { try { adb(['kill-server'], 10000); } catch { /* best effort */ } };
+/* The PIDFILE: while armed (real runs only), so a machine-side watchdog can tell a loop that died
+ * from one that finished. Removed when the loop announces its own end. */
+const PIDFILE = pidfilePath(join(HERE, '..'));
+const OWN_PIDFILE = !process.env.AGENTMOB_ADB;
+const STARTED = new Date().toISOString();
+if (OWN_PIDFILE) writeFileSync(PIDFILE, JSON.stringify({ pid: process.pid, started: STARTED, hours: HOURS }));
+const dropPidfile = () => { if (OWN_PIDFILE) { try { rmSync(PIDFILE, { force: true }); } catch {} } };
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(sig, () => { console.log(`\n${sig} — stopping adb before exit.`); stopAdb(); process.exit(130); });
+  process.on(sig, () => {
+    console.log(`\n${sig} — stopping adb before exit.`); stopAdb();
+    announce({ kind: 'stopped', simulated: !OWN_PIDFILE, pid: process.pid, started: STARTED, signal: sig },
+      { outDir: join(HERE, 'audit/out/device') });
+    dropPidfile(); process.exit(130);
+  });
 }
 process.on('exit', stopAdb);
 
@@ -348,4 +360,5 @@ console.log(`  handoff log -> ${HANDOFF_LOG}`);
   console.log(`  announced: verdict (events ${a.event ? 'written' : 'NOT written'}, desktop ${a.desktop ? 'shown' : 'not shown'})`
     + (a.errors.length ? ` — ${a.errors.join('; ')}` : ''));
 }
+dropPidfile();
 process.exit(confirmed ? (results.every((r) => r.exit === 0) ? 0 : 1) : 3);

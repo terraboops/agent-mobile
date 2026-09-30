@@ -7,7 +7,7 @@
  * the entire time, and reported a generic line about toggles.
  */
 import { readFileSync } from 'node:fs';
-import { announce, announceText, eventsPath } from './lib/handoff-announce.mjs';
+import { announce, announceText, eventsPath, eventsSince, watchDecision } from './lib/handoff-announce.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tickPlan, discoveryPlan, passPlan, usableEndpoint, handoffVerdict, subnetHosts,
@@ -392,6 +392,30 @@ ok('it writes what it did to a file of its own',
     /confirmed = cand;[\s\S]{0,300}announce\(\{ kind: 'found'/.test(src));
   ok('and the VERDICT, after the log is written',
     /writeFileSync\(HANDOFF_LOG[\s\S]{0,900}announce\(\{ kind: 'verdict'/.test(src));
+}
+
+/* ---- THE WATCHDOG: a loop that dies cannot announce it; handoff-watch (launchd) does. */
+{
+  const pf = { pid: 999999, started: '2026-09-30T01:00:00.000Z' };
+  ok('watch: nothing armed is nothing to do', watchDecision({ pidfile: null }).action === 'none');
+  ok('watch: a live loop is left alone', watchDecision({ pidfile: pf, alive: true, events: [] }).action === 'none');
+  ok('watch: a dead loop that announced NOTHING is a death — announced',
+    watchDecision({ pidfile: pf, alive: false, events: [{ kind: 'found', at: '2026-09-30T02:00:00Z' }] }).action === 'died');
+  ok('watch: a dead loop that announced its verdict only clears the stale pidfile',
+    watchDecision({ pidfile: pf, alive: false, events: [{ kind: 'verdict', at: '2026-09-30T02:00:00Z' }] }).action === 'clear');
+  ok('watch: so does one stopped by a signal that said so',
+    watchDecision({ pidfile: pf, alive: false, events: [{ kind: 'stopped' }] }).action === 'clear');
+  const text = [JSON.stringify({ at: '2026-09-29T23:00:00Z', kind: 'verdict' }), 'not json',
+                JSON.stringify({ at: '2026-09-30T02:00:00Z', kind: 'found' })].join('\n');
+  const since = eventsSince(text, pf.started);
+  ok('watch: an EARLIER loop\'s verdict does not count as this one\'s end',
+    since.length === 1 && since[0].kind === 'found'
+    && watchDecision({ pidfile: pf, alive: false, events: since }).action === 'died', JSON.stringify(since));
+  ok('announce text: a death says nothing is watching', /DIED/.test(announceText({ kind: 'died', pid: 1 }).title));
+  const dh = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'device-handoff.mjs'), 'utf8');
+  ok('device-handoff leaves a pidfile for real runs only', /const OWN_PIDFILE = !process\.env\.AGENTMOB_ADB;/.test(dh)
+    && /if \(OWN_PIDFILE\) writeFileSync\(PIDFILE/.test(dh));
+  ok('and drops it only after announcing its end', /announce\(\{ kind: 'verdict'[\s\S]{0,500}dropPidfile\(\);\s*process\.exit/.test(dh));
 }
 
 console.log(`\n  This checks the loop's decisions. Whether the phone appears is the phone's`);

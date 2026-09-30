@@ -29,6 +29,8 @@ export const eventsPath = (outDir, simulated) =>
 export function announceText(ev) {
   const tag = ev.simulated ? 'SIMULATED — ' : '';
   if (ev.kind === 'found') return { title: `${tag}agentmob: phone found`, body: `${ev.endpoint || 'handset'} — device passes starting` };
+  if (ev.kind === 'died') return { title: `${tag}agentmob handoff DIED`, body: `loop pid ${ev.pid} (armed ${ev.started}) is gone without a verdict — nothing is watching for the phone` };
+  if (ev.kind === 'stopped') return { title: `${tag}agentmob handoff stopped`, body: `loop pid ${ev.pid} stopped by ${ev.signal} before any verdict` };
   const fails = (ev.results || []).filter((r) => r.exit !== 0).length;
   const ran = (ev.results || []).length;
   const head = !ev.found ? 'no phone appeared' : fails ? `${fails} of ${ran} pass(es) FAILED` : `${ran} pass(es) passed`;
@@ -51,4 +53,32 @@ export function announce(ev, { outDir, platform = process.platform, run = spawnS
     } catch (e) { done.errors.push(`osascript: ${e.message}`); }
   }
   return done;
+}
+
+/* ---- DURABILITY -----------------------------------------------------------------------------
+ * A dead loop cannot announce its own death, and the session waiter dies with its session. So the
+ * loop leaves a PIDFILE while it is armed, and a launchd agent (handoff-watch.mjs, every 2 min,
+ * no session required) turns "pidfile names a dead process and no verdict was announced" into a
+ * `died` event and a banner. The waiter (handoff-wait.mjs) keeps a CURSOR into the events file,
+ * so one re-armed after a restart delivers whatever landed while nobody was listening. */
+export const pidfilePath = (repo) => join(repo, 'test', '.handoff-running');
+export const cursorPath = (outDir) => join(outDir, '.handoff-events.cursor');
+
+/** Events since `startedIso`, parsed; bad lines skipped. */
+export function eventsSince(text, startedIso) {
+  const t0 = Date.parse(startedIso || 0) || 0;
+  return String(text || '').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .filter((e) => e && (Date.parse(e.at) || 0) >= t0);
+}
+
+/**
+ * What the watchdog should do. Pure.
+ * @returns {{action: 'none'|'died'|'clear', why: string}}
+ */
+export function watchDecision({ pidfile, alive, events }) {
+  if (!pidfile) return { action: 'none', why: 'no loop is armed' };
+  if (alive) return { action: 'none', why: `loop pid ${pidfile.pid} is alive` };
+  const ended = (events || []).find((e) => e.kind === 'verdict' || e.kind === 'stopped' || e.kind === 'died');
+  if (ended) return { action: 'clear', why: `loop pid ${pidfile.pid} is gone but announced its end (${ended.kind})` };
+  return { action: 'died', why: `loop pid ${pidfile.pid} is gone and announced NOTHING — it died` };
 }
